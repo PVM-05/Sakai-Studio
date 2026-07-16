@@ -82,6 +82,7 @@ class SubtitleExtractorGUI(FluentWindow):
             
             # 4. Gọi cập nhật giao diện nóng cho các component con
             self.homeInterface.retranslateUi()
+            self.advancedSettingInterface.retranslateUi()
             
             # 5. Hiển thị thông báo góc màn hình đổi thành công
             InfoBar.success(

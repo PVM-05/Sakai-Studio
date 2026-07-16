@@ -207,7 +207,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
     def retranslateUi(self):
         """Cập nhật lại văn bản hiển thị trên các SettingCard khi đổi ngôn ngữ nóng"""
         self.interface_combo.setTitle(tr["SubtitleExtractorGUI"]["InterfaceLanguage"])
-        self.interface_combo.setToolTip("Chọn ngôn ngữ hiển thị cho giao diện phần mềm.")
+        self.interface_combo.setToolTip(tr["Setting"].get("InterfaceLanguageTooltip", "Select interface language"))
         
         # Cập nhật combo inpaint mode (block signals để tránh kích hoạt thay đổi cấu hình)
         self.inpaint_mode_combo.comboBox.blockSignals(True)
@@ -217,13 +217,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
         self.inpaint_mode_combo.comboBox.addItems([list(tr['InpaintMode'].values())[i] for i,_ in enumerate(config.inpaintMode.validator.options)])
         self.inpaint_mode_combo.comboBox.setCurrentIndex(current_inpaint_idx)
         self.inpaint_mode_combo.comboBox.blockSignals(False)
-        self.inpaint_mode_combo.setToolTip(
-            "Chọn mô hình trí tuệ nhân tạo để xóa phụ đề:\n"
-            "- LaMa: Mô hình tốt nhất cho ảnh tĩnh, hoạt động rất nhanh.\n"
-            "- STTN: Mô hình video trung cấp, đảm bảo tính liên kết thời gian tốt.\n"
-            "- ProPainter: Mô hình video cao cấp nhất, khử nhấp nháy vượt trội.\n"
-            "- OpenCV: Sử dụng thuật toán xử lý ảnh truyền thống, tốc độ cực nhanh nhưng chất lượng cơ bản."
-        )
+        self.inpaint_mode_combo.setToolTip(tr["Setting"].get("InpaintModeTooltip", "Select inpaint model"))
         
         # Cập nhật combo subtitle detect mode
         self.subtitle_detect_model_combo.comboBox.blockSignals(True)
@@ -233,18 +227,14 @@ class SettingInterface(QtWidgets.QVBoxLayout):
         self.subtitle_detect_model_combo.comboBox.addItems([list(tr['SubtitleDetectMode'].values())[i] for i,_ in enumerate(config.subtitleDetectMode.validator.options)])
         self.subtitle_detect_model_combo.comboBox.setCurrentIndex(current_detect_idx)
         self.subtitle_detect_model_combo.comboBox.blockSignals(False)
-        self.subtitle_detect_model_combo.setToolTip(
-            "Chọn mô hình OCR phát hiện phụ đề:\n"
-            "- Server: Mô hình PP-OCRv5 Server có độ chính xác rất cao, khuyên dùng.\n"
-            "- Mobile: Mô hình PP-OCRv5 Mobile dung lượng nhẹ, tốc độ nhanh hơn nhưng dễ bị sót chữ hơn."
-        )
+        self.subtitle_detect_model_combo.setToolTip(tr["Setting"].get("SubtitleDetectModeTooltip", "Select OCR model"))
         
         self.hardware_acceleration.setTitle(tr["Setting"]["HardwareAcceleration"])
         if not HARDWARD_ACCELERATION_OPTION:
             self.hardware_acceleration.setContent(tr["Setting"]["HardwareAccelerationNO"])
         else:
             self.hardware_acceleration.setContent(tr["Setting"]["HardwareAccelerationDesc"])
-        self.hardware_acceleration.setToolTip("Bật hoặc Tắt tăng tốc đồ họa phần cứng GPU (CUDA hoặc DirectML).")
+        self.hardware_acceleration.setToolTip(tr["Setting"].get("HardwareAccelerationTooltip", "GPU acceleration"))
         
         self.poisson_blending.setTitle("Poisson Blending (泊松融合)")
         self.poisson_blending.setContent(tr["Setting"]["PoissonBlendingDesc"])
@@ -267,11 +257,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
         self.mask_type_combo.comboBox.addItems([tr['Setting']['MaskTypeStroke'], tr['Setting']['MaskTypeBox']])
         self.mask_type_combo.comboBox.setCurrentIndex(current_mask_idx)
         self.mask_type_combo.comboBox.blockSignals(False)
-        self.mask_type_combo.setToolTip(
-            "Chọn phương pháp che phủ dòng chữ:\n"
-            "- Nét chữ (Stroke): Mặt nạ bám khít theo từng nét vẽ của chữ. Giúp giữ nguyên vẹn tối đa nền gốc xung quanh.\n"
-            "- Hộp chữ nhật (Box): Che phủ toàn bộ hộp chữ nhật chứa chữ. Xóa sạch 100% nhưng vùng cần inpaint lớn hơn, dễ gây mờ nền."
-        )
+        self.mask_type_combo.setToolTip(tr["Setting"]["MaskTypeTooltip"])
         
-        self.gpu_info_card.setToolTip("Hiển thị thông tin tên GPU đồ họa, dung lượng VRAM thực tế và hạn mức số khung hình được phân bổ tối đa cho việc xử lý đồng thời.")
+        self.gpu_info_card.setToolTip(tr["Setting"].get("GpuInfoTooltip", "GPU information"))
         self.update_gpu_info()
