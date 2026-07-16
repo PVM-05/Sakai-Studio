@@ -731,6 +731,15 @@ class VideoDisplayComponent(QWidget):
         self.selection_rect = rects[-1] if rects else QRect()
         self.active_selection_index = len(rects) - 1
         self.update_preview_with_rect()
+        
+    def add_default_selection(self):
+        """Thêm một vùng chọn mặc định ở nửa dưới màn hình"""
+        default_rect = (0.8, 0.9, 0.15, 0.85)
+        self.selection_rects.append(default_rect)
+        self.active_selection_index = len(self.selection_rects) - 1
+        self.selections_changed.emit(self.selection_rects)
+        self.update_preview_with_rect()
+        return True
     
     def load_selections_from_config(self):
         """从配置中加载选择框的相对位置和大小"""

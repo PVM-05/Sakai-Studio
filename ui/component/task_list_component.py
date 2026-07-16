@@ -315,6 +315,21 @@ class TaskListComponent(QWidget):
             apply_areas_to_all_action.triggered.connect(apply_areas_to_all)
             menu.addAction(apply_areas_to_all_action)
 
+            # Đẩy lên (Move Up)
+            move_up_action = QAction("Đẩy lên (Move Up)", self)
+            row = index.row()
+            can_move_up = row > 0 and self.tasks[row].status in (TaskStatus.PENDING, TaskStatus.FAILED) and self.tasks[row-1].status in (TaskStatus.PENDING, TaskStatus.FAILED)
+            move_up_action.setEnabled(can_move_up)
+            move_up_action.triggered.connect(lambda: self.move_task_up(index.row()))
+            menu.addAction(move_up_action)
+            
+            # Đẩy xuống (Move Down)
+            move_down_action = QAction("Đẩy xuống (Move Down)", self)
+            can_move_down = row < len(self.tasks) - 1 and self.tasks[row].status in (TaskStatus.PENDING, TaskStatus.FAILED) and self.tasks[row+1].status in (TaskStatus.PENDING, TaskStatus.FAILED)
+            move_down_action.setEnabled(can_move_down)
+            move_down_action.triggered.connect(lambda: self.move_task_down(index.row()))
+            menu.addAction(move_down_action)
+
             # 删除任务
             delete_action = QAction(tr['TaskList']['DeleteTask'], self)
             delete_action.triggered.connect(lambda: self.delete_task(index.row()))
@@ -431,3 +446,56 @@ class TaskListComponent(QWidget):
         """
         if 0 <= index < len(self.tasks):
             return self.tasks[index].options.get(task_option.value, default)
+
+    def refresh_table(self):
+        """Vẽ lại bảng hàng đợi sau khi sắp xếp lại hoặc tráo đổi vị trí"""
+        self.table.setRowCount(len(self.tasks))
+        for row, task in enumerate(self.tasks):
+            item0 = QTableWidgetItem(task.name)
+            item1 = QTableWidgetItem(f"{task.progress}%")
+            item2 = QTableWidgetItem(task.status.value)
+            
+            item0.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+            item0.setToolTip(task.path)
+            item1.setTextAlignment(Qt.AlignCenter)
+            item2.setTextAlignment(Qt.AlignCenter)
+            
+            # Cập nhật màu sắc chữ trạng thái
+            if task.status == TaskStatus.COMPLETED:
+                item2.setForeground(QBrush(QColor("#2ecc71")))
+            elif task.status == TaskStatus.PROCESSING:
+                item2.setForeground(QBrush(QColor("#3498db")))
+            elif task.status == TaskStatus.FAILED:
+                item2.setForeground(QBrush(QColor("#e74c3c")))
+                
+            self.table.setItem(row, 0, item0)
+            self.table.setItem(row, 1, item1)
+            self.table.setItem(row, 2, item2)
+
+    def move_task_up(self, row):
+        """Đẩy nhiệm vụ lên trên trong hàng đợi"""
+        if row <= 0 or row >= len(self.tasks):
+            return
+        if self.tasks[row].status not in (TaskStatus.PENDING, TaskStatus.FAILED):
+            return
+        if self.tasks[row-1].status not in (TaskStatus.PENDING, TaskStatus.FAILED):
+            return
+            
+        # Tráo đổi
+        self.tasks[row], self.tasks[row-1] = self.tasks[row-1], self.tasks[row]
+        self.refresh_table()
+        self.table.selectRow(row-1)
+
+    def move_task_down(self, row):
+        """Đẩy nhiệm vụ xuống dưới trong hàng đợi"""
+        if row < 0 or row >= len(self.tasks) - 1:
+            return
+        if self.tasks[row].status not in (TaskStatus.PENDING, TaskStatus.FAILED):
+            return
+        if self.tasks[row+1].status not in (TaskStatus.PENDING, TaskStatus.FAILED):
+            return
+            
+        # Tráo đổi
+        self.tasks[row], self.tasks[row+1] = self.tasks[row+1], self.tasks[row]
+        self.refresh_table()
+        self.table.selectRow(row+1)

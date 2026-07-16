@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout
 from PySide6.QtCore import Slot, QRect, Signal
 from PySide6 import QtWidgets
 from datetime import datetime
-from qfluentwidgets import (PushButton, CardWidget, TextEdit, FluentIcon)
+from qfluentwidgets import (PushButton, CardWidget, TextEdit, FluentIcon, InfoBar)
 from ui.setting_interface import SettingInterface
 from ui.component.video_display_component import VideoDisplayComponent
 from ui.component.task_list_component import TaskListComponent, TaskStatus, TaskOptions
@@ -136,6 +136,11 @@ class HomeInterface(QWidget):
         self.file_button.setIcon(FluentIcon.FOLDER)
         self.file_button.clicked.connect(self.open_file)
         button_layout.addWidget(self.file_button)
+        
+        self.add_area_button = PushButton("Thêm vùng xóa", self)
+        self.add_area_button.setIcon(FluentIcon.ADD)
+        self.add_area_button.clicked.connect(self.add_area_button_clicked)
+        button_layout.addWidget(self.add_area_button)
         
         self.run_button = PushButton(tr['SubtitleExtractorGUI']['Run'], self)
         self.run_button.setIcon(FluentIcon.PLAY)
@@ -359,6 +364,7 @@ class HomeInterface(QWidget):
                                     self.video_cap = None
 
                             self.task_status_signal.emit(self.current_processing_task_index, TaskStatus.PROCESSING)
+                            self.start_time = time.time()
                             options = {}
                             for key in task_item.options:
                                 value = task_item.options[key]
@@ -494,18 +500,39 @@ class HomeInterface(QWidget):
                 self.video_slider.setValue(pos)
                 self.video_slider.blockSignals(False)
             
-            # 更新任务进度
+            # Tính toán FPS và ETA
+            fps = 0.0
+            eta_str = ""
+            if hasattr(self, 'start_time') and self.start_time > 0:
+                elapsed = time.time() - self.start_time
+                current_frame = int(progress_total / 100 * self.frame_count)
+                if elapsed > 1.0 and current_frame > 0:
+                    fps = current_frame / elapsed
+                    remaining_frames = self.frame_count - current_frame
+                    if fps > 0:
+                        eta_seconds = int(remaining_frames / fps)
+                        m, s = divmod(eta_seconds, 60)
+                        h, m = divmod(m, 60)
+                        if h > 0:
+                            eta_str = f"{h:02d}:{m:02d}:{s:02d}"
+                        else:
+                            eta_str = f"{m:02d}:{s:02d}"
+
+            # Cập nhật tiến trình và thông tin tốc độ
             if self.current_processing_task_index >= 0:
-                self.task_list_component.update_task_progress(
-                    self.current_processing_task_index, 
-                    progress_total,
-                )
+                progress_text = f"{progress_total}%"
+                if fps > 0 and eta_str:
+                    progress_text += f" ({fps:.1f} FPS, {eta_str})"
+                progress_item = self.task_list_component.table.item(self.current_processing_task_index, 1)
+                if progress_item:
+                    progress_item.setText(progress_text)
+                self.task_list_component.tasks[self.current_processing_task_index].progress = progress_total
             
             # 检查是否完成
             if isFinished:
                 self.processing_finished()
         except Exception as e:
-            # 捕获任何异常，防止崩溃
+            # 捕获 any exception, 防止 crash
             print(f"更新进度时出错: {str(e)}")
 
     @Slot(list)
@@ -634,6 +661,23 @@ class HomeInterface(QWidget):
         self.video_display_component.set_dragger_enabled(True)
         return True
 
+
+    def add_area_button_clicked(self):
+        get_current_task_index = self.task_list_component.get_current_task_index()
+        if get_current_task_index == -1:
+            InfoBar.warning(
+                title="Cảnh báo",
+                content="Vui lòng mở video hoặc chọn nhiệm vụ trước.",
+                parent=self,
+                duration=3000
+            )
+            return
+        
+        # Thêm một vùng chọn mặc định
+        self.video_display_component.add_default_selection()
+        # Lưu các vùng chọn mới nhất vào nhiệm vụ
+        selections = self.video_display_component.selection_rects
+        self.task_list_component.update_task_option(get_current_task_index, TaskOptions.SUB_AREAS, selections)
 
     def open_file(self):
         files, _ = QtWidgets.QFileDialog.getOpenFileNames(
