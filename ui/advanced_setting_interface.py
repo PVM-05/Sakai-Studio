@@ -63,6 +63,9 @@ class AdvancedSettingInterface(ScrollArea):
         self.advanced_group.addSettingCard(self.check_update_on_startup)
         self.advanced_group.addSettingCard(self.auto_hardware_tuning)
         self.advanced_group.addSettingCard(self.gpu_video_encoding)
+        self.advanced_group.addSettingCard(self.mask_dilation)
+        self.advanced_group.addSettingCard(self.mask_feather)
+        self.advanced_group.addSettingCard(self.temporal_smoothing_radius)
         self.expandLayout.addWidget(self.advanced_group)
 
         self.about_group.addSettingCard(self.feedback)
@@ -207,6 +210,30 @@ class AdvancedSettingInterface(ScrollArea):
             icon=FluentIcon.VIDEO,
             title="Tăng tốc xuất video bằng GPU (GPU Hardware Encoding)",
             content="Sử dụng bộ giải mã/mã hóa phần cứng GPU giúp xuất video nhanh gấp 5-10 lần",
+            parent=self.advanced_group
+        )
+
+        self.mask_dilation = RangeSettingCard(
+            configItem=config.maskDilation,
+            icon=FluentIcon.ZOOM_IN,
+            title="Độ giãn nở mặt nạ (Mask Dilation)",
+            content="Độ rộng phần giãn nở bao phủ xung quanh viền phụ đề (0-50 px)",
+            parent=self.advanced_group
+        )
+
+        self.mask_feather = RangeSettingCard(
+            configItem=config.maskFeather,
+            icon=FluentIcon.BRUSH,
+            title="Làm mềm biên mặt nạ (Mask Feathering)",
+            content="Độ làm mềm mượt biên mặt nạ tránh gãy pixel răng cưa (0-30 px)",
+            parent=self.advanced_group
+        )
+
+        self.temporal_smoothing_radius = RangeSettingCard(
+            configItem=config.temporalSmoothingRadius,
+            icon=FluentIcon.MOVIE,
+            title="Bán kính làm mịn thời gian (Temporal Radius)",
+            content="Bán kính khung hình lân cận để lọc mượt chống nhấp nháy chuyển động (1-10)",
             parent=self.advanced_group
         )
 

@@ -278,7 +278,7 @@ class SubtitleRemover:
                                     inpainted_frames = propainter_inpaint(batch, mask)
                                     # Lọc mượt thời gian khử nhấp nháy dòng phụ đề
                                     if config.temporalSmoothing.value:
-                                        inpainted_frames = apply_temporal_smoothing(batch, inpainted_frames, mask, radius=2)
+                                        inpainted_frames = apply_temporal_smoothing(batch, inpainted_frames, mask, radius=config.temporalSmoothingRadius.value)
                                     for i, inpainted_frame in enumerate(inpainted_frames):
                                         inpainted_frame = self.apply_sharpening_to_inpainted_frame(batch[i], inpainted_frame, mask)
                                         self.video_writer.write(inpainted_frame)
@@ -288,10 +288,12 @@ class SubtitleRemover:
                                 self.update_progress(tbar, increment=len(batch))
 
     def get_mask(self, ref_frame, coords):
+        dilation = config.maskDilation.value
+        feather = config.maskFeather.value
         if config.maskType.value == 'stroke':
-            return create_stroke_mask(ref_frame, self.mask_size, coords)
+            return create_stroke_mask(ref_frame, self.mask_size, coords, dilation=dilation, feather_pixels=feather)
         else:
-            return create_mask(self.mask_size, coords)
+            return create_mask(self.mask_size, coords, dilation=dilation, feather_pixels=feather)
 
     def apply_sharpening_to_inpainted_frame(self, original_frame, inpainted_frame, mask):
         """Áp dụng bộ lọc làm nét (USM) cục bộ cho vùng mặt nạ bị xóa để phục hồi chi tiết"""
@@ -404,7 +406,7 @@ class SubtitleRemover:
                         inpainted_frames = model(batch, mask)
                         # Lọc mượt thời gian khử nhấp nháy vùng phụ đề đã xóa
                         if len(batch) > 1 and config.temporalSmoothing.value:
-                            inpainted_frames = apply_temporal_smoothing(batch, inpainted_frames, mask, radius=2)
+                            inpainted_frames = apply_temporal_smoothing(batch, inpainted_frames, mask, radius=config.temporalSmoothingRadius.value)
                         for i, inpainted_frame in enumerate(inpainted_frames):
                             inpainted_frame = self.apply_sharpening_to_inpainted_frame(batch[i], inpainted_frame, mask)
                             self.video_writer.write(inpainted_frame)

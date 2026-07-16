@@ -29,22 +29,18 @@ def batch_generator(data, max_batch_size):
     if last_batch_start < n_samples:
         yield data[last_batch_start:]
 
-def create_mask(size, coords_list, feather_pixels=8):
+def create_mask(size, coords_list, dilation=8, feather_pixels=8):
     # Tạo mặt nạ nhị phân gốc
     mask = np.zeros(size, dtype="uint8")
     if coords_list:
         for coords in coords_list:
             xmin, xmax, ymin, ymax = coords
-            # Chiều cao thực tế của chữ
-            height = ymax - ymin
-            # Giãn nở thích ứng: bằng 15% chiều cao chữ, tối thiểu 3px, tối đa 25px
-            adaptive_deviation = int(np.clip(height * 0.15, 3, 25))
             
-            # Phóng to ô để tránh bị sót viền chữ
-            x1 = max(0, xmin - adaptive_deviation)
-            y1 = max(0, ymin - adaptive_deviation)
-            x2 = min(size[1], xmax + adaptive_deviation)
-            y2 = min(size[0], ymax + adaptive_deviation)
+            # Phóng to ô bằng tham số dilation để tránh bị sót viền chữ
+            x1 = max(0, xmin - dilation)
+            y1 = max(0, ymin - dilation)
+            x2 = min(size[1], xmax + dilation)
+            y2 = min(size[0], ymax + dilation)
             cv2.rectangle(mask, (x1, y1), (x2, y2), 255, thickness=-1)
     
     # Gaussian Alpha Feathering: Làm mịn mượt biên mask
@@ -476,13 +472,13 @@ def apply_temporal_smoothing(original_frames: List[np.ndarray], inpainted_frames
             
     return smoothed_frames
 
-def create_stroke_mask(frame: np.ndarray, size: Tuple[int, int], coords_list: List[Tuple[int, int, int, int]], feather_pixels: int = 8) -> np.ndarray:
+def create_stroke_mask(frame: np.ndarray, size: Tuple[int, int], coords_list: List[Tuple[int, int, int, int]], dilation: int = 8, feather_pixels: int = 8) -> np.ndarray:
     """
-    Tạo mặt nạ ở cấp độ nét chữ (stroke-level mask) sử dụng Contour và Canny Edge Detection.
-    Giúp xóa phụ đề sạch nhất mà không bị ghost.
+    Tạo mặt nạ ở cấp độ nét chữ (stroke-level mask) sử dụng kết hợp Canny Edge Detection và Otsu's Thresholding.
+    Giúp xóa phụ đề sạch nhất, bắt trọn bóng đổ (drop shadow) và viền chữ dày mà không bị bóng mờ (ghosting).
     """
     if frame is None or not coords_list:
-        return create_mask(size, coords_list, feather_pixels)
+        return create_mask(size, coords_list, dilation=dilation, feather_pixels=feather_pixels)
         
     h_frame, w_frame = frame.shape[:2]
     mask = np.zeros((h_frame, w_frame), dtype="uint8")
@@ -491,7 +487,7 @@ def create_stroke_mask(frame: np.ndarray, size: Tuple[int, int], coords_list: Li
         xmin, xmax, ymin, ymax = coords
         
         # Mở rộng nhẹ hộp chữ nhật gốc để lấy biên chữ đầy đủ
-        pad = 4
+        pad = max(4, dilation)
         x1 = max(0, xmin - pad)
         y1 = max(0, ymin - pad)
         x2 = min(w_frame, xmax + pad)
@@ -504,20 +500,30 @@ def create_stroke_mask(frame: np.ndarray, size: Tuple[int, int], coords_list: Li
         if crop.size == 0:
             continue
             
-        # Chuyển sang grayscale
+        # Chuyển sang ảnh xám
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
         
-        # Áp dụng bộ lọc Gaussian Blur để giảm nhiễu trước khi dò biên
+        # Áp dụng Gaussian Blur để làm mượt giảm nhiễu biên
         blurred = cv2.GaussianBlur(gray, (3, 3), 0)
         
-        # Tìm biên chữ bằng Canny
+        # 1. Phát hiện cạnh bằng Canny
         edges = cv2.Canny(blurred, 30, 120)
         
-        # Nối các nét biên chữ bằng toán tử Close
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+        # 2. Phân ngưỡng thích ứng Otsu để bắt vùng có tương phản động cao (như nét chữ và viền đổ bóng dày)
+        _, otsu = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         
-        # Tìm các contours đường biên
+        # Nếu phần lớn khung hình là màu trắng (nền sáng chữ tối), ta đảo ngược mặt nạ Otsu để chọn chữ tối
+        if np.mean(otsu) > 127:
+            otsu = cv2.bitwise_not(otsu)
+            
+        # Kết hợp hai mặt nạ Canny và Otsu
+        combined = cv2.bitwise_or(edges, otsu)
+        
+        # Nối các nét chữ rời rạc bằng toán tử đóng hình học MORPH_CLOSE
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        closed = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel)
+        
+        # Tìm đường viền Contour ngoài cùng
         contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         crop_mask = np.zeros_like(gray)
@@ -527,18 +533,17 @@ def create_stroke_mask(frame: np.ndarray, size: Tuple[int, int], coords_list: Li
             # Loại bỏ nhiễu cực nhỏ
             if area < 3 and (w < 2 or h < 2):
                 continue
-            # Vẽ điền đầy contour nét chữ
+            # Vẽ lấp đầy (fill) toàn bộ vùng bao chữ
             cv2.drawContours(crop_mask, [cnt], -1, 255, thickness=-1)
             
-        # Giãn nở thích ứng theo chiều cao chữ để bao trùm viền/bóng chữ
-        box_height = y2 - y1
-        dilate_px = max(2, int(np.clip(box_height * 0.10, 2, 10)))
-        kernel_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (dilate_px * 2 + 1, dilate_px * 2 + 1))
-        crop_mask = cv2.dilate(crop_mask, kernel_dilate)
-        
+        # Giãn nở mặt nạ theo tham số cấu hình dilation
+        if dilation > 0:
+            kernel_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (dilation * 2 + 1, dilation * 2 + 1))
+            crop_mask = cv2.dilate(crop_mask, kernel_dilate)
+            
         mask[y1:y2, x1:x2] = np.maximum(mask[y1:y2, x1:x2], crop_mask)
         
-    # Gaussian Alpha Feathering làm mềm biên mặt nạ
+    # Gaussian Alpha Feathering làm mịn mượt biên mặt nạ tránh bị gãy răng cưa
     if feather_pixels > 0 and np.any(mask > 0):
         ksize = 2 * feather_pixels + 1
         blurred_mask = cv2.GaussianBlur(mask, (ksize, ksize), 0)

@@ -776,6 +776,9 @@ class Config(QConfig):
     autoHardwareTuning = ConfigItem("Main", "AutoHardwareTuning", True, BoolValidator())
     gpuVideoEncoding = ConfigItem("Main", "GpuVideoEncoding", True, BoolValidator())
     sharpenInpaintedArea = ConfigItem("Main", "SharpenInpaintedArea", True, BoolValidator())
+    maskDilation = RangeConfigItem("Main", "MaskDilation", 8, RangeValidator(0, 50))
+    maskFeather = RangeConfigItem("Main", "MaskFeather", 8, RangeValidator(0, 30))
+    temporalSmoothingRadius = RangeConfigItem("Main", "TemporalSmoothingRadius", 2, RangeValidator(1, 10))
 
 CONFIG_FILE = 'config/config.json'
 if not os.path.exists(CONFIG_FILE):
