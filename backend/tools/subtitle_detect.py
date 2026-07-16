@@ -43,8 +43,25 @@ class SubtitleDetect:
         """RapidOCR 3.x engine (PP-OCRv6 ONNX) — primary, fastest, no hpip needed."""
         try:
             from rapidocr import RapidOCR
-            # Use onnxruntime-gpu if available, fall back to CPU onnxruntime
-            ocr = RapidOCR()
+            import onnxruntime as ort
+            
+            # Tự động phát hiện xem CUDA có sẵn trong ONNX Runtime hay không
+            use_cuda = "CUDAExecutionProvider" in ort.get_available_providers()
+            
+            # Cấu hình tối ưu: chỉ chạy det (phát hiện chữ), bỏ qua cls và rec để chạy nhanh nhất có thể
+            params = {
+                "Global.use_det": True,
+                "Global.use_cls": False,
+                "Global.use_rec": False,
+            }
+            if use_cuda:
+                params["EngineConfig.onnxruntime.use_cuda"] = True
+                params["EngineConfig.onnxruntime.cuda_ep_cfg.device_id"] = 0
+                print("[SubtitleDetect] RapidOCR khoi tao voi tang toc CUDA GPU")
+            else:
+                print("[SubtitleDetect] RapidOCR khoi tao chay tren CPU")
+                
+            ocr = RapidOCR(params=params)
             return ocr
         except Exception as e:
             print(f"[RapidOCR] Not available ({e}), will use PaddleOCR fallback")
@@ -69,12 +86,27 @@ class SubtitleDetect:
         rapid = self._rapidocr
         if rapid is None:
             raise RuntimeError("RapidOCR not available")
-        result, _ = rapid(img)
-        if not result:
+        output = rapid(img)
+        if output is None:
             return []
-        # RapidOCR 3.x returns: [(box_4pts, text, score), ...]
-        # box_4pts = [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
-        dt_boxes = [item[0] for item in result]
+        
+        # Hỗ trợ cả 2 định dạng trả về của RapidOCR tùy thuộc vào cấu hình use_rec
+        if hasattr(output, "boxes") and output.boxes is not None:
+            dt_boxes = output.boxes
+        elif isinstance(output, tuple) and output:
+            result = output[0]
+            if not result:
+                return []
+            dt_boxes = [item[0] for item in result]
+        else:
+            dt_boxes = []
+            
+        if dt_boxes is None or len(dt_boxes) == 0:
+            return []
+            
+        if hasattr(dt_boxes, "tolist"):
+            dt_boxes = dt_boxes.tolist()
+            
         return get_coordinates(dt_boxes)
 
     def _get_coordinates_from_paddle(self, img):
