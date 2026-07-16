@@ -96,6 +96,7 @@ class AdvancedSettingInterface(ScrollArea):
             content=tr["Setting"]["SubtitleYXAxisDifferencePixelDesc"],
             parent=self.subtitle_detection_group
         )
+        self.subtitle_yx_axis_difference_pixel.setToolTip("Độ lệch kích thước tối đa giữa chiều rộng và chiều cao chữ để lọc bỏ các vùng phát hiện nhầm không phải phụ đề.")
         
         self.subtitle_area_deviation_pixel = RangeSettingCard(
             configItem=config.subtitleAreaDeviationPixel,
@@ -104,6 +105,7 @@ class AdvancedSettingInterface(ScrollArea):
             content=tr["Setting"]["SubtitleAreaDeviationPixelDesc"],
             parent=self.subtitle_detection_group
         )
+        self.subtitle_area_deviation_pixel.setToolTip("Độ lệch tối đa của vùng phụ đề cho phép để tránh cắt lẹm vào biên vùng chữ.")
         
         self.subtitle_area_y_axis_difference_pixel = RangeSettingCard(
             configItem=config.subtitleAreaYAxisDifferencePixel,
@@ -112,6 +114,7 @@ class AdvancedSettingInterface(ScrollArea):
             content=tr["Setting"]["SubtitleAreaYAxisDifferencePixelDesc"],
             parent=self.subtitle_detection_group
         )
+        self.subtitle_area_y_axis_difference_pixel.setToolTip("Độ lệch tối đa theo trục Y để gộp nhóm các dòng phụ đề xuất hiện đồng thời.")
 
         self.subtitle_area_pixel_tolerance_y_pixel = RangeSettingCard(
             configItem=config.subtitleAreaPixelToleranceYPixel,
@@ -120,6 +123,7 @@ class AdvancedSettingInterface(ScrollArea):
             content=tr["Setting"]["SubtitleAreaPixelToleranceYPixelDesc"],
             parent=self.subtitle_detection_group
         )
+        self.subtitle_area_pixel_tolerance_y_pixel.setToolTip("Dung sai sai lệch dòng theo trục Y khi xác định vị trí phụ đề ổn định theo chiều dọc.")
 
         self.subtitle_area_pixel_tolerance_x_pixel = RangeSettingCard(
             configItem=config.subtitleAreaPixelToleranceXPixel,
@@ -128,6 +132,7 @@ class AdvancedSettingInterface(ScrollArea):
             content=tr["Setting"]["SubtitleAreaPixelToleranceXPixelDesc"],
             parent=self.subtitle_detection_group
         )
+        self.subtitle_area_pixel_tolerance_x_pixel.setToolTip("Dung sai sai lệch dòng theo trục X khi xác định vùng ngang chứa phụ đề ổn định.")
 
         self.subtitle_timeline_backward_frame_count = RangeSettingCard(
             configItem=config.subtitleTimelineBackwardFrameCount,
@@ -136,6 +141,7 @@ class AdvancedSettingInterface(ScrollArea):
             content=tr["Setting"]["SubtitleTimelineBackwardFrameCountDesc"],
             parent=self.subtitle_detection_group
         )
+        self.subtitle_timeline_backward_frame_count.setToolTip("Số khung hình mở rộng lùi về phía trước dòng thời gian (mặc định: 3 frames) giúp xử lý triệt để hiệu ứng chữ bắt đầu hiện (fade-in).")
 
         self.subtitle_timeline_forward_frame_count = RangeSettingCard(
             configItem=config.subtitleTimelineForwardFrameCount,
@@ -144,6 +150,7 @@ class AdvancedSettingInterface(ScrollArea):
             content=tr["Setting"]["subtitleTimelineForwardFrameCountDesc"],
             parent=self.subtitle_detection_group
         )
+        self.subtitle_timeline_forward_frame_count.setToolTip("Số khung hình mở rộng tiến về phía sau dòng thời gian (mặc định: 3 frames) giúp xử lý triệt để hiệu ứng chữ mờ dần biến mất (fade-out).")
 
         self.sttn_neighbor_stride = RangeSettingCard(
             configItem=config.sttnNeighborStride,
@@ -152,6 +159,7 @@ class AdvancedSettingInterface(ScrollArea):
             content=tr["Setting"]["SttnNeighborStrideDesc"],
             parent=self.sttn_group
         )
+        self.sttn_neighbor_stride.setToolTip("Bước nhảy khung hình lân cận cho mô hình STTN. Giá trị nhỏ hơn sẽ mượt mà hơn nhưng tính toán chậm hơn.")
 
         self.sttn_reference_length = RangeSettingCard(
             configItem=config.sttnReferenceLength,
@@ -160,6 +168,7 @@ class AdvancedSettingInterface(ScrollArea):
             content=tr["Setting"]["SttnReferenceLengthDesc"],
             parent=self.sttn_group
         )
+        self.sttn_reference_length.setToolTip("Số lượng khung hình tham chiếu dài hạn cho mô hình STTN nhằm đồng bộ chi tiết bối cảnh toàn video.")
 
         self.sttn_max_load_num = RangeSettingCard(
             configItem=config.sttnMaxLoadNum,
@@ -168,6 +177,7 @@ class AdvancedSettingInterface(ScrollArea):
             content=tr["Setting"]["SttnMaxLoadNumDesc"],
             parent=self.sttn_group
         )
+        self.sttn_max_load_num.setToolTip("Số khung hình tối đa xử lý đồng thời trong một phân đoạn của STTN. Chỉ có hiệu lực khi tắt tính năng Tự động tối ưu GPU.")
 
         self.propainter_max_load_num = RangeSettingCard(
             configItem=config.propainterMaxLoadNum,
@@ -176,6 +186,7 @@ class AdvancedSettingInterface(ScrollArea):
             content=tr["Setting"]["PropainterMaxLoadNumDesc"],
             parent=self.propainter_group
         )
+        self.propainter_max_load_num.setToolTip("Số khung hình tối đa xử lý đồng thời trong một phân đoạn của ProPainter. Chỉ có hiệu lực khi tắt tính năng Tự động tối ưu GPU.")
 
         # 视频保存路径
         self.save_directory = PushSettingCard(
@@ -185,6 +196,7 @@ class AdvancedSettingInterface(ScrollArea):
             content=tr["Setting"]["SaveDirectoryDefault"] if not config.saveDirectory.value else config.saveDirectory.value,
             parent=self.advanced_group
         )
+        self.save_directory.setToolTip("Chọn đường dẫn thư mục mặc định để xuất và lưu trữ video sau khi xử lý thành công.")
         self.save_directory.clicked.connect(self.choose_save_directory)
 
         self.check_update_on_startup = SwitchSettingCard(
@@ -194,6 +206,7 @@ class AdvancedSettingInterface(ScrollArea):
             content=tr["Setting"]["CheckUpdateOnStartupDesc"],
             parent=self.advanced_group
         )
+        self.check_update_on_startup.setToolTip("Tự động kiểm tra bản cập nhật mới từ GitHub mỗi khi bạn khởi động ứng dụng.")
 
         self.auto_hardware_tuning = SwitchSettingCard(
             configItem=config.autoHardwareTuning,
@@ -202,6 +215,7 @@ class AdvancedSettingInterface(ScrollArea):
             content="Tự động tính toán số frame xử lý tối ưu để tránh tràn VRAM GPU",
             parent=self.advanced_group
         )
+        self.auto_hardware_tuning.setToolTip("Tự động phân tích dung lượng bộ nhớ VRAM thực tế trên card màn hình của bạn để tính toán số khung hình xử lý đồng thời tối ưu nhất, ngăn chặn lỗi tràn VRAM (Out of Memory).")
         self.auto_hardware_tuning.switchButton.checkedChanged.connect(self.on_auto_tuning_changed)
         QtCore.QTimer.singleShot(0, lambda: self.on_auto_tuning_changed(config.autoHardwareTuning.value))
 
@@ -212,6 +226,7 @@ class AdvancedSettingInterface(ScrollArea):
             content="Sử dụng bộ giải mã/mã hóa phần cứng GPU giúp xuất video nhanh gấp 5-10 lần",
             parent=self.advanced_group
         )
+        self.gpu_video_encoding.setToolTip("Kích hoạt chip phần cứng chuyên dụng trên Card NVIDIA (NVENC) để nén và giải nén video trực tiếp, tăng tốc xuất video thành phẩm lên gấp 5 đến 10 lần mà không tiêu tốn tài nguyên CPU.")
 
         self.mask_dilation = RangeSettingCard(
             configItem=config.maskDilation,
@@ -220,6 +235,7 @@ class AdvancedSettingInterface(ScrollArea):
             content="Độ rộng phần giãn nở bao phủ xung quanh viền phụ đề (0-50 px)",
             parent=self.advanced_group
         )
+        self.mask_dilation.setToolTip("Độ giãn nở ra phía ngoài của mặt nạ chữ. Nếu video bị sót lại viền đen của chữ hoặc bóng mờ sau khi xóa, hãy tăng thông số này lên (khuyên dùng: 8-12px).")
 
         self.mask_feather = RangeSettingCard(
             configItem=config.maskFeather,
@@ -228,6 +244,7 @@ class AdvancedSettingInterface(ScrollArea):
             content="Độ làm mềm mượt biên mặt nạ tránh gãy pixel răng cưa (0-30 px)",
             parent=self.advanced_group
         )
+        self.mask_feather.setToolTip("Độ mờ nhòe biên mặt nạ (Alpha Feathering). Giúp làm mượt chuyển tiếp giữa khu vực được lấp đầy nền mới và video gốc, loại bỏ vệt cắt cứng sắc cạnh.")
 
         self.temporal_smoothing_radius = RangeSettingCard(
             configItem=config.temporalSmoothingRadius,
@@ -236,6 +253,7 @@ class AdvancedSettingInterface(ScrollArea):
             content="Bán kính khung hình lân cận để lọc mượt chống nhấp nháy chuyển động (1-10)",
             parent=self.advanced_group
         )
+        self.temporal_smoothing_radius.setToolTip("Bán kính số khung hình liền trước/sau được lấy làm tham chiếu để tính toán mượt hóa thời gian. Số càng lớn lọc nhấp nháy càng tốt nhưng có thể gây bóng mờ trên cảnh chuyển động rất nhanh.")
 
         # 添加反馈链接
         self.feedback = PrimaryPushSettingCard(

@@ -23,6 +23,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
             parent=parent,
             texts=config.intefaceTexts.keys(),
         )
+        self.interface_combo.setToolTip("Chọn ngôn ngữ hiển thị cho giao diện phần mềm.")
         self.addWidget(self.interface_combo)
         
         # 处理模式设置
@@ -34,7 +35,13 @@ class SettingInterface(QtWidgets.QVBoxLayout):
             parent=parent,
             texts=[list(tr['InpaintMode'].values())[i] for i,_ in enumerate(config.inpaintMode.validator.options)],
         )
-        self.inpaint_mode_combo.setToolTip(tr["SubtitleExtractorGUI"]["InpaintModeDesc"])
+        self.inpaint_mode_combo.setToolTip(
+            "Chọn mô hình trí tuệ nhân tạo để xóa phụ đề:\n"
+            "- LaMa: Mô hình tốt nhất cho ảnh tĩnh, hoạt động rất nhanh.\n"
+            "- STTN: Mô hình video trung cấp, đảm bảo tính liên kết thời gian tốt.\n"
+            "- ProPainter: Mô hình video cao cấp nhất, khử nhấp nháy vượt trội.\n"
+            "- OpenCV: Sử dụng thuật toán xử lý ảnh truyền thống, tốc độ cực nhanh nhưng chất lượng cơ bản."
+        )
         self.addWidget(self.inpaint_mode_combo)
 
         self.subtitle_detect_model_combo = ComboBoxSettingCard(
@@ -44,6 +51,11 @@ class SettingInterface(QtWidgets.QVBoxLayout):
             content="",
             parent=parent,
             texts=[list(tr['SubtitleDetectMode'].values())[i] for i,_ in enumerate(config.subtitleDetectMode.validator.options)],
+        )
+        self.subtitle_detect_model_combo.setToolTip(
+            "Chọn mô hình OCR phát hiện phụ đề:\n"
+            "- Server: Mô hình PP-OCRv5 Server có độ chính xác rất cao, khuyên dùng.\n"
+            "- Mobile: Mô hình PP-OCRv5 Mobile dung lượng nhẹ, tốc độ nhanh hơn nhưng dễ bị sót chữ hơn."
         )
         self.addWidget(self.subtitle_detect_model_combo)
 
@@ -55,6 +67,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
             content=tr["Setting"]["HardwareAccelerationDesc"],
             parent=parent
         )
+        self.hardware_acceleration.setToolTip("Bật hoặc Tắt tăng tốc đồ họa phần cứng GPU (CUDA hoặc DirectML).")
         self.addWidget(self.hardware_acceleration)
 
         # 是否启用 Poisson Blending
@@ -65,6 +78,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
             content="Hòa trộn mượt mà bằng thuật toán Poisson Blending",
             parent=parent
         )
+        self.poisson_blending.setToolTip("Sử dụng thuật toán Poisson Blending để hòa trộn mượt mà biên giao thoa giữa vùng được xóa và video gốc, loại bỏ vệt cắt răng cưa.")
         self.addWidget(self.poisson_blending)
 
         # 是否启用 Temporal Smoothing
@@ -75,6 +89,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
             content="Khử nhấp nháy, rung hạt nền bằng bộ lọc thích ứng chuyển động",
             parent=parent
         )
+        self.temporal_smoothing.setToolTip("Khử hiện tượng nhấp nháy hoặc rung hạt nhiễu (flickering) ở vùng inpaint bằng cách nội suy trung bình trọng số thích ứng chuyển động với các khung hình lân cận.")
         self.addWidget(self.temporal_smoothing)
 
         # Whether to sharpen inpainted area
@@ -85,6 +100,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
             content="Làm nét nhẹ vùng nền sau khi xóa phụ đề",
             parent=parent
         )
+        self.sharpen_inpainted_area.setToolTip("Áp dụng bộ lọc Unsharp Mask làm nét cục bộ vùng ảnh sau khi xóa để bù đắp lại các chi tiết bị mờ do quá trình nội suy AI tạo ra.")
         self.addWidget(self.sharpen_inpainted_area)
 
         # 选用的 Mask 类型 (Mask Type)
@@ -96,6 +112,11 @@ class SettingInterface(QtWidgets.QVBoxLayout):
             parent=parent,
             texts=["Nét chữ (Stroke - Sạch nhất, không ghost)", "Hộp chữ nhật (Box - Kiểu cũ)"]
         )
+        self.mask_type_combo.setToolTip(
+            "Chọn phương pháp che phủ dòng chữ:\n"
+            "- Nét chữ (Stroke): Mặt nạ bám khít theo từng nét vẽ của chữ. Giúp giữ nguyên vẹn tối đa nền gốc xung quanh.\n"
+            "- Hộp chữ nhật (Box): Che phủ toàn bộ hộp chữ nhật chứa chữ. Xóa sạch 100% nhưng vùng cần inpaint lớn hơn, dễ gây mờ nền."
+        )
         self.addWidget(self.mask_type_combo)
 
         # GPU / VRAM Info Card
@@ -105,6 +126,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
             content="Đang tối ưu hóa cấu hình hiệu năng...",
             parent=parent
         )
+        self.gpu_info_card.setToolTip("Hiển thị thông tin tên GPU đồ họa, dung lượng VRAM thực tế và hạn mức số khung hình được phân bổ tối đa cho việc xử lý đồng thời.")
         self.addWidget(self.gpu_info_card)
 
         # Listen to config changes to dynamically update GPU / VRAM card info
