@@ -9,8 +9,17 @@ echo   da duoc DONG hoan toan truoc khi tiep tuc.
 echo.
 pause
 echo.
-echo   Dang go cai dat onnxruntime (ban CPU)...
+echo   1. Dang go cai dat onnxruntime (ban CPU)...
 venv\Scripts\pip.exe uninstall -y onnxruntime
+echo.
+echo   2. Dang cai dat lai onnxruntime-gpu==1.17.1 (tuong thich CUDA 11.8)...
+venv\Scripts\pip.exe install --force-reinstall onnxruntime-gpu==1.17.1
+echo.
+echo   3. Dang ha cap numpy ve phien ban 1.x...
+venv\Scripts\pip.exe install "numpy<2"
+echo.
+echo   4. Dang ha cap scipy ve phien ban 1.12.0...
+venv\Scripts\pip.exe install "scipy==1.12.0"
 echo.
 echo ========================================================
 echo   HOAN THANH!
