@@ -285,6 +285,14 @@ class AdvancedSettingInterface(ScrollArea):
             parent=self.about_group
         )
 
+        # Cho phép các nhãn mô tả tự động xuống dòng để giao diện responsive
+        from PySide6.QtWidgets import QWidget
+        for child in self.findChildren(QWidget):
+            if hasattr(child, 'contentLabel'):
+                child.contentLabel.setWordWrap(True)
+            if hasattr(child, 'titleLabel'):
+                child.titleLabel.setWordWrap(True)
+
     def show_message_box(self, title: str, content: str, showYesButton=False, yesSlot=None):
         """ show message box """
         w = MessageBox(title, content, self)
@@ -341,11 +349,11 @@ class AdvancedSettingInterface(ScrollArea):
 
     def retranslateUi(self):
         """Cập nhật lại văn bản hiển thị trên các SettingCard khi đổi ngôn ngữ nóng"""
-        self.subtitle_detection_group.setTitle(tr["Setting"]["SubtitleDetectionSetting"])
-        self.sttn_group.setTitle(tr["Setting"]["SttnSetting"])
-        self.propainter_group.setTitle(tr["Setting"]["ProPainterSetting"])
-        self.advanced_group.setTitle(tr["Setting"]["AdvancedSetting"])
-        self.about_group.setTitle(tr["Setting"]["AboutSetting"])
+        self.subtitle_detection_group.titleLabel.setText(tr["Setting"]["SubtitleDetectionSetting"])
+        self.sttn_group.titleLabel.setText(tr["Setting"]["SttnSetting"])
+        self.propainter_group.titleLabel.setText(tr["Setting"]["ProPainterSetting"])
+        self.advanced_group.titleLabel.setText(tr["Setting"]["AdvancedSetting"])
+        self.about_group.titleLabel.setText(tr["Setting"]["AboutSetting"])
 
         self.subtitle_yx_axis_difference_pixel.setTitle(tr["Setting"]["SubtitleYXAxisDifferencePixel"])
         self.subtitle_yx_axis_difference_pixel.setContent(tr["Setting"]["SubtitleYXAxisDifferencePixelDesc"])

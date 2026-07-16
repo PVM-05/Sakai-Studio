@@ -74,8 +74,8 @@ class SettingInterface(QtWidgets.QVBoxLayout):
         self.poisson_blending = SwitchSettingCard(
             configItem=config.poissonBlending,
             icon=FluentIcon.BRUSH, 
-            title="Poisson Blending (泊松融合)",
-            content="Hòa trộn mượt mà bằng thuật toán Poisson Blending",
+            title=tr["Setting"]["PoissonBlending"],
+            content=tr["Setting"]["PoissonBlendingDesc"],
             parent=parent
         )
         self.poisson_blending.setToolTip("Sử dụng thuật toán Poisson Blending để hòa trộn mượt mà biên giao thoa giữa vùng được xóa và video gốc, loại bỏ vệt cắt răng cưa.")
@@ -134,6 +134,14 @@ class SettingInterface(QtWidgets.QVBoxLayout):
         config.propainterMaxLoadNum.valueChanged.connect(self.update_gpu_info)
         config.sttnMaxLoadNum.valueChanged.connect(self.update_gpu_info)
         self.update_gpu_info()
+
+        # Cho phép các nhãn mô tả tự động xuống dòng để giao diện responsive
+        from PySide6.QtWidgets import QWidget
+        for child in self.findChildren(QWidget):
+            if hasattr(child, 'contentLabel'):
+                child.contentLabel.setWordWrap(True)
+            if hasattr(child, 'titleLabel'):
+                child.titleLabel.setWordWrap(True)
 
         # 如果硬件加速选项被禁用, 设置硬件加速为False并只读
         if not HARDWARD_ACCELERATION_OPTION:
@@ -236,7 +244,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
             self.hardware_acceleration.setContent(tr["Setting"]["HardwareAccelerationDesc"])
         self.hardware_acceleration.setToolTip(tr["Setting"].get("HardwareAccelerationTooltip", "GPU acceleration"))
         
-        self.poisson_blending.setTitle("Poisson Blending (泊松融合)")
+        self.poisson_blending.setTitle(tr["Setting"]["PoissonBlending"])
         self.poisson_blending.setContent(tr["Setting"]["PoissonBlendingDesc"])
         self.poisson_blending.setToolTip(tr["Setting"]["PoissonBlendingTooltip"])
         

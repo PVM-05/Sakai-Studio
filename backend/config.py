@@ -802,7 +802,7 @@ elif isinstance(_detect_mode_value, str) and _detect_mode_value in ("精准", "P
     config.set(config.subtitleDetectMode, SubtitleDetectMode.PP_OCRv5_SERVER)
 
 # Load translation configurations
-tr = configparser.ConfigParser()
+tr = configparser.ConfigParser(interpolation=None)
 TRANSLATION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'interface', f"{config.interface.value}.ini")
 tr.read(TRANSLATION_FILE, encoding='utf-8')
 

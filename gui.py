@@ -75,8 +75,8 @@ class SubtitleExtractorGUI(FluentWindow):
             
             # 3. Cập nhật tiêu đề các tab phụ trong Navigation Bar
             try:
-                self.navigationInterface.setItemText(self.homeInterface.objectName(), tr['SubtitleExtractorGUI']['Title'])
-                self.navigationInterface.setItemText(self.advancedSettingInterface.objectName(), tr['Setting']['AdvancedSetting'])
+                self.navigationInterface.widget(self.homeInterface.objectName()).setText(tr['SubtitleExtractorGUI']['Title'])
+                self.navigationInterface.widget(self.advancedSettingInterface.objectName()).setText(tr['Setting']['AdvancedSetting'])
             except Exception as e:
                 print("Lỗi đổi nhãn Navigation:", e)
             
