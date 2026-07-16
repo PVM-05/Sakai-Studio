@@ -1,0 +1,41 @@
+{
+    "Main": {
+        "AutoHardwareTuning": false,
+        "CheckUpdateOnStartup": true,
+        "GpuVideoEncoding": true,
+        "HardwareAcceleration": true,
+        "InpaintMode": "sttn-auto",
+        "MaskType": "stroke",
+        "PoissonBlending": true,
+        "SaveDirectory": "",
+        "SubtitleAreaDeviationPixel": 5,
+        "SubtitleAreaPixelToleranceXPixel": 20,
+        "SubtitleAreaPixelToleranceYPixel": 20,
+        "SubtitleAreaYAxisDifferencePixel": 20,
+        "SubtitleDetectMode": "PP_OCRv5_SERVER",
+        "SubtitleSelectionAreas": "0.7259,0.7685,0.3705,0.5819",
+        "SubtitleTimelineBackwardFrameCount": 4,
+        "subtitleTimelineForwardFrameCount": 3,
+        "SubtitleYXAxisDifferencePixel": 20,
+        "TemporalSmoothing": true
+    },
+    "Window": {
+        "Interface": "vi",
+        "Height": 1032,
+        "Width": 1920,
+        "X": 0,
+        "Y": -8
+    },
+    "ProPainter": {
+        "MaxLoadNum": 70
+    },
+    "Sttn": {
+        "MaxLoadNum": 150,
+        "NeighborStride": 3,
+        "ReferenceLength": 15
+    },
+    "QFluentWidgets": {
+        "ThemeColor": "#ff009faa",
+        "ThemeMode": "Light"
+    }
+}

@@ -1,0 +1,80 @@
+# Video Subtitle Remover Pro - Dependencies
+# ==========================================
+
+# Core
+# opencv-python >= 4.12.0 patches CVE-2025-53644 (uninitialised pointer in
+# JPEG read can become an arbitrary heap write on a crafted file).
+# Pillow >= 12.2.0 patches CVE-2026-25990 (PSD loader OOB write),
+# GHSA-wjx4-4jcj-g98j (JPEG2000 decode OOB read),
+# GHSA-pwv6-vv43-88gr (BLP loader heap overflow), and
+# GHSA-whj4-6x5x-4v2j (TIFF IFD loop DoS).
+#
+# OpenCV 5 upgrade path: opencv-python >= 5.0 enables the built-in
+# cv2.dnn LaMa inpaint backend, which needs only OpenCV + numpy (no
+# onnxruntime, no torch). Download the model from
+# https://huggingface.co/opencv/inpainting_lama and set
+# VSR_OPENCV_LAMA=path/to/inpainting_lama_2025jan.onnx, or place it in
+# %APPDATA%/VideoSubtitleRemoverPro/models/ for auto-discovery. The
+# 4.x floor is kept for users who have not upgraded yet.
+numpy>=1.21.0
+opencv-python>=4.12.0
+Pillow>=12.2.0
+
+# AI/ML Frameworks (choose based on your GPU)
+# ------------------------------------------
+# IMPORTANT: torch >= 2.10.0 is required.
+# CVE-2026-24747 / CVE-2025-32434: torch.load weights_only RCE in PyTorch
+# 2.9.1 and earlier. simple-lama-inpainting loads weights via torch.load,
+# so this is a runtime concern, not just a transitive-dependency one.
+
+# Python compatibility: torch 2.7+ supports Python 3.9-3.13 for Windows
+# CUDA wheels. Python 3.14 currently resolves CPU-only torch on Windows;
+# setup.py blocks that NVIDIA path unless VSR_ALLOW_PY314_CPU=1 is set.
+
+# For NVIDIA RTX 20/30/40-series (Turing/Ampere/Ada):
+# pip install torch>=2.10.0 torchvision>=0.25.0 --index-url https://download.pytorch.org/whl/cu128
+# pip install paddlepaddle-gpu==3.0.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu118/
+# pip install onnxruntime-gpu>=1.21.0
+
+# For NVIDIA RTX 50-series (Blackwell, sm_120 -- e.g. RTX 5070/5080/5090):
+# Blackwell needs CUDA 12.8 wheels. The cu118/cu121 builds have no Blackwell
+# kernels and do not carry the current torch security floor.
+# pip install torch>=2.10.0 torchvision>=0.25.0 --index-url https://download.pytorch.org/whl/cu128
+# pip install paddlepaddle-gpu==3.0.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
+# pip install onnxruntime-gpu>=1.21.0
+# (Run_VSR_Pro.bat / setup.py use cu128 for NVIDIA PyTorch wheels.)
+# CUDA 13 ONNX Runtime wheels are currently a nightly/custom-channel path,
+# not the stable PyPI default.
+
+# For AMD/Intel (DirectML via ONNX Runtime):
+# pip install onnxruntime-directml>=1.18.0
+# Intel CPU/iGPU users can add OpenVINO for RapidOCR:
+# pip install openvino>=2025.0.0
+# pip install torch>=2.10.0 torchvision>=0.25.0 --index-url https://download.pytorch.org/whl/cpu
+# pip install paddlepaddle==3.0.0 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
+
+# For CPU only:
+# pip install torch>=2.10.0 torchvision>=0.25.0 --index-url https://download.pytorch.org/whl/cpu
+# pip install paddlepaddle==3.0.0 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
+
+# Text Detection (install at least one, listed in priority order)
+# OCR engines are capped to their tested major versions; numpy/opencv stay
+# uncapped because the OpenCV 5 DNN path is the documented upgrade route.
+# RapidOCR runs PP-OCR via ONNX Runtime by default, can use OpenVINO when
+# openvino is installed on CPU/Intel systems, and stays free of the upstream
+# paddlepaddle memory-leak issues.
+rapidocr>=2.0.0,<4.0.0; python_version>="3.10"
+rapidocr-onnxruntime>=1.4.0,<2.0.0; python_version<"3.10"
+paddleocr>=3.0.0,<4.0.0
+# surya-ocr>=0.9.0  # Optional: fast layout-aware detection (GPL -- see license)
+easyocr>=1.7.0
+
+# Real AI Inpainting (LAMA mode)
+# simple-lama-inpainting is now an optional fallback dependency. The
+# preferred backends (ONNX Runtime or OpenCV 5 DNN) avoid the torch.load
+# CVE surface entirely. Install simple-lama-inpainting only if neither
+# onnxruntime nor opencv-python >= 5.0 is available.
+simple-lama-inpainting>=0.1.0
+
+# GUI Enhancement (optional)
+# tkinterdnd2>=0.3.0  # For native drag-drop support
