@@ -266,9 +266,10 @@ class SubtitleRemover:
                             for batch in batch_generator(temp_frames, self.get_adaptive_propainter_max_load()):
                                 # 2. 调用批推理
                                 if len(batch) == 1:
-                                    single_mask = self.get_mask(frame, sub_list[start_frame_no])
-                                    inpainted_frame = self.lama_inpaint.inpaint(frame, single_mask)
-                                    inpainted_frame = self.apply_sharpening_to_inpainted_frame(frame, inpainted_frame, single_mask)
+                                    single_frame = batch[0]
+                                    single_mask = self.get_mask(single_frame, sub_list[start_frame_no])
+                                    inpainted_frame = self.lama_inpaint.inpaint(single_frame, single_mask)
+                                    inpainted_frame = self.apply_sharpening_to_inpainted_frame(single_frame, inpainted_frame, single_mask)
                                     self.video_writer.write(inpainted_frame)
                                     # self.append_output(f'write frame: {start_frame_no + inner_index} with mask {sub_list[start_frame_no]}')
                                     inner_index += 1
