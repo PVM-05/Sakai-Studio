@@ -286,12 +286,18 @@ class AdvancedSettingInterface(ScrollArea):
         )
 
         # Cho phép các nhãn mô tả tự động xuống dòng để giao diện responsive
-        from PySide6.QtWidgets import QWidget
+        from PySide6.QtWidgets import QWidget, QSizePolicy
         for child in self.findChildren(QWidget):
-            if hasattr(child, 'contentLabel'):
-                child.contentLabel.setWordWrap(True)
-            if hasattr(child, 'titleLabel'):
-                child.titleLabel.setWordWrap(True)
+            if hasattr(child, 'contentLabel') or hasattr(child, 'titleLabel'):
+                child.setMinimumHeight(70)
+                child.setMaximumHeight(16777215)
+                child.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+                if hasattr(child, 'contentLabel'):
+                    child.contentLabel.setWordWrap(True)
+                    child.contentLabel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+                if hasattr(child, 'titleLabel'):
+                    child.titleLabel.setWordWrap(True)
+                    child.titleLabel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
 
     def show_message_box(self, title: str, content: str, showYesButton=False, yesSlot=None):
         """ show message box """
