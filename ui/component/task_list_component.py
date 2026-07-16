@@ -453,7 +453,16 @@ class TaskListComponent(QWidget):
         for row, task in enumerate(self.tasks):
             item0 = QTableWidgetItem(task.name)
             item1 = QTableWidgetItem(f"{task.progress}%")
-            item2 = QTableWidgetItem(task.status.value)
+            
+            # Lấy trạng thái đã dịch tương ứng
+            status_map = {
+                TaskStatus.PENDING: tr['TaskList']['Pending'],
+                TaskStatus.PROCESSING: tr['TaskList']['Processing'],
+                TaskStatus.COMPLETED: tr['TaskList']['Completed'],
+                TaskStatus.FAILED: tr['TaskList']['Failed']
+            }
+            status_text = status_map.get(task.status, task.status.value)
+            item2 = QTableWidgetItem(status_text)
             
             item0.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
             item0.setToolTip(task.path)
@@ -499,3 +508,12 @@ class TaskListComponent(QWidget):
         self.tasks[row], self.tasks[row+1] = self.tasks[row+1], self.tasks[row]
         self.refresh_table()
         self.table.selectRow(row+1)
+
+    def retranslateUi(self):
+        """Cập nhật tiêu đề bảng hàng đợi khi thay đổi ngôn ngữ nóng"""
+        self.table.setHorizontalHeaderLabels([
+            tr['TaskList']['Name'], 
+            tr['TaskList']['Progress'], 
+            tr['TaskList']['Status']
+        ])
+        self.refresh_table()

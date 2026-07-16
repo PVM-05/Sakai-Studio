@@ -729,7 +729,7 @@ class Config(QConfig):
         'Tiếng Việt': 'vi',
         'Español': 'es'
     }
-    interface = OptionsConfigItem("Window", "Interface", "ch", OptionsValidator(intefaceTexts.values()), restart = True)
+    interface = OptionsConfigItem("Window", "Interface", "ch", OptionsValidator(intefaceTexts.values()))
     
     # Window position and size
     windowX = ConfigItem("Window", "X", None)

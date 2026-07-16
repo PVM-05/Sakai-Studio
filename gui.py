@@ -60,6 +60,38 @@ class SubtitleExtractorGUI(FluentWindow):
 
     def _connectSignalToSlot(self):
         config.appRestartSig.connect(self._showRestartTooltip)
+        config.interface.valueChanged.connect(self.change_language)
+
+    def change_language(self, language):
+        """Thay đổi ngôn ngữ nóng tức thì không cần khởi động lại ứng dụng"""
+        try:
+            # 1. Nạp lại file dịch thuật tương ứng từ backend/interface/
+            translation_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backend', 'interface', f"{language}.ini")
+            if os.path.exists(translation_file):
+                tr.read(translation_file, encoding='utf-8')
+            
+            # 2. Cập nhật tiêu đề cửa sổ chính
+            self.setWindowTitle(tr['SubtitleExtractorGUI']['Title'] + " v" + VERSION)
+            
+            # 3. Cập nhật tiêu đề các tab phụ trong Navigation Bar
+            try:
+                self.navigationInterface.setItemText(self.homeInterface.objectName(), tr['SubtitleExtractorGUI']['Title'])
+                self.navigationInterface.setItemText(self.advancedSettingInterface.objectName(), tr['Setting']['AdvancedSetting'])
+            except Exception as e:
+                print("Lỗi đổi nhãn Navigation:", e)
+            
+            # 4. Gọi cập nhật giao diện nóng cho các component con
+            self.homeInterface.retranslateUi()
+            
+            # 5. Hiển thị thông báo góc màn hình đổi thành công
+            InfoBar.success(
+                title=tr['SubtitleExtractorGUI']['Title'],
+                content="Thay đổi ngôn ngữ thành công! / Language changed successfully!",
+                duration=3000,
+                parent=self
+            )
+        except Exception as e:
+            print(f"Lỗi khi chuyển đổi ngôn ngữ nóng: {str(e)}")
 
     def _showRestartTooltip(self):
         """ show restart tooltip """

@@ -338,3 +338,86 @@ class AdvancedSettingInterface(ScrollArea):
         """Khi bật/tắt tự động tinh chỉnh phần cứng, ta vô hiệu hóa/kích hoạt các thanh trượt thủ công"""
         self.sttn_max_load_num.setEnabled(not checked)
         self.propainter_max_load_num.setEnabled(not checked)
+
+    def retranslateUi(self):
+        """Cập nhật lại văn bản hiển thị trên các SettingCard khi đổi ngôn ngữ nóng"""
+        self.subtitle_detection_group.setTitle(tr["Setting"]["SubtitleDetectionSetting"])
+        self.sttn_group.setTitle(tr["Setting"]["SttnSetting"])
+        self.propainter_group.setTitle(tr["Setting"]["ProPainterSetting"])
+        self.advanced_group.setTitle(tr["Setting"]["AdvancedSetting"])
+        self.about_group.setTitle(tr["Setting"]["AboutSetting"])
+
+        self.subtitle_yx_axis_difference_pixel.setTitle(tr["Setting"]["SubtitleYXAxisDifferencePixel"])
+        self.subtitle_yx_axis_difference_pixel.setContent(tr["Setting"]["SubtitleYXAxisDifferencePixelDesc"])
+        self.subtitle_yx_axis_difference_pixel.setToolTip("Độ lệch kích thước tối đa giữa chiều rộng và chiều cao chữ để lọc bỏ các vùng phát hiện nhầm không phải phụ đề.")
+
+        self.subtitle_area_deviation_pixel.setTitle(tr["Setting"]["SubtitleAreaDeviationPixel"])
+        self.subtitle_area_deviation_pixel.setContent(tr["Setting"]["SubtitleAreaDeviationPixelDesc"])
+        self.subtitle_area_deviation_pixel.setToolTip("Độ lệch tối đa của vùng phụ đề cho phép để tránh cắt lẹm vào biên vùng chữ.")
+
+        self.subtitle_area_y_axis_difference_pixel.setTitle(tr["Setting"]["SubtitleAreaYAxisDifferencePixel"])
+        self.subtitle_area_y_axis_difference_pixel.setContent(tr["Setting"]["SubtitleAreaYAxisDifferencePixelDesc"])
+        self.subtitle_area_y_axis_difference_pixel.setToolTip("Độ lệch tối đa theo trục Y để gộp nhóm các dòng phụ đề xuất hiện đồng thời.")
+
+        self.subtitle_area_pixel_tolerance_y_pixel.setTitle(tr["Setting"]["SubtitleAreaPixelToleranceYPixel"])
+        self.subtitle_area_pixel_tolerance_y_pixel.setContent(tr["Setting"]["SubtitleAreaPixelToleranceYPixelDesc"])
+        self.subtitle_area_pixel_tolerance_y_pixel.setToolTip("Dung sai sai lệch dòng theo trục Y khi xác định vị trí phụ đề ổn định theo chiều dọc.")
+
+        self.subtitle_area_pixel_tolerance_x_pixel.setTitle(tr["Setting"]["SubtitleAreaPixelToleranceXPixel"])
+        self.subtitle_area_pixel_tolerance_x_pixel.setContent(tr["Setting"]["SubtitleAreaPixelToleranceXPixelDesc"])
+        self.subtitle_area_pixel_tolerance_x_pixel.setToolTip("Dung sai sai lệch dòng theo trục X khi xác định vùng ngang chứa phụ đề ổn định.")
+
+        self.subtitle_timeline_backward_frame_count.setTitle(tr["Setting"]["SubtitleTimelineBackwardFrameCount"])
+        self.subtitle_timeline_backward_frame_count.setContent(tr["Setting"]["SubtitleTimelineBackwardFrameCountDesc"])
+        self.subtitle_timeline_backward_frame_count.setToolTip("Số khung hình mở rộng lùi về phía trước dòng thời gian (mặc định: 3 frames) giúp xử lý triệt để hiệu ứng chữ bắt đầu hiện (fade-in).")
+
+        self.subtitle_timeline_forward_frame_count.setTitle(tr["Setting"]["subtitleTimelineForwardFrameCount"])
+        self.subtitle_timeline_forward_frame_count.setContent(tr["Setting"]["subtitleTimelineForwardFrameCountDesc"])
+        self.subtitle_timeline_forward_frame_count.setToolTip("Số khung hình mở rộng tiến về phía sau dòng thời gian (mặc định: 3 frames) giúp xử lý triệt để hiệu ứng chữ mờ dần biến mất (fade-out).")
+
+        self.sttn_neighbor_stride.setTitle(tr["Setting"]["SttnNeighborStride"])
+        self.sttn_neighbor_stride.setContent(tr["Setting"]["SttnNeighborStrideDesc"])
+        self.sttn_neighbor_stride.setToolTip("Bước nhảy khung hình lân cận cho mô hình STTN. Giá trị nhỏ hơn sẽ mượt mà hơn nhưng tính toán chậm hơn.")
+
+        self.sttn_reference_length.setTitle(tr["Setting"]["SttnReferenceLength"])
+        self.sttn_reference_length.setContent(tr["Setting"]["SttnReferenceLengthDesc"])
+        self.sttn_reference_length.setToolTip("Số lượng khung hình tham chiếu dài hạn cho mô hình STTN nhằm đồng bộ chi tiết bối cảnh toàn video.")
+
+        self.sttn_max_load_num.setTitle(tr["Setting"]["SttnMaxLoadNum"])
+        self.sttn_max_load_num.setContent(tr["Setting"]["SttnMaxLoadNumDesc"])
+        self.sttn_max_load_num.setToolTip("Số khung hình tối đa xử lý đồng thời trong một phân đoạn của STTN. Chỉ có hiệu lực khi tắt tính năng Tự động tối ưu GPU.")
+
+        self.propainter_max_load_num.setTitle(tr["Setting"]["PropainterMaxLoadNum"])
+        self.propainter_max_load_num.setContent(tr["Setting"]["PropainterMaxLoadNumDesc"])
+        self.propainter_max_load_num.setToolTip("Số khung hình tối đa xử lý đồng thời trong một phân đoạn của ProPainter. Chỉ có hiệu lực khi tắt tính năng Tự động tối ưu GPU.")
+
+        self.save_directory.setTitle(tr["Setting"]["SaveDirectory"])
+        self.save_directory.setContent(tr["Setting"]["SaveDirectoryDefault"] if not config.saveDirectory.value else config.saveDirectory.value)
+        self.save_directory.setToolTip("Chọn đường dẫn thư mục mặc định để xuất và lưu trữ video sau khi xử lý thành công.")
+
+        self.check_update_on_startup.setTitle(tr["Setting"]["CheckUpdateOnStartup"])
+        self.check_update_on_startup.setContent(tr["Setting"]["CheckUpdateOnStartupDesc"])
+        self.check_update_on_startup.setToolTip("Tự động kiểm tra bản cập nhật mới từ GitHub mỗi khi bạn khởi động ứng dụng.")
+
+        self.mask_dilation.setTitle(tr["Setting"]["MaskDilation"])
+        self.mask_dilation.setContent(tr["Setting"]["MaskDilationDesc"])
+        self.mask_dilation.setToolTip(tr["Setting"]["MaskDilationTooltip"])
+
+        self.mask_feather.setTitle(tr["Setting"]["MaskFeather"])
+        self.mask_feather.setContent(tr["Setting"]["MaskFeatherDesc"])
+        self.mask_feather.setToolTip(tr["Setting"]["MaskFeatherTooltip"])
+
+        self.temporal_smoothing_radius.setTitle(tr["Setting"]["TemporalSmoothingRadius"])
+        self.temporal_smoothing_radius.setContent(tr["Setting"]["TemporalSmoothingRadiusDesc"])
+        self.temporal_smoothing_radius.setToolTip(tr["Setting"]["TemporalSmoothingRadiusTooltip"])
+
+        self.feedback.setTitle(tr["Setting"]["FeedbackTitle"])
+        self.feedback.setContent(tr["Setting"]["FeedbackDesc"])
+        self.feedback.button.setText(tr["Setting"]["FeedbackButton"])
+
+        self.copyright.setTitle(tr["Setting"]["CopyrightTitle"])
+        self.copyright.setContent(tr["Setting"]["CopyrightDesc"].format(VERSION))
+        self.copyright.button.setText(tr["Setting"]["CopyrightButton"])
+
+        self.project_link.setTitle(tr["Setting"]["ProjectLinkTitle"])
+        self.project_link.setContent(tr["Setting"]["ProjectLinkDesc"])

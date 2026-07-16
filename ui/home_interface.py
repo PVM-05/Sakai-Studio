@@ -756,4 +756,14 @@ class HomeInterface(QWidget):
                 self.task_list_component.add_task(path)
                 index = max(0, self.task_list_component.find_task_index_by_path(path))
                 self.task_list_component.select_task(index)
+
+    def retranslateUi(self):
+        """Cập nhật giao diện của HomeInterface khi đổi ngôn ngữ nóng"""
+        self.file_button.setText(tr['SubtitleExtractorGUI']['Open'])
+        self.add_area_button.setText(tr['Setting']['AddArea'])
+        self.add_area_button.setToolTip(tr['Setting']['AddAreaTooltip'])
+        self.run_button.setText(tr['SubtitleExtractorGUI']['Run'])
+        self.stop_button.setText(tr['SubtitleExtractorGUI']['Stop'])
+        self.setting_interface.retranslateUi()
+        self.task_list_component.retranslateUi()
     
