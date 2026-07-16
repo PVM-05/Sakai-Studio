@@ -195,11 +195,10 @@ class AdvancedSettingInterface(ScrollArea):
         self.auto_hardware_tuning = SwitchSettingCard(
             configItem=config.autoHardwareTuning,
             icon=FluentIcon.SPEED_HIGH,
-            title="Tự động tối ưu hóa hiệu năng theo GPU (Auto Hardware Tuning)",
-            content="Tự động tính toán số lượng frame xử lý (MaxLoadNum) tối ưu cho ProPainter và STTN để đạt chất lượng cao nhất mà không bị tràn VRAM.",
+            title="Tối ưu hóa hiệu năng theo GPU (Auto Hardware Tuning)",
+            content="Tự động tính toán số frame xử lý tối ưu để tránh tràn VRAM GPU",
             parent=self.advanced_group
         )
-        self.auto_hardware_tuning.contentLabel.setWordWrap(True)
         self.auto_hardware_tuning.switchButton.checkedChanged.connect(self.on_auto_tuning_changed)
         QtCore.QTimer.singleShot(0, lambda: self.on_auto_tuning_changed(config.autoHardwareTuning.value))
 
@@ -207,10 +206,9 @@ class AdvancedSettingInterface(ScrollArea):
             configItem=config.gpuVideoEncoding,
             icon=FluentIcon.VIDEO,
             title="Tăng tốc xuất video bằng GPU (GPU Hardware Encoding)",
-            content="Sử dụng bộ giải mã/mã hóa phần cứng của GPU (h264_nvenc, h264_amf, h264_qsv) để xuất video nhanh gấp 5 - 10 lần.",
+            content="Sử dụng bộ giải mã/mã hóa phần cứng GPU giúp xuất video nhanh gấp 5-10 lần",
             parent=self.advanced_group
         )
-        self.gpu_video_encoding.contentLabel.setWordWrap(True)
 
         # 添加反馈链接
         self.feedback = PrimaryPushSettingCard(

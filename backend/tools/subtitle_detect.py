@@ -1,4 +1,6 @@
 import sys
+import logging
+logging.getLogger("RapidOCR").setLevel(logging.ERROR)
 from functools import cached_property
 
 import cv2
