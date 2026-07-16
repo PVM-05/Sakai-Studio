@@ -67,6 +67,9 @@ def _rapidocr_directml_params(device: str) -> Optional[Dict[str, Any]]:
         )
         return None
     return {
+        "Global.use_det": True,
+        "Global.use_cls": False,
+        "Global.use_rec": False,
         "EngineConfig.onnxruntime.use_dml": True,
         "EngineConfig.onnxruntime.use_cuda": False,
         "EngineConfig.onnxruntime.use_cann": False,
@@ -113,6 +116,9 @@ def _rapidocr_openvino_params(rapid_module, device: str) -> Optional[Dict[str, A
             )
         return None
     return {
+        "Global.use_det": True,
+        "Global.use_cls": False,
+        "Global.use_rec": False,
         "Det.engine_type": openvino_type,
         "Cls.engine_type": openvino_type,
         "Rec.engine_type": openvino_type,
@@ -132,6 +138,24 @@ def _build_rapidocr(rapid_cls, device: str, rapid_module=None):
                 "RapidOCR OpenVINO engine init failed; retrying ONNX "
                 f"Runtime provider: {exc}"
             )
+            
+    # CUDA GPU path
+    if "cuda" in str(device).lower():
+        cuda_params = {
+            "Global.use_det": True,
+            "Global.use_cls": False,
+            "Global.use_rec": False,
+            "EngineConfig.onnxruntime.use_cuda": True,
+            "EngineConfig.onnxruntime.cuda_ep_cfg.device_id": 0,
+        }
+        try:
+            return rapid_cls(params=cuda_params), "CUDA"
+        except Exception as exc:
+            logger.warning(
+                "RapidOCR CUDA provider init failed; retrying DirectML/CPU "
+                f"provider: {exc}"
+            )
+
     directml_params = _rapidocr_directml_params(device)
     if directml_params:
         try:
@@ -142,9 +166,16 @@ def _build_rapidocr(rapid_cls, device: str, rapid_module=None):
                 f"provider: {exc}"
             )
     try:
-        return rapid_cls(), "CPU"
-    except TypeError:
-        return rapid_cls(params={}), "CPU"
+        return rapid_cls(params={
+            "Global.use_det": True,
+            "Global.use_cls": False,
+            "Global.use_rec": False,
+        }), "CPU"
+    except Exception:
+        try:
+            return rapid_cls(), "CPU"
+        except TypeError:
+            return rapid_cls(params={}), "CPU"
 
 
 class SubtitleDetector:
@@ -704,11 +735,17 @@ def probe_language(frame: np.ndarray,
     texts = []
     confs = []
     try:
+        # GPU / CUDA acceleration check
+        params = {}
+        if "cuda" in str(device).lower():
+            params = {
+                "EngineConfig.onnxruntime.use_cuda": True,
+                "EngineConfig.onnxruntime.cuda_ep_cfg.device_id": 0,
+            }
         try:
-            from rapidocr import RapidOCR
-        except ImportError:
-            from rapidocr_onnxruntime import RapidOCR
-        ocr = RapidOCR()
+            ocr = RapidOCR(params=params)
+        except Exception:
+            ocr = RapidOCR()
         output = ocr(crop)
         results = output[0] if isinstance(output, tuple) and output else output
         if results:
