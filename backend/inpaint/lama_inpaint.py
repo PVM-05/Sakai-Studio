@@ -109,8 +109,8 @@ class LamaInpaint:
                     
                     # Xác định phương pháp hòa trộn dựa trên cấu hình
                     use_poisson = False
-                    if getattr(config, 'config', None) and hasattr(config.config, 'poissonBlending'):
-                        use_poisson = config.config.poissonBlending.value
+                    if hasattr(config, 'poissonBlending'):
+                        use_poisson = config.poissonBlending.value
                     method = 'poisson' if use_poisson else 'feather'
                     
                     original_crop = frame[inpaint_area[k][0]:inpaint_area[k][1], :, :]
