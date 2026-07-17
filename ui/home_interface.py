@@ -752,17 +752,47 @@ class HomeInterface(QWidget):
             from backend.tools.hardware_accelerator import HardwareAccelerator
             from backend.main import ModelCacheManager
             
+            model_config = ModelConfig()
+            device = HardwareAccelerator.instance().device
+
             if inpaint_mode == InpaintMode.OPENCV:
                 inpainter = OpenCVInpaint()
                 inpainted_frame = inpainter(preview_frame, combined_mask)
-            else:
-                # Đối với LAMA hoặc STTN/ProPainter (fallback về LAMA vì LAMA xóa ảnh đơn tốt nhất)
-                model_config = ModelConfig()
+            elif inpaint_mode == InpaintMode.LAMA:
                 def load_lama():
                     model_path = os.path.join(model_config.LAMA_MODEL_DIR, 'big-lama.pt')
-                    device = HardwareAccelerator.instance().device
                     return LamaInpaint(device, model_path)
-                
+                lama_model = ModelCacheManager.get_model("lama", load_lama)
+                inpainted_frame = lama_model(preview_frame, combined_mask)
+            elif inpaint_mode == InpaintMode.STTN_DET:
+                from backend.inpaint.sttn_det_inpaint import STTNDetInpaint
+                def load_sttn_det():
+                    return STTNDetInpaint(device, model_config.STTN_DET_MODEL_PATH)
+                sttn_model = ModelCacheManager.get_model("sttn_det", load_sttn_det)
+                frames = [preview_frame.copy() for _ in range(5)]
+                inpainted_frames = sttn_model(frames, combined_mask)
+                inpainted_frame = inpainted_frames[2]
+            elif inpaint_mode == InpaintMode.STTN_AUTO:
+                from backend.inpaint.sttn_auto_inpaint import STTNInpaint
+                def load_sttn_auto():
+                    return STTNInpaint(device, model_config.STTN_AUTO_MODEL_PATH)
+                sttn_model = ModelCacheManager.get_model("sttn_auto", load_sttn_auto)
+                frames = [preview_frame.copy() for _ in range(5)]
+                inpainted_frames = sttn_model(combined_mask, input_frames=frames)
+                inpainted_frame = inpainted_frames[2]
+            elif inpaint_mode == InpaintMode.PROPAINTER:
+                from backend.inpaint.propainter_inpaint import PropainterInpaint
+                def load_propainter():
+                    return PropainterInpaint(device, model_config.PROPAINTER_MODEL_DIR)
+                propainter_model = ModelCacheManager.get_model("propainter", load_propainter)
+                frames = [preview_frame.copy() for _ in range(5)]
+                inpainted_frames = propainter_model.inpaint(frames, combined_mask)
+                inpainted_frame = inpainted_frames[2]
+            else:
+                # Fallback to LAMA if unknown mode
+                def load_lama():
+                    model_path = os.path.join(model_config.LAMA_MODEL_DIR, 'big-lama.pt')
+                    return LamaInpaint(device, model_path)
                 lama_model = ModelCacheManager.get_model("lama", load_lama)
                 inpainted_frame = lama_model(preview_frame, combined_mask)
                 
