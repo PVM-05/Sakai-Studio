@@ -792,65 +792,103 @@ class HomeInterface(QWidget):
                 device = HardwareAccelerator.instance().device
                 self.append_log_signal.emit([f"Thiết bị xử lý: {device} ({_time.time()-_t0:.1f}s)"])
 
-                if inpaint_mode == InpaintMode.OPENCV:
-                    inpainter = OpenCVInpaint()
-                    inpainted_frame = inpainter(preview_frame, combined_mask)
-                elif inpaint_mode == InpaintMode.LAMA:
-                    self.append_log_signal.emit(["Đang nạp mô hình LAMA..."])
-                    def load_lama():
-                        model_path = os.path.join(model_config.LAMA_MODEL_DIR, 'big-lama.pt')
-                        return LamaInpaint(device, model_path)
-                    lama_model = ModelCacheManager.get_model("lama", load_lama)
-                    self.append_log_signal.emit([f"Mô hình LAMA sẵn sàng ({_time.time()-_t0:.1f}s). Đang xóa phụ đề..."])
-                    inpainted_frame = lama_model(preview_frame, combined_mask)
-                elif inpaint_mode == InpaintMode.STTN_DET:
-                    from backend.inpaint.sttn_det_inpaint import STTNDetInpaint
-                    self.append_log_signal.emit(["Đang nạp mô hình STTN_DET..."])
-                    def load_sttn_det():
-                        return STTNDetInpaint(device, model_config.STTN_DET_MODEL_PATH)
-                    sttn_model = ModelCacheManager.get_model("sttn_det", load_sttn_det)
-                    self.append_log_signal.emit([f"Mô hình STTN_DET sẵn sàng ({_time.time()-_t0:.1f}s). Đang xóa phụ đề trên 5 frame..."])
-                    frames = [preview_frame.copy() for _ in range(5)]
-                    inpainted_frames = sttn_model(frames, combined_mask)
-                    inpainted_frame = inpainted_frames[2]
-                elif inpaint_mode == InpaintMode.STTN_AUTO:
-                    from backend.inpaint.sttn_auto_inpaint import STTNInpaint
-                    self.append_log_signal.emit(["Đang nạp mô hình STTN_AUTO (lần đầu có thể mất ~10 giây)..."])
-                    def load_sttn_auto():
-                        return STTNInpaint(device, model_config.STTN_AUTO_MODEL_PATH)
-                    sttn_model = ModelCacheManager.get_model("sttn_auto", load_sttn_auto)
-                    self.append_log_signal.emit([f"Mô hình STTN_AUTO sẵn sàng ({_time.time()-_t0:.1f}s). Đang xóa phụ đề trên 5 frame..."])
-                    frames = [preview_frame.copy() for _ in range(5)]
-                    inpainted_frames = sttn_model(combined_mask, input_frames=frames)
-                    inpainted_frame = inpainted_frames[2]
-                elif inpaint_mode == InpaintMode.PROPAINTER:
-                    from backend.inpaint.propainter_inpaint import PropainterInpaint
-                    self.append_log_signal.emit(["Đang nạp mô hình ProPainter (lần đầu có thể mất ~15 giây)..."])
-                    def load_propainter():
-                        return PropainterInpaint(device, model_config.PROPAINTER_MODEL_DIR)
-                    propainter_model = ModelCacheManager.get_model("propainter", load_propainter)
-                    self.append_log_signal.emit([f"Mô hình ProPainter sẵn sàng ({_time.time()-_t0:.1f}s). Đang xóa phụ đề trên 5 frame..."])
-                    frames = [preview_frame.copy() for _ in range(5)]
-                    inpainted_frames = propainter_model.inpaint(frames, combined_mask)
-                    inpainted_frame = inpainted_frames[2]
-                else:
-                    # Fallback to LAMA
-                    self.append_log_signal.emit(["Mô hình không xác định, dùng LAMA làm mặc định..."])
-                    def load_lama_fallback():
-                        model_path = os.path.join(model_config.LAMA_MODEL_DIR, 'big-lama.pt')
-                        return LamaInpaint(device, model_path)
-                    lama_model = ModelCacheManager.get_model("lama", load_lama_fallback)
-                    inpainted_frame = lama_model(preview_frame, combined_mask)
+                # --- Tự động thu nhỏ frame lớn để tiết kiệm VRAM ---
+                MAX_PREVIEW_DIM = 1080  # Giới hạn chiều lớn nhất cho preview
+                work_frame = preview_frame
+                work_mask = combined_mask
+                orig_h, orig_w = preview_frame.shape[:2]
+                scale_factor = 1.0
+                
+                if max(orig_h, orig_w) > MAX_PREVIEW_DIM:
+                    scale_factor = MAX_PREVIEW_DIM / max(orig_h, orig_w)
+                    new_w = int(orig_w * scale_factor)
+                    new_h = int(orig_h * scale_factor)
+                    work_frame = cv2.resize(preview_frame, (new_w, new_h))
+                    if work_mask.ndim == 3:
+                        work_mask = cv2.resize(combined_mask, (new_w, new_h))
+                    else:
+                        work_mask = cv2.resize(combined_mask, (new_w, new_h))
+                    self.append_log_signal.emit([f"Thu nhỏ frame từ {orig_w}×{orig_h} → {new_w}×{new_h} để tiết kiệm VRAM"])
+
+                def _do_inpaint(dev):
+                    """Thực hiện inpaint trên thiết bị chỉ định, trả về frame đã xử lý"""
+                    nonlocal work_frame, work_mask
+                    result = None
+                    
+                    if inpaint_mode == InpaintMode.OPENCV:
+                        inpainter = OpenCVInpaint()
+                        result = inpainter(work_frame, work_mask)
+                    elif inpaint_mode == InpaintMode.LAMA:
+                        self.append_log_signal.emit([f"Đang nạp mô hình LAMA trên {dev}..."])
+                        def load_lama():
+                            model_path = os.path.join(model_config.LAMA_MODEL_DIR, 'big-lama.pt')
+                            return LamaInpaint(dev, model_path)
+                        lama_model = ModelCacheManager.get_model(f"lama_{dev}", load_lama)
+                        self.append_log_signal.emit([f"Mô hình LAMA sẵn sàng ({_time.time()-_t0:.1f}s). Đang xóa phụ đề..."])
+                        result = lama_model(work_frame, work_mask)
+                    elif inpaint_mode == InpaintMode.STTN_DET:
+                        from backend.inpaint.sttn_det_inpaint import STTNDetInpaint
+                        self.append_log_signal.emit([f"Đang nạp mô hình STTN_DET trên {dev}..."])
+                        def load_sttn_det():
+                            return STTNDetInpaint(dev, model_config.STTN_DET_MODEL_PATH)
+                        sttn_model = ModelCacheManager.get_model(f"sttn_det_{dev}", load_sttn_det)
+                        self.append_log_signal.emit([f"Mô hình STTN_DET sẵn sàng ({_time.time()-_t0:.1f}s). Đang xóa phụ đề trên 5 frame..."])
+                        frames = [work_frame.copy() for _ in range(5)]
+                        results = sttn_model(frames, work_mask)
+                        result = results[2]
+                    elif inpaint_mode == InpaintMode.STTN_AUTO:
+                        from backend.inpaint.sttn_auto_inpaint import STTNInpaint
+                        self.append_log_signal.emit([f"Đang nạp mô hình STTN_AUTO trên {dev}..."])
+                        def load_sttn_auto():
+                            return STTNInpaint(dev, model_config.STTN_AUTO_MODEL_PATH)
+                        sttn_model = ModelCacheManager.get_model(f"sttn_auto_{dev}", load_sttn_auto)
+                        self.append_log_signal.emit([f"Mô hình STTN_AUTO sẵn sàng ({_time.time()-_t0:.1f}s). Đang xóa phụ đề trên 5 frame..."])
+                        frames = [work_frame.copy() for _ in range(5)]
+                        results = sttn_model(work_mask, input_frames=frames)
+                        result = results[2]
+                    elif inpaint_mode == InpaintMode.PROPAINTER:
+                        from backend.inpaint.propainter_inpaint import PropainterInpaint
+                        self.append_log_signal.emit([f"Đang nạp mô hình ProPainter trên {dev}..."])
+                        def load_propainter():
+                            return PropainterInpaint(dev, model_config.PROPAINTER_MODEL_DIR)
+                        propainter_model = ModelCacheManager.get_model(f"propainter_{dev}", load_propainter)
+                        self.append_log_signal.emit([f"Mô hình ProPainter sẵn sàng ({_time.time()-_t0:.1f}s). Đang xóa phụ đề trên 5 frame..."])
+                        frames = [work_frame.copy() for _ in range(5)]
+                        results = propainter_model.inpaint(frames, work_mask)
+                        result = results[2]
+                    else:
+                        self.append_log_signal.emit(["Mô hình không xác định, dùng LAMA làm mặc định..."])
+                        def load_lama_fb():
+                            model_path = os.path.join(model_config.LAMA_MODEL_DIR, 'big-lama.pt')
+                            return LamaInpaint(dev, model_path)
+                        lama_model = ModelCacheManager.get_model(f"lama_{dev}", load_lama_fb)
+                        result = lama_model(work_frame, work_mask)
+                    return result
+
+                # Thử GPU trước, nếu OOM thì fallback sang CPU
+                try:
+                    inpainted_frame = _do_inpaint(device)
+                except torch.cuda.OutOfMemoryError:
+                    self.append_log_signal.emit(["⚠️ GPU hết VRAM! Đang giải phóng bộ nhớ và chuyển sang CPU..."])
+                    torch.cuda.empty_cache()
+                    cpu_device = torch.device("cpu")
+                    inpainted_frame = _do_inpaint(cpu_device)
+
+                # --- Phóng to kết quả về kích thước gốc nếu đã thu nhỏ ---
+                if scale_factor < 1.0 and inpainted_frame is not None:
+                    inpainted_frame = cv2.resize(inpainted_frame, (orig_w, orig_h))
                     
                 # Áp dụng bộ lọc tái tạo vân bề mặt nếu cấu hình bật
-                if sharpen_enabled:
-                    gray_mask = combined_mask.astype(np.float32) / 255.0
+                if sharpen_enabled and inpainted_frame is not None:
+                    gray_mask = combined_mask.astype(np.float32)
+                    if gray_mask.max() > 1.0:
+                        gray_mask = gray_mask / 255.0
                     if gray_mask.ndim == 2:
                         gray_mask = gray_mask[:, :, np.newaxis]
                     smoothed = cv2.bilateralFilter(inpainted_frame, d=5, sigmaColor=50, sigmaSpace=50)
                     details = cv2.subtract(inpainted_frame, smoothed)
                     sharpened = cv2.addWeighted(inpainted_frame, 1.0, details, 1.8, 0)
-                    h, w = preview_frame.shape[:2]
+                    h, w = inpainted_frame.shape[:2]
                     noise = np.random.normal(0, 2.0, (h, w, 3)).astype(np.float32)
                     sharpened_with_noise = (sharpened.astype(np.float32) + noise).clip(0, 255).astype(np.uint8)
                     inpainted_frame = (inpainted_frame * (1.0 - gray_mask) + sharpened_with_noise * gray_mask).clip(0, 255).astype(np.uint8)
