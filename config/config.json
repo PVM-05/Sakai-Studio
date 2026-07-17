@@ -4,7 +4,7 @@
         "CheckUpdateOnStartup": true,
         "GpuVideoEncoding": true,
         "HardwareAcceleration": true,
-        "InpaintMode": "lama",
+        "InpaintMode": "sttn-auto",
         "MaskDilation": 14,
         "MaskFeather": 8,
         "MaskType": "stroke",

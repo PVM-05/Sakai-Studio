@@ -721,15 +721,10 @@ HARDWARD_ACCELERATION_OPTION = True
 class Config(QConfig):
     # Interface language settings
     intefaceTexts = {
-        '简体中文': 'ch',
-        '繁體中文': 'chinese_cht',
         'English': 'en',
-        '한국어': 'ko',
-        '日本語': 'japan',
-        'Tiếng Việt': 'vi',
-        'Español': 'es'
+        'Tiếng Việt': 'vi'
     }
-    interface = OptionsConfigItem("Window", "Interface", "ch", OptionsValidator(intefaceTexts.values()))
+    interface = OptionsConfigItem("Window", "Interface", "vi", OptionsValidator(intefaceTexts.values()))
     
     # Window position and size
     windowX = ConfigItem("Window", "X", None)
@@ -800,6 +795,10 @@ if isinstance(_detect_mode_value, str) and _detect_mode_value in ("快速", "Fas
     config.set(config.subtitleDetectMode, SubtitleDetectMode.PP_OCRv5_MOBILE)
 elif isinstance(_detect_mode_value, str) and _detect_mode_value in ("精准", "Precise"):
     config.set(config.subtitleDetectMode, SubtitleDetectMode.PP_OCRv5_SERVER)
+
+# Backward compatibility migration for interface language
+if config.interface.value not in ('vi', 'en'):
+    config.set(config.interface, 'vi')
 
 # Load translation configurations
 tr = configparser.ConfigParser(interpolation=None)

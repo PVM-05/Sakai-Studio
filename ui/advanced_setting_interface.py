@@ -292,12 +292,20 @@ class AdvancedSettingInterface(ScrollArea):
                 child.contentLabel.setWordWrap(True)
                 child.titleLabel.setWordWrap(True)
                 content_text = child.contentLabel.text()
-                if content_text:
-                    height = 90 if len(content_text) > 40 else 70
+                title_text = child.titleLabel.text()
+                desc_len = len(content_text) if content_text else 0
+                title_len = len(title_text) if title_text else 0
+                
+                if desc_len == 0:
+                    height = 55
+                elif desc_len > 80 or (desc_len > 40 and title_len > 30):
+                    height = 105
+                elif desc_len > 40 or title_len > 30:
+                    height = 85
                 else:
-                    height = 50
+                    height = 70
                 child.setMinimumHeight(height)
-                child.setMaximumHeight(height)
+                child.setMaximumHeight(16777215)
 
     def show_message_box(self, title: str, content: str, showYesButton=False, yesSlot=None):
         """ show message box """
@@ -443,9 +451,17 @@ class AdvancedSettingInterface(ScrollArea):
                 child.contentLabel.setWordWrap(True)
                 child.titleLabel.setWordWrap(True)
                 content_text = child.contentLabel.text()
-                if content_text:
-                    height = 90 if len(content_text) > 40 else 70
+                title_text = child.titleLabel.text()
+                desc_len = len(content_text) if content_text else 0
+                title_len = len(title_text) if title_text else 0
+                
+                if desc_len == 0:
+                    height = 55
+                elif desc_len > 80 or (desc_len > 40 and title_len > 30):
+                    height = 105
+                elif desc_len > 40 or title_len > 30:
+                    height = 85
                 else:
-                    height = 50
+                    height = 70
                 child.setMinimumHeight(height)
-                child.setMaximumHeight(height)
+                child.setMaximumHeight(16777215)
