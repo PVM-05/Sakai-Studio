@@ -753,7 +753,8 @@ class HomeInterface(QWidget):
             from backend.main import ModelCacheManager
             
             model_config = ModelConfig()
-            device = HardwareAccelerator.instance().device
+            # Sử dụng CPU cho luồng xem trước trên giao diện để tránh xung đột driver CUDA/Qt gây treo ứng dụng trên Windows
+            device = torch.device("cpu")
 
             if inpaint_mode == InpaintMode.OPENCV:
                 inpainter = OpenCVInpaint()
