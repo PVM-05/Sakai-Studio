@@ -780,10 +780,10 @@ class HomeInterface(QWidget):
                 from backend.inpaint.opencv_inpaint import OpenCVInpaint
                 from backend.tools.model_config import ModelConfig
                 from backend.main import ModelCacheManager
+                from backend.tools.hardware_accelerator import HardwareAccelerator
                 
                 model_config = ModelConfig()
-                # Sử dụng CPU để tránh xung đột CUDA/Qt trên Windows
-                device = torch.device("cpu")
+                device = HardwareAccelerator.instance().device
 
                 if inpaint_mode == InpaintMode.OPENCV:
                     inpainter = OpenCVInpaint()
