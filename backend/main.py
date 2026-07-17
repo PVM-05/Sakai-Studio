@@ -4,10 +4,17 @@ import shutil
 import traceback
 import subprocess
 import os
+import sys
+
+if sys.platform.startswith('win'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except AttributeError:
+        pass
 from pathlib import Path
 import threading
 import cv2
-import sys
 from functools import cached_property
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

@@ -5,9 +5,15 @@
 @FileName: gui.py
 @desc: 字幕去除器图形化界面（由 PySimpleGUI 改写为 PySide6）
 """
-
 import sys
 import os
+
+if sys.platform.startswith('win'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except AttributeError:
+        pass
 import configparser
 import cv2
 import multiprocessing
