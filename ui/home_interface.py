@@ -798,8 +798,16 @@ class HomeInterface(QWidget):
                 
             # Áp dụng bộ lọc tái tạo vân bề mặt nếu cấu hình bật
             if config.sharpenInpaintedArea.value:
-                from backend.main import apply_sharpening_to_inpainted_frame
-                inpainted_frame = apply_sharpening_to_inpainted_frame(inpainted_frame, self.current_frame, combined_mask)
+                gray_mask = combined_mask.astype(np.float32) / 255.0
+                if gray_mask.ndim == 2:
+                    gray_mask = gray_mask[:, :, np.newaxis]
+                smoothed = cv2.bilateralFilter(inpainted_frame, d=5, sigmaColor=50, sigmaSpace=50)
+                details = cv2.subtract(inpainted_frame, smoothed)
+                sharpened = cv2.addWeighted(inpainted_frame, 1.0, details, 1.8, 0)
+                h, w = self.current_frame.shape[:2]
+                noise = np.random.normal(0, 2.0, (h, w, 3)).astype(np.float32)
+                sharpened_with_noise = (sharpened.astype(np.float32) + noise).clip(0, 255).astype(np.uint8)
+                inpainted_frame = (inpainted_frame * (1.0 - gray_mask) + sharpened_with_noise * gray_mask).clip(0, 255).astype(np.uint8)
                 
             preview_frame = inpainted_frame
             
