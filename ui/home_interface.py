@@ -148,7 +148,7 @@ class HomeInterface(QWidget):
         self.add_area_button.clicked.connect(self.add_area_button_clicked)
         button_layout.addWidget(self.add_area_button)
         
-        self.mask_preview_button = PushButton("Xem trước mặt nạ", self)
+        self.mask_preview_button = PushButton("Xem trước kết quả", self)
         self.mask_preview_button.setIcon(FluentIcon.VIEW)
         self.mask_preview_button.clicked.connect(self.mask_preview_button_clicked)
         button_layout.addWidget(self.mask_preview_button)
@@ -816,8 +816,14 @@ class HomeInterface(QWidget):
                     result = None
                     
                     if inpaint_mode == InpaintMode.OPENCV:
+                        # OpenCV inpaint yêu cầu mặt nạ nhị phân 8-bit đơn kênh (uint8)
+                        mask_uint8 = work_mask
+                        if mask_uint8.dtype != np.uint8:
+                            mask_uint8 = (mask_uint8 * 255).astype(np.uint8) if mask_uint8.max() <= 1.0 else mask_uint8.astype(np.uint8)
+                        if mask_uint8.ndim == 3:
+                            mask_uint8 = mask_uint8[:, :, 0]
                         inpainter = OpenCVInpaint()
-                        result = inpainter(work_frame, work_mask)
+                        result = inpainter.inpaint(work_frame, mask_uint8)
                     elif inpaint_mode == InpaintMode.LAMA:
                         self.append_log_signal.emit([f"Đang nạp mô hình LAMA trên {dev}..."])
                         def load_lama():
@@ -825,7 +831,7 @@ class HomeInterface(QWidget):
                             return LamaInpaint(dev, model_path)
                         lama_model = ModelCacheManager.get_model(f"lama_{dev}", load_lama)
                         self.append_log_signal.emit([f"Mô hình LAMA sẵn sàng ({_time.time()-_t0:.1f}s). Đang xóa phụ đề..."])
-                        result = lama_model(work_frame, work_mask)
+                        result = lama_model.inpaint(work_frame, work_mask)
                     elif inpaint_mode == InpaintMode.STTN_DET:
                         from backend.inpaint.sttn_det_inpaint import STTNDetInpaint
                         self.append_log_signal.emit([f"Đang nạp mô hình STTN_DET trên {dev}..."])
@@ -862,7 +868,7 @@ class HomeInterface(QWidget):
                             model_path = os.path.join(model_config.LAMA_MODEL_DIR, 'big-lama.pt')
                             return LamaInpaint(dev, model_path)
                         lama_model = ModelCacheManager.get_model(f"lama_{dev}", load_lama_fb)
-                        result = lama_model(work_frame, work_mask)
+                        result = lama_model.inpaint(work_frame, work_mask)
                     return result
 
                 # Thử GPU trước, nếu OOM thì fallback sang CPU
@@ -914,7 +920,7 @@ class HomeInterface(QWidget):
         """Nhận kết quả inpaint từ background thread và cập nhật UI"""
         try:
             self.mask_preview_button.setEnabled(True)
-            self.mask_preview_button.setText(tr['Setting'].get('MaskPreview', 'Xem trước mặt nạ'))
+            self.mask_preview_button.setText(tr['Setting'].get('MaskPreview', 'Xem trước kết quả'))
             
             result_frame = getattr(self, '_preview_result_frame', None)
             error_info = getattr(self, '_preview_error_info', None)
@@ -960,7 +966,7 @@ class HomeInterface(QWidget):
             traceback.print_exc()
             self.append_output(f"Lỗi khi cập nhật preview: {ex}")
             self.mask_preview_button.setEnabled(True)
-            self.mask_preview_button.setText(tr['Setting'].get('MaskPreview', 'Xem trước mặt nạ'))
+            self.mask_preview_button.setText(tr['Setting'].get('MaskPreview', 'Xem trước kết quả'))
 
     def pause_resume_button_clicked(self):
         # Đổi trạng thái tạm dừng hàng đợi
