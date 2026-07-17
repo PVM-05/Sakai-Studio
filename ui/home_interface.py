@@ -768,11 +768,14 @@ class HomeInterface(QWidget):
         inpaint_mode = config.inpaintMode.value
         sharpen_enabled = config.sharpenInpaintedArea.value
         
-        self.append_output("Xem trước kết quả: đang tải mô hình và xử lý...")
+        self.append_output(f"Xem trước kết quả xóa (mô hình: {inpaint_mode.name})...")
         self.mask_preview_button.setEnabled(False)
+        self.mask_preview_button.setText("Đang xử lý...")
 
         # 4. Chạy inpaint trong background thread để tránh đơ UI
         def _run_inpaint():
+            import time as _time
+            _t0 = _time.time()
             inpainted_frame = None
             try:
                 import torch
@@ -784,42 +787,52 @@ class HomeInterface(QWidget):
                 
                 model_config = ModelConfig()
                 device = HardwareAccelerator.instance().device
+                self.append_log_signal.emit([f"Thiết bị xử lý: {device} ({_time.time()-_t0:.1f}s)"])
 
                 if inpaint_mode == InpaintMode.OPENCV:
                     inpainter = OpenCVInpaint()
                     inpainted_frame = inpainter(preview_frame, combined_mask)
                 elif inpaint_mode == InpaintMode.LAMA:
+                    self.append_log_signal.emit(["Đang nạp mô hình LAMA..."])
                     def load_lama():
                         model_path = os.path.join(model_config.LAMA_MODEL_DIR, 'big-lama.pt')
                         return LamaInpaint(device, model_path)
                     lama_model = ModelCacheManager.get_model("lama", load_lama)
+                    self.append_log_signal.emit([f"Mô hình LAMA sẵn sàng ({_time.time()-_t0:.1f}s). Đang xóa phụ đề..."])
                     inpainted_frame = lama_model(preview_frame, combined_mask)
                 elif inpaint_mode == InpaintMode.STTN_DET:
                     from backend.inpaint.sttn_det_inpaint import STTNDetInpaint
+                    self.append_log_signal.emit(["Đang nạp mô hình STTN_DET..."])
                     def load_sttn_det():
                         return STTNDetInpaint(device, model_config.STTN_DET_MODEL_PATH)
                     sttn_model = ModelCacheManager.get_model("sttn_det", load_sttn_det)
+                    self.append_log_signal.emit([f"Mô hình STTN_DET sẵn sàng ({_time.time()-_t0:.1f}s). Đang xóa phụ đề trên 5 frame..."])
                     frames = [preview_frame.copy() for _ in range(5)]
                     inpainted_frames = sttn_model(frames, combined_mask)
                     inpainted_frame = inpainted_frames[2]
                 elif inpaint_mode == InpaintMode.STTN_AUTO:
                     from backend.inpaint.sttn_auto_inpaint import STTNInpaint
+                    self.append_log_signal.emit(["Đang nạp mô hình STTN_AUTO (lần đầu có thể mất ~10 giây)..."])
                     def load_sttn_auto():
                         return STTNInpaint(device, model_config.STTN_AUTO_MODEL_PATH)
                     sttn_model = ModelCacheManager.get_model("sttn_auto", load_sttn_auto)
+                    self.append_log_signal.emit([f"Mô hình STTN_AUTO sẵn sàng ({_time.time()-_t0:.1f}s). Đang xóa phụ đề trên 5 frame..."])
                     frames = [preview_frame.copy() for _ in range(5)]
                     inpainted_frames = sttn_model(combined_mask, input_frames=frames)
                     inpainted_frame = inpainted_frames[2]
                 elif inpaint_mode == InpaintMode.PROPAINTER:
                     from backend.inpaint.propainter_inpaint import PropainterInpaint
+                    self.append_log_signal.emit(["Đang nạp mô hình ProPainter (lần đầu có thể mất ~15 giây)..."])
                     def load_propainter():
                         return PropainterInpaint(device, model_config.PROPAINTER_MODEL_DIR)
                     propainter_model = ModelCacheManager.get_model("propainter", load_propainter)
+                    self.append_log_signal.emit([f"Mô hình ProPainter sẵn sàng ({_time.time()-_t0:.1f}s). Đang xóa phụ đề trên 5 frame..."])
                     frames = [preview_frame.copy() for _ in range(5)]
                     inpainted_frames = propainter_model.inpaint(frames, combined_mask)
                     inpainted_frame = inpainted_frames[2]
                 else:
                     # Fallback to LAMA
+                    self.append_log_signal.emit(["Mô hình không xác định, dùng LAMA làm mặc định..."])
                     def load_lama_fallback():
                         model_path = os.path.join(model_config.LAMA_MODEL_DIR, 'big-lama.pt')
                         return LamaInpaint(device, model_path)
@@ -839,11 +852,13 @@ class HomeInterface(QWidget):
                     sharpened_with_noise = (sharpened.astype(np.float32) + noise).clip(0, 255).astype(np.uint8)
                     inpainted_frame = (inpainted_frame * (1.0 - gray_mask) + sharpened_with_noise * gray_mask).clip(0, 255).astype(np.uint8)
 
+                self.append_log_signal.emit([f"Xem trước hoàn tất trong {_time.time()-_t0:.1f} giây!"])
                 # Cập nhật UI từ thread chính thông qua signal
                 self.mask_preview_result_signal.emit(inpainted_frame, None)
 
             except Exception as e:
                 traceback.print_exc()
+                self.append_log_signal.emit([f"Lỗi khi xem trước: {e}"])
                 # Gửi lỗi về UI thread để fallback hiển thị mặt nạ đỏ
                 self.mask_preview_result_signal.emit(preview_frame, (e, combined_mask))
 
@@ -854,6 +869,7 @@ class HomeInterface(QWidget):
         """Nhận kết quả inpaint từ background thread và cập nhật UI"""
         try:
             self.mask_preview_button.setEnabled(True)
+            self.mask_preview_button.setText(tr['Setting'].get('MaskPreview', 'Xem trước mặt nạ'))
             if error_info is None:
                 # Hiển thị ảnh đã xóa phụ đề
                 resized_preview = self._img_resize(result_frame)
@@ -886,6 +902,7 @@ class HomeInterface(QWidget):
             traceback.print_exc()
             self.append_output(f"Lỗi khi cập nhật preview: {ex}")
             self.mask_preview_button.setEnabled(True)
+            self.mask_preview_button.setText(tr['Setting'].get('MaskPreview', 'Xem trước mặt nạ'))
 
     def pause_resume_button_clicked(self):
         # Đổi trạng thái tạm dừng hàng đợi
