@@ -52,6 +52,7 @@ class HomeInterface(QWidget):
         self.running_process = None
         self._saved_inpaint_mode = None  # 保存图片锁定前的 inpaint 模式
         self._video_cap_lock = threading.Lock()  # 保护 video_cap 的线程锁
+        self.is_queue_paused = False  # Trạng thái tạm dừng hàng đợi
 
         # 当前正在处理的任务索引
         self.current_processing_task_index = -1
@@ -142,6 +143,11 @@ class HomeInterface(QWidget):
         self.add_area_button.clicked.connect(self.add_area_button_clicked)
         button_layout.addWidget(self.add_area_button)
         
+        self.mask_preview_button = PushButton("Xem trước mặt nạ", self)
+        self.mask_preview_button.setIcon(FluentIcon.VIEW)
+        self.mask_preview_button.clicked.connect(self.mask_preview_button_clicked)
+        button_layout.addWidget(self.mask_preview_button)
+        
         self.run_button = PushButton(tr['SubtitleExtractorGUI']['Run'], self)
         self.run_button.setIcon(FluentIcon.PLAY)
         self.run_button.clicked.connect(self.run_button_clicked)
@@ -151,8 +157,13 @@ class HomeInterface(QWidget):
         self.stop_button.setIcon(MyFluentIcon.Stop)
         self.stop_button.setVisible(False)
         self.stop_button.clicked.connect(self.stop_button_clicked)
-        
         button_layout.addWidget(self.stop_button)
+
+        self.pause_resume_button = PushButton("Tạm dừng hàng đợi", self)
+        self.pause_resume_button.setIcon(FluentIcon.PAUSE)
+        self.pause_resume_button.setVisible(False)
+        self.pause_resume_button.clicked.connect(self.pause_resume_button_clicked)
+        button_layout.addWidget(self.pause_resume_button)
         
         button_container.setLayout(button_layout)
         right_layout.addWidget(button_container)
@@ -228,6 +239,7 @@ class HomeInterface(QWidget):
             self.task_list_component.select_task(0)
 
     def update_preview(self, frame):
+        self.current_frame = frame
         # 先缩放图像
         resized_frame = self._img_resize(frame)
 
@@ -314,6 +326,11 @@ class HomeInterface(QWidget):
         """线程安全地切换按钮可见性"""
         self.run_button.setVisible(show_run)
         self.stop_button.setVisible(not show_run)
+        self.pause_resume_button.setVisible(not show_run)
+        if show_run:
+            self.is_queue_paused = False
+            self.pause_resume_button.setText(tr['Setting'].get('PauseQueue', "Tạm dừng hàng đợi"))
+            self.pause_resume_button.setIcon(FluentIcon.PAUSE)
 
     def run_button_clicked(self):
         if not self.task_list_component.get_pending_tasks():
@@ -333,6 +350,13 @@ class HomeInterface(QWidget):
                 try:
                     while not self._stop_event.is_set():
                         try:
+                            # Nếu hàng đợi bị tạm dừng, chờ cho đến khi được tiếp tục hoặc dừng hẳn
+                            while self.is_queue_paused and not self._stop_event.is_set():
+                                time.sleep(0.5)
+
+                            if self._stop_event.is_set():
+                                break
+
                             pending_tasks = self.task_list_component.get_pending_tasks()
                             if not pending_tasks:
                                 break
@@ -679,6 +703,95 @@ class HomeInterface(QWidget):
         selections = self.video_display_component.selection_rects
         self.task_list_component.update_task_option(get_current_task_index, TaskOptions.SUB_AREAS, selections)
 
+    def mask_preview_button_clicked(self):
+        if not hasattr(self, 'current_frame') or self.current_frame is None:
+            InfoBar.warning(
+                title="Cảnh báo",
+                content="Không có video hoặc hình ảnh hiện tại để xem trước mặt nạ.",
+                parent=self,
+                duration=3000
+            )
+            return
+
+        # 1. Lấy tọa độ các vùng chọn trong video space
+        selections = self.video_display_component.preview_coordinates_to_video_coordinates(
+            self.video_display_component.selection_rects
+        )
+        if not selections:
+            InfoBar.warning(
+                title="Cảnh báo",
+                content="Vui lòng khoanh vùng khu vực có phụ đề trước khi xem trước mặt nạ.",
+                parent=self,
+                duration=3000
+            )
+            return
+
+        # 2. Tạo mặt nạ tổng hợp
+        from backend.tools.inpaint_tools import create_stroke_mask, create_mask
+        
+        mask_size = (self.frame_height, self.frame_width)
+        dilation = config.maskDilation.value
+        feather = config.maskFeather.value
+        
+        # Bắt đầu với mặt nạ trống
+        combined_mask = np.zeros(mask_size, dtype=np.uint8)
+        
+        for coords in selections:
+            if config.maskType.value == 'stroke':
+                mask = create_stroke_mask(self.current_frame, mask_size, coords, dilation=dilation, feather_pixels=feather)
+            else:
+                mask = create_mask(mask_size, coords, dilation=dilation, feather_pixels=feather)
+            combined_mask = cv2.bitwise_or(combined_mask, mask)
+            
+        # 3. Tạo ảnh overlay màu đỏ lên vùng mặt nạ để xem trước
+        preview_frame = self.current_frame.copy()
+        
+        # Tạo lớp màu đỏ
+        red_overlay = np.zeros_like(preview_frame)
+        red_overlay[:, :] = [0, 0, 255] # BGR
+        
+        # Trộn ảnh gốc với lớp màu đỏ theo tỷ lệ của mặt nạ (nơi mặt nạ > 0 thì đổi màu)
+        mask_bool = combined_mask > 0
+        if np.any(mask_bool):
+            preview_frame[mask_bool] = cv2.addWeighted(preview_frame, 0.4, red_overlay, 0.6, 0)[mask_bool]
+        
+        # Hiển thị ảnh xem trước mặt nạ lên màn hình
+        resized_preview = self._img_resize(preview_frame)
+        self.video_display_component.update_video_display(resized_preview, draw_selection=False)
+        
+        InfoBar.success(
+            title=tr['Setting']['MaskPreview'],
+            content="Đang hiển thị vùng mặt nạ xóa (màu đỏ). Di chuyển thanh trượt hoặc thêm vùng chọn để quay lại bình thường.",
+            duration=3500,
+            parent=self
+        )
+
+    def pause_resume_button_clicked(self):
+        # Đổi trạng thái tạm dừng hàng đợi
+        self.is_queue_paused = not self.is_queue_paused
+        
+        # Cập nhật nhãn và icon của nút tương ứng
+        if self.is_queue_paused:
+            self.pause_resume_button.setText(tr['Setting'].get('ResumeQueue', "Tiếp tục hàng đợi"))
+            self.pause_resume_button.setIcon(FluentIcon.PLAY)
+            self.append_output("Hàng đợi đã được TẠM DỪNG. Video hiện tại sẽ chạy nốt, video tiếp theo sẽ chờ...")
+            InfoBar.warning(
+                title="Tạm dừng hàng đợi",
+                content="Hàng đợi sẽ tạm dừng sau khi video hiện tại xử lý xong.",
+                duration=3500,
+                parent=self
+            )
+        else:
+            self.pause_resume_button.setText(tr['Setting'].get('PauseQueue', "Tạm dừng hàng đợi"))
+            self.pause_resume_button.setIcon(FluentIcon.PAUSE)
+            self.append_output("Hàng đợi đã được TIẾP TỤC.")
+            InfoBar.success(
+                title="Tiếp tục hàng đợi",
+                content="Đang tiếp tục xử lý các video tiếp theo trong danh sách.",
+                duration=3000,
+                parent=self
+            )
+
     def open_file(self):
         files, _ = QtWidgets.QFileDialog.getOpenFileNames(
             self,
@@ -762,6 +875,8 @@ class HomeInterface(QWidget):
         self.file_button.setText(tr['SubtitleExtractorGUI']['Open'])
         self.add_area_button.setText(tr['Setting']['AddArea'])
         self.add_area_button.setToolTip(tr['Setting']['AddAreaTooltip'])
+        self.mask_preview_button.setText(tr['Setting']['MaskPreview'])
+        self.mask_preview_button.setToolTip(tr['Setting']['MaskPreviewTooltip'])
         self.run_button.setText(tr['SubtitleExtractorGUI']['Run'])
         self.stop_button.setText(tr['SubtitleExtractorGUI']['Stop'])
         self.setting_interface.retranslateUi()

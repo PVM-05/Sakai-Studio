@@ -296,22 +296,31 @@ class SubtitleRemover:
             return create_mask(self.mask_size, coords, dilation=dilation, feather_pixels=feather)
 
     def apply_sharpening_to_inpainted_frame(self, original_frame, inpainted_frame, mask):
-        """Áp dụng bộ lọc làm nét (USM) cục bộ cho vùng mặt nạ bị xóa để phục hồi chi tiết"""
+        """Áp dụng bộ lọc làm nét bảo toàn cạnh (Bilateral Filter) và bổ sung vân bề mặt"""
         if getattr(config, 'sharpenInpaintedArea', None) and config.sharpenInpaintedArea.value:
             # Chuyển đổi mask thành float 0.0 - 1.0
             gray_mask = mask.astype(np.float32) / 255.0
             if gray_mask.ndim == 2:
                 gray_mask = gray_mask[:, :, np.newaxis]
+
+            # 1. Trích xuất chi tiết hạt mịn bằng Bilateral Filter
+            # Bilateral Filter làm mịn vùng phẳng nhưng giữ nguyên các cạnh sắc nét
+            smoothed = cv2.bilateralFilter(inpainted_frame, d=5, sigmaColor=50, sigmaSpace=50)
             
-            # Tạo bản sao làm nét của ảnh phục chế
-            # USM: sharpened = original * 1.5 - blurred * 0.5
-            blurred = cv2.GaussianBlur(inpainted_frame, (3, 3), 0)
-            sharpened = cv2.addWeighted(inpainted_frame, 1.5, blurred, -0.5, 0)
+            # Chi tiết cao tần (vân hạt/nhiễu) = Ảnh gốc - Ảnh mịn
+            details = cv2.subtract(inpainted_frame, smoothed)
             
+            # Thêm chi tiết làm nét (Khuếch đại chi tiết hạt lên 1.8 lần)
+            sharpened = cv2.addWeighted(inpainted_frame, 1.0, details, 1.8, 0)
+            
+            # 2. Tạo nhiễu hạt nhẹ mô phỏng vân gốc (Grain/Texture Synthesis)
+            h, w = original_frame.shape[:2]
+            noise = np.random.normal(0, 2.0, (h, w, 3)).astype(np.float32)
+            sharpened_with_noise = (sharpened.astype(np.float32) + noise).clip(0, 255).astype(np.uint8)
+
             # Trộn cục bộ: chỉ làm nét đúng phần được xóa (theo mask)
-            # Giữ nguyên phần nền không bị tác động
-            sharpened_frame = (inpainted_frame * (1.0 - gray_mask) + sharpened * gray_mask).clip(0, 255).astype(np.uint8)
-            return sharpened_frame
+            final_frame = (inpainted_frame * (1.0 - gray_mask) + sharpened_with_noise * gray_mask).clip(0, 255).astype(np.uint8)
+            return final_frame
         return inpainted_frame
 
     def sttn_auto_mode(self, tbar):

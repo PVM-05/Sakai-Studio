@@ -395,7 +395,9 @@ class SubtitleDetect:
             last_start, last_end = merged[-1]
             last_len = last_end - last_start + 1
             cur_len = end - start + 1
-            if (start <= last_end or start == last_end + 1) and (cur_len < target_length or last_len < target_length):
+            if start <= last_end:
+                merged[-1] = (last_start, max(last_end, end))
+            elif start == last_end + 1 and (cur_len < target_length or last_len < target_length):
                 merged[-1] = (last_start, max(last_end, end))
             else:
                 merged.append((start, end))
