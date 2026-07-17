@@ -734,34 +734,75 @@ class HomeInterface(QWidget):
         dilation = config.maskDilation.value
         feather = config.maskFeather.value
         
-        # 2. Tạo mặt nạ tổng hợp
         if config.maskType.value == 'stroke':
             combined_mask = create_stroke_mask(self.current_frame, mask_size, selections, dilation=dilation, feather_pixels=feather)
         else:
             combined_mask = create_mask(mask_size, selections, dilation=dilation, feather_pixels=feather)
             
-        # 3. Tạo ảnh overlay màu đỏ lên vùng mặt nạ để xem trước
+        # 3. Tiến hành chạy xóa thử nghiệm (Inpaint) trên 1 frame hiện tại
         preview_frame = self.current_frame.copy()
+        inpaint_mode = config.inpaintMode.value
         
-        # Tạo lớp màu đỏ
-        red_overlay = np.zeros_like(preview_frame)
-        red_overlay[:, :] = [0, 0, 255] # BGR
-        
-        # Trộn ảnh gốc với lớp màu đỏ theo tỷ lệ của mặt nạ (nơi mặt nạ > 0 thì đổi màu)
-        mask_bool = combined_mask > 0
-        if np.any(mask_bool):
-            preview_frame[mask_bool] = cv2.addWeighted(preview_frame, 0.4, red_overlay, 0.6, 0)[mask_bool]
-        
-        # Hiển thị ảnh xem trước mặt nạ lên màn hình
-        resized_preview = self._img_resize(preview_frame)
-        self.video_display_component.update_video_display(resized_preview, draw_selection=False)
-        
-        InfoBar.success(
-            title=tr['Setting']['MaskPreview'],
-            content="Đang hiển thị vùng mặt nạ xóa (màu đỏ). Di chuyển thanh trượt hoặc thêm vùng chọn để quay lại bình thường.",
-            duration=3500,
-            parent=self
-        )
+        try:
+            self.append_output("Đang xử lý inpaint thử nghiệm trên khung hình hiện tại...")
+            import torch
+            from backend.inpaint.lama_inpaint import LamaInpaint
+            from backend.inpaint.opencv_inpaint import OpenCVInpaint
+            from backend.tools.model_config import ModelConfig
+            from backend.tools.hardware_accelerator import HardwareAccelerator
+            from backend.main import ModelCacheManager
+            
+            if inpaint_mode == InpaintMode.OPENCV:
+                inpainter = OpenCVInpaint()
+                inpainted_frame = inpainter(preview_frame, combined_mask)
+            else:
+                # Đối với LAMA hoặc STTN/ProPainter (fallback về LAMA vì LAMA xóa ảnh đơn tốt nhất)
+                model_config = ModelConfig()
+                def load_lama():
+                    model_path = os.path.join(model_config.LAMA_MODEL_DIR, 'big-lama.pt')
+                    device = HardwareAccelerator.instance().device
+                    return LamaInpaint(device, model_path)
+                
+                lama_model = ModelCacheManager.get_model("lama", load_lama)
+                inpainted_frame = lama_model(preview_frame, combined_mask)
+                
+            # Áp dụng bộ lọc tái tạo vân bề mặt nếu cấu hình bật
+            if config.sharpenInpaintedArea.value:
+                from backend.main import apply_sharpening_to_inpainted_frame
+                inpainted_frame = apply_sharpening_to_inpainted_frame(inpainted_frame, self.current_frame, combined_mask)
+                
+            preview_frame = inpainted_frame
+            
+            # Hiển thị ảnh xem trước đã xóa chữ lên màn hình
+            resized_preview = self._img_resize(preview_frame)
+            self.video_display_component.update_video_display(resized_preview, draw_selection=False)
+            
+            InfoBar.success(
+                title="Xem trước kết quả xóa",
+                content="Đã xóa phụ đề thử nghiệm thành công trên khung hình hiện tại.",
+                duration=3500,
+                parent=self
+            )
+            
+        except Exception as e:
+            traceback.print_exc()
+            self.append_output(f"Không thể chạy inpaint thử nghiệm (Lỗi: {e}). Chuyển sang hiển thị mặt nạ đỏ...")
+            # Fallback sang vẽ đè màu đỏ để người dùng vẫn xem được mặt nạ
+            red_overlay = np.zeros_like(preview_frame)
+            red_overlay[:, :] = [0, 0, 255] # BGR
+            mask_bool = combined_mask > 0
+            if np.any(mask_bool):
+                preview_frame[mask_bool] = cv2.addWeighted(preview_frame, 0.4, red_overlay, 0.6, 0)[mask_bool]
+            
+            resized_preview = self._img_resize(preview_frame)
+            self.video_display_component.update_video_display(resized_preview, draw_selection=False)
+            
+            InfoBar.success(
+                title=tr['Setting']['MaskPreview'],
+                content="Đang hiển thị vùng mặt nạ xóa (màu đỏ). Di chuyển thanh trượt để quay lại bình thường.",
+                duration=3500,
+                parent=self
+            )
 
     def pause_resume_button_clicked(self):
         # Đổi trạng thái tạm dừng hàng đợi
