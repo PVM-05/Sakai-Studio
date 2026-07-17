@@ -285,19 +285,19 @@ class AdvancedSettingInterface(ScrollArea):
             parent=self.about_group
         )
 
-        # Cho phép các nhãn mô tả tự động xuống dòng để giao diện responsive
-        from PySide6.QtWidgets import QWidget, QSizePolicy
+        # Cho phép các nhãn mô tả tự động xuống dòng và co giãn chiều cao theo độ dài chữ
+        from PySide6.QtWidgets import QWidget
         for child in self.findChildren(QWidget):
-            if hasattr(child, 'contentLabel') or hasattr(child, 'titleLabel'):
-                child.setMinimumHeight(70)
-                child.setMaximumHeight(16777215)
-                child.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-                if hasattr(child, 'contentLabel'):
-                    child.contentLabel.setWordWrap(True)
-                    child.contentLabel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-                if hasattr(child, 'titleLabel'):
-                    child.titleLabel.setWordWrap(True)
-                    child.titleLabel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+            if hasattr(child, 'contentLabel') and hasattr(child, 'titleLabel'):
+                child.contentLabel.setWordWrap(True)
+                child.titleLabel.setWordWrap(True)
+                content_text = child.contentLabel.text()
+                if content_text:
+                    height = 90 if len(content_text) > 40 else 70
+                else:
+                    height = 50
+                child.setMinimumHeight(height)
+                child.setMaximumHeight(height)
 
     def show_message_box(self, title: str, content: str, showYesButton=False, yesSlot=None):
         """ show message box """
@@ -435,3 +435,17 @@ class AdvancedSettingInterface(ScrollArea):
 
         self.project_link.setTitle(tr["Setting"]["ProjectLinkTitle"])
         self.project_link.setContent(tr["Setting"]["ProjectLinkDesc"])
+
+        # Cập nhật lại chiều cao các thẻ cài đặt sau khi đổi ngôn ngữ
+        from PySide6.QtWidgets import QWidget
+        for child in self.findChildren(QWidget):
+            if hasattr(child, 'contentLabel') and hasattr(child, 'titleLabel'):
+                child.contentLabel.setWordWrap(True)
+                child.titleLabel.setWordWrap(True)
+                content_text = child.contentLabel.text()
+                if content_text:
+                    height = 90 if len(content_text) > 40 else 70
+                else:
+                    height = 50
+                child.setMinimumHeight(height)
+                child.setMaximumHeight(height)
