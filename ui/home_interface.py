@@ -734,15 +734,11 @@ class HomeInterface(QWidget):
         dilation = config.maskDilation.value
         feather = config.maskFeather.value
         
-        # Bắt đầu với mặt nạ trống
-        combined_mask = np.zeros(mask_size, dtype=np.uint8)
-        
-        for coords in selections:
-            if config.maskType.value == 'stroke':
-                mask = create_stroke_mask(self.current_frame, mask_size, coords, dilation=dilation, feather_pixels=feather)
-            else:
-                mask = create_mask(mask_size, coords, dilation=dilation, feather_pixels=feather)
-            combined_mask = cv2.bitwise_or(combined_mask, mask)
+        # 2. Tạo mặt nạ tổng hợp
+        if config.maskType.value == 'stroke':
+            combined_mask = create_stroke_mask(self.current_frame, mask_size, selections, dilation=dilation, feather_pixels=feather)
+        else:
+            combined_mask = create_mask(mask_size, selections, dilation=dilation, feather_pixels=feather)
             
         # 3. Tạo ảnh overlay màu đỏ lên vùng mặt nạ để xem trước
         preview_frame = self.current_frame.copy()
