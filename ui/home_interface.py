@@ -853,27 +853,43 @@ class HomeInterface(QWidget):
                     inpainted_frame = (inpainted_frame * (1.0 - gray_mask) + sharpened_with_noise * gray_mask).clip(0, 255).astype(np.uint8)
 
                 self.append_log_signal.emit([f"Xem trước hoàn tất trong {_time.time()-_t0:.1f} giây!"])
-                # Cập nhật UI từ thread chính thông qua signal
-                self.mask_preview_result_signal.emit(inpainted_frame, None)
+                # Lưu kết quả vào biến instance (tránh truyền numpy array qua Signal)
+                self._preview_result_frame = inpainted_frame
+                self._preview_error_info = None
+                self.mask_preview_result_signal.emit(True, None)
 
             except Exception as e:
                 traceback.print_exc()
                 self.append_log_signal.emit([f"Lỗi khi xem trước: {e}"])
-                # Gửi lỗi về UI thread để fallback hiển thị mặt nạ đỏ
-                self.mask_preview_result_signal.emit(preview_frame, (e, combined_mask))
+                # Lưu lỗi vào biến instance
+                self._preview_result_frame = preview_frame
+                self._preview_error_info = (e, combined_mask)
+                self.mask_preview_result_signal.emit(False, None)
 
         threading.Thread(target=_run_inpaint, daemon=True).start()
 
     @Slot(object, object)
-    def _on_mask_preview_result(self, result_frame, error_info):
+    def _on_mask_preview_result(self, success, _unused):
         """Nhận kết quả inpaint từ background thread và cập nhật UI"""
         try:
             self.mask_preview_button.setEnabled(True)
             self.mask_preview_button.setText(tr['Setting'].get('MaskPreview', 'Xem trước mặt nạ'))
+            
+            result_frame = getattr(self, '_preview_result_frame', None)
+            error_info = getattr(self, '_preview_error_info', None)
+            
+            if result_frame is None:
+                self.append_output("Lỗi: Không nhận được kết quả xem trước.")
+                return
+            
+            self.append_output(f"Đang cập nhật hiển thị... (frame shape: {result_frame.shape})")
+            
             if error_info is None:
                 # Hiển thị ảnh đã xóa phụ đề
                 resized_preview = self._img_resize(result_frame)
                 self.video_display_component.update_video_display(resized_preview, draw_selection=False)
+                self.video_display_component.video_display.repaint()
+                self.append_output("Đã hiển thị kết quả xóa phụ đề thành công!")
                 InfoBar.success(
                     title="Xem trước kết quả xóa",
                     content="Đã xóa phụ đề thử nghiệm thành công. Kéo thanh trượt để quay lại bình thường.",
@@ -892,6 +908,7 @@ class HomeInterface(QWidget):
                     fallback_frame[mask_bool] = cv2.addWeighted(result_frame, 0.4, red_overlay, 0.6, 0)[mask_bool]
                 resized_preview = self._img_resize(fallback_frame)
                 self.video_display_component.update_video_display(resized_preview, draw_selection=False)
+                self.video_display_component.video_display.repaint()
                 InfoBar.warning(
                     title=tr['Setting']['MaskPreview'],
                     content="Đang hiển thị vùng mặt nạ xóa (màu đỏ). Kéo thanh trượt để quay lại bình thường.",
