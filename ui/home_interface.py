@@ -792,23 +792,32 @@ class HomeInterface(QWidget):
                 device = HardwareAccelerator.instance().device
                 self.append_log_signal.emit([f"Thiết bị xử lý: {device} ({_time.time()-_t0:.1f}s)"])
 
-                # --- Tự động thu nhỏ frame lớn để tiết kiệm VRAM ---
+                # --- Tự động thu nhỏ và chuẩn hóa kích thước frame (bội số của 16) để tiết kiệm VRAM và tránh lỗi mô hình AI ---
                 MAX_PREVIEW_DIM = 1080  # Giới hạn chiều lớn nhất cho preview
                 work_frame = preview_frame
                 work_mask = combined_mask
                 orig_h, orig_w = preview_frame.shape[:2]
-                scale_factor = 1.0
                 
+                # Xác định kích thước mục tiêu
                 if max(orig_h, orig_w) > MAX_PREVIEW_DIM:
                     scale_factor = MAX_PREVIEW_DIM / max(orig_h, orig_w)
                     new_w = int(orig_w * scale_factor)
                     new_h = int(orig_h * scale_factor)
+                else:
+                    new_w = orig_w
+                    new_h = orig_h
+                
+                # Ép buộc kích thước chiều dài và rộng phải chia hết cho 16
+                new_w = max(16, (new_w // 16) * 16)
+                new_h = max(16, (new_h // 16) * 16)
+                
+                if new_w != orig_w or new_h != orig_h:
                     work_frame = cv2.resize(preview_frame, (new_w, new_h))
                     if work_mask.ndim == 3:
                         work_mask = cv2.resize(combined_mask, (new_w, new_h))
                     else:
                         work_mask = cv2.resize(combined_mask, (new_w, new_h))
-                    self.append_log_signal.emit([f"Thu nhỏ frame từ {orig_w}×{orig_h} → {new_w}×{new_h} để tiết kiệm VRAM"])
+                    self.append_log_signal.emit([f"Chuẩn hóa kích thước frame từ {orig_w}×{orig_h} → {new_w}×{new_h} để tương thích mô hình AI"])
 
                 def _do_inpaint(dev):
                     """Thực hiện inpaint trên thiết bị chỉ định, trả về frame đã xử lý"""
@@ -880,8 +889,8 @@ class HomeInterface(QWidget):
                     cpu_device = torch.device("cpu")
                     inpainted_frame = _do_inpaint(cpu_device)
 
-                # --- Phóng to kết quả về kích thước gốc nếu đã thu nhỏ ---
-                if scale_factor < 1.0 and inpainted_frame is not None:
+                # --- Phóng to kết quả về kích thước gốc nếu kích thước đã thay đổi ---
+                if inpainted_frame is not None and (inpainted_frame.shape[1] != orig_w or inpainted_frame.shape[0] != orig_h):
                     inpainted_frame = cv2.resize(inpainted_frame, (orig_w, orig_h))
                     
                 # Áp dụng bộ lọc tái tạo vân bề mặt nếu cấu hình bật
