@@ -21,6 +21,8 @@ class LamaInpaint:
         else:
             orig_height, orig_width = np.array(image).shape[:2]
         image, mask = prepare_img_and_mask(image, mask, self.device)
+        # Đảm bảo mask được binarize thành 0 và 1 (tránh bị chia 255 ở prepare_img_and_mask làm nhạt mask)
+        mask = (mask > 0).float()
         with torch.inference_mode():
             inpainted = self.model(image, mask)
             cur_res = inpainted[0].permute(1, 2, 0).detach().cpu().numpy()
