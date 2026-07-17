@@ -402,8 +402,17 @@ class HomeInterface(QWidget):
                                 if key == TaskOptions.SUB_AREAS.value:
                                     value = self.video_display_component.preview_coordinates_to_video_coordinates(value)
                                 options[key] = value
-                            # 清理缓存, 使用动态路径
-                            task_item.output_path = None
+                            # Xác định output path trước để UI có thể track được
+                            if not task_item.output_path:
+                                from pathlib import Path
+                                vd_name = Path(task_item.path).stem
+                                ext = os.path.splitext(task_item.path)[-1]
+                                if is_image_file(task_item.path):
+                                    pic_dir = os.path.join(os.path.dirname(task_item.path), 'no_sub')
+                                    out_path = os.path.join(pic_dir, f'{vd_name}{ext}')
+                                else:
+                                    out_path = os.path.abspath(os.path.join(os.path.dirname(task_item.path), f'{vd_name}_no_sub.mp4'))
+                                task_item.output_path = out_path
                             output_path = task_item.output_path
                             process = self.run_subtitle_remover_process(task_item.path, output_path, options)
 
@@ -957,6 +966,10 @@ class HomeInterface(QWidget):
         super().closeEvent(event)
 
     def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
 

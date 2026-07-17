@@ -295,10 +295,10 @@ class VideoDisplayComponent(QWidget):
                 # 将比例坐标转换为像素坐标
                 ymin, ymax, xmin, xmax = rect
                 pixel_rect = QRect(
-                    int(xmin * scale_x * video_display_width),
-                    int(ymin * scale_y * video_display_height),
-                    int((xmax - xmin) * scale_x * video_display_width),
-                    int((ymax - ymin) * scale_y * video_display_height)
+                    int(xmin * pixmap_size.width()),
+                    int(ymin * pixmap_size.height()),
+                    int((xmax - xmin) * pixmap_size.width()),
+                    int((ymax - ymin) * pixmap_size.height())
                 )
                 
                 # 绘制选择框
@@ -313,10 +313,10 @@ class VideoDisplayComponent(QWidget):
                 # 将比例坐标转换为像素坐标
                 ymin, ymax, xmin, xmax = self.selection_rect
                 pixel_rect = QRect(
-                    int(xmin * scale_x * video_display_width),
-                    int(ymin * scale_y * video_display_height),
-                    int((xmax - xmin) * scale_x * video_display_width),
-                    int((ymax - ymin) * scale_y * video_display_height)
+                    int(xmin * pixmap_size.width()),
+                    int(ymin * pixmap_size.height()),
+                    int((xmax - xmin) * pixmap_size.width()),
+                    int((ymax - ymin) * pixmap_size.height())
                 )
                 
                 painter.drawRect(pixel_rect)
@@ -730,7 +730,7 @@ class VideoDisplayComponent(QWidget):
     def set_selection_rects(self, rects):
         """设置选择框"""
         self.selection_rects = rects
-        self.selection_rect = rects[-1] if rects else QRect()
+        self.selection_rect = rects[-1] if rects else (0, 0, 0, 0)
         self.active_selection_index = len(rects) - 1
         self.update_preview_with_rect()
         
@@ -754,7 +754,6 @@ class VideoDisplayComponent(QWidget):
 
         # 清空现有选区
         self.selection_rects = []
-        self.selection_ratios = []
         
         # 解析配置字符串
         areas = areas_str.split(";")
@@ -780,6 +779,9 @@ class VideoDisplayComponent(QWidget):
     
     def preview_coordinates_to_video_coordinates(self, preview_selection_rects):
         """获取选择框在原始视频中的坐标"""
+        if getattr(self, 'scaled_width', None) is None:
+            return []
+        
         selection_rects = []
         video_display_height = self.video_display.height()
         video_display_width = self.video_display.width()
