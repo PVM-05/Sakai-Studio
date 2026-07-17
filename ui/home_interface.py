@@ -28,6 +28,8 @@ class HomeInterface(QWidget):
     toggle_buttons_signal = Signal(bool)  # True=显示运行按钮, False=显示停止按钮
     task_status_signal = Signal(int, object)  # (task_index, TaskStatus)
     select_task_signal = Signal(int)  # task_index
+    # Tín hiệu trả kết quả inpaint preview từ background thread về UI thread
+    mask_preview_result_signal = Signal(object, object)  # (result_frame, error_info)
     def __init__(self, parent=None):
         super().__init__(parent=parent)
         self.setObjectName("HomeInterface")
@@ -66,6 +68,8 @@ class HomeInterface(QWidget):
         self.toggle_buttons_signal.connect(self._toggle_buttons)
         self.task_status_signal.connect(lambda idx, status: self.task_list_component.update_task_status(idx, status))
         self.select_task_signal.connect(self.task_list_component.select_task)
+        # Kết nối signal trả kết quả xem trước (background thread → UI thread)
+        self.mask_preview_result_signal.connect(self._on_mask_preview_result)
         self.setAcceptDrops(True)
 
     def __init_widgets(self):
@@ -192,7 +196,9 @@ class HomeInterface(QWidget):
                 if not ret:
                     frame = None
         if frame is not None:
-            # 更新预览图像
+            # Khôi phục trạng thái xem trước bình thường (enable dragger và draw selection)
+            self.video_display_component.set_dragger_enabled(True)
+            # Cập nhật preview với frame mới từ slider
             self.update_preview(frame)
 
     def ab_sections_changed(self, ab_sections):
@@ -593,21 +599,31 @@ class HomeInterface(QWidget):
 
     @Slot(list)
     def update_preview_with_comp(self, args):
-        """更新执行时预览"""
+        """Cập nhật preview khi đang xử lý video (hiển thị frame gốc bên trái và frame đã xóa bên phải)"""
         frame_ori, frame_comp = args
         if self.current_processing_task_index >= 0:
             subtitle_areas = self.task_list_component.get_task_option(self.current_processing_task_index, TaskOptions.SUB_AREAS, [])
             if len(subtitle_areas) > 0:
-                subtitle_areas = self.video_display_component.preview_coordinates_to_video_coordinates(subtitle_areas)
+                sub_areas_video = self.video_display_component.preview_coordinates_to_video_coordinates(subtitle_areas)
                 if frame_ori is frame_comp:
                     frame_ori = frame_ori.copy()
-                for rect in subtitle_areas:
+                for rect in sub_areas_video:
                     ymin, ymax, xmin, xmax = rect
                     cv2.rectangle(frame_ori, (xmin, ymin), (xmax, ymax), (0, 255, 0), 2)
+        # Ghép hai frame nằm ngang
         preview_frame = cv2.hconcat([frame_ori, frame_comp])
-        # 先缩放图像
+        # Cập nhật tham số video với kích thước frame ghep đôi (độ rộng gấp đôi)
+        double_width = frame_ori.shape[1] * 2
+        orig_height = frame_ori.shape[0]
+        self.video_display_component.set_video_parameters(
+            double_width, orig_height,
+            self.scaled_width if hasattr(self, 'scaled_width') else None,
+            self.scaled_height if hasattr(self, 'scaled_height') else None,
+            0, 0,
+            self.fps if self.fps is not None else 30,
+        )
+        # Căn chỉnh kích thước và hiển thị
         resized_frame = self._img_resize(preview_frame)
-        # 更新视频显示（这会同时保存current_pixmap）
         self.video_display_component.update_video_display(resized_frame, draw_selection=False)
         self.video_display_component.set_dragger_enabled(False)
 
@@ -665,19 +681,19 @@ class HomeInterface(QWidget):
         self.video_slider.setMaximum(self.frame_count)
         self.video_slider.setValue(1)
         self.video_display_component.set_dragger_enabled(True)
-        # 图片模式锁定为 LAMA
+        # Chế độ ảnh: khóa inpaint mode sang LAMA
         self._lock_inpaint_mode_to_lama()
         return True
 
     def _lock_inpaint_mode_to_lama(self):
-        """图片模式锁定 inpaint 模式为 LAMA"""
+        """Chế độ ảnh: khóa inpaint mode về LAMA"""
         if self._saved_inpaint_mode is None:
             self._saved_inpaint_mode = config.inpaintMode.value
         config.set(config.inpaintMode, InpaintMode.LAMA)
         self.setting_interface.set_inpaint_mode_enabled(False)
 
     def _unlock_inpaint_mode(self):
-        """视频模式恢复用户原始的 inpaint 模式选择"""
+        """Chế độ video: khôi phục inpaint mode ban đầu của người dùng"""
         if self._saved_inpaint_mode is not None:
             config.set(config.inpaintMode, self._saved_inpaint_mode)
             self._saved_inpaint_mode = None
@@ -685,7 +701,6 @@ class HomeInterface(QWidget):
         self.video_slider.setValue(1)
         self.video_display_component.set_dragger_enabled(True)
         return True
-
 
     def add_area_button_clicked(self):
         get_current_task_index = self.task_list_component.get_current_task_index()
@@ -739,109 +754,129 @@ class HomeInterface(QWidget):
         else:
             combined_mask = create_mask(mask_size, selections, dilation=dilation, feather_pixels=feather)
             
-        # 3. Tiến hành chạy xóa thử nghiệm (Inpaint) trên 1 frame hiện tại
+        # 3. Sao chép các giá trị cần thiết trước khi vào thread
         preview_frame = self.current_frame.copy()
         inpaint_mode = config.inpaintMode.value
+        sharpen_enabled = config.sharpenInpaintedArea.value
         
-        try:
-            self.append_output("Đang xử lý inpaint thử nghiệm trên khung hình hiện tại...")
-            import torch
-            from backend.inpaint.lama_inpaint import LamaInpaint
-            from backend.inpaint.opencv_inpaint import OpenCVInpaint
-            from backend.tools.model_config import ModelConfig
-            from backend.tools.hardware_accelerator import HardwareAccelerator
-            from backend.main import ModelCacheManager
-            
-            model_config = ModelConfig()
-            # Sử dụng CPU cho luồng xem trước trên giao diện để tránh xung đột driver CUDA/Qt gây treo ứng dụng trên Windows
-            device = torch.device("cpu")
+        self.append_output("Xem trước kết quả: đang tải mô hình và xử lý...")
+        self.mask_preview_button.setEnabled(False)
 
-            if inpaint_mode == InpaintMode.OPENCV:
-                inpainter = OpenCVInpaint()
-                inpainted_frame = inpainter(preview_frame, combined_mask)
-            elif inpaint_mode == InpaintMode.LAMA:
-                def load_lama():
-                    model_path = os.path.join(model_config.LAMA_MODEL_DIR, 'big-lama.pt')
-                    return LamaInpaint(device, model_path)
-                lama_model = ModelCacheManager.get_model("lama", load_lama)
-                inpainted_frame = lama_model(preview_frame, combined_mask)
-            elif inpaint_mode == InpaintMode.STTN_DET:
-                from backend.inpaint.sttn_det_inpaint import STTNDetInpaint
-                def load_sttn_det():
-                    return STTNDetInpaint(device, model_config.STTN_DET_MODEL_PATH)
-                sttn_model = ModelCacheManager.get_model("sttn_det", load_sttn_det)
-                frames = [preview_frame.copy() for _ in range(5)]
-                inpainted_frames = sttn_model(frames, combined_mask)
-                inpainted_frame = inpainted_frames[2]
-            elif inpaint_mode == InpaintMode.STTN_AUTO:
-                from backend.inpaint.sttn_auto_inpaint import STTNInpaint
-                def load_sttn_auto():
-                    return STTNInpaint(device, model_config.STTN_AUTO_MODEL_PATH)
-                sttn_model = ModelCacheManager.get_model("sttn_auto", load_sttn_auto)
-                frames = [preview_frame.copy() for _ in range(5)]
-                inpainted_frames = sttn_model(combined_mask, input_frames=frames)
-                inpainted_frame = inpainted_frames[2]
-            elif inpaint_mode == InpaintMode.PROPAINTER:
-                from backend.inpaint.propainter_inpaint import PropainterInpaint
-                def load_propainter():
-                    return PropainterInpaint(device, model_config.PROPAINTER_MODEL_DIR)
-                propainter_model = ModelCacheManager.get_model("propainter", load_propainter)
-                frames = [preview_frame.copy() for _ in range(5)]
-                inpainted_frames = propainter_model.inpaint(frames, combined_mask)
-                inpainted_frame = inpainted_frames[2]
+        # 4. Chạy inpaint trong background thread để tránh đơ UI
+        def _run_inpaint():
+            inpainted_frame = None
+            try:
+                import torch
+                from backend.inpaint.lama_inpaint import LamaInpaint
+                from backend.inpaint.opencv_inpaint import OpenCVInpaint
+                from backend.tools.model_config import ModelConfig
+                from backend.main import ModelCacheManager
+                
+                model_config = ModelConfig()
+                # Sử dụng CPU để tránh xung đột CUDA/Qt trên Windows
+                device = torch.device("cpu")
+
+                if inpaint_mode == InpaintMode.OPENCV:
+                    inpainter = OpenCVInpaint()
+                    inpainted_frame = inpainter(preview_frame, combined_mask)
+                elif inpaint_mode == InpaintMode.LAMA:
+                    def load_lama():
+                        model_path = os.path.join(model_config.LAMA_MODEL_DIR, 'big-lama.pt')
+                        return LamaInpaint(device, model_path)
+                    lama_model = ModelCacheManager.get_model("lama", load_lama)
+                    inpainted_frame = lama_model(preview_frame, combined_mask)
+                elif inpaint_mode == InpaintMode.STTN_DET:
+                    from backend.inpaint.sttn_det_inpaint import STTNDetInpaint
+                    def load_sttn_det():
+                        return STTNDetInpaint(device, model_config.STTN_DET_MODEL_PATH)
+                    sttn_model = ModelCacheManager.get_model("sttn_det", load_sttn_det)
+                    frames = [preview_frame.copy() for _ in range(5)]
+                    inpainted_frames = sttn_model(frames, combined_mask)
+                    inpainted_frame = inpainted_frames[2]
+                elif inpaint_mode == InpaintMode.STTN_AUTO:
+                    from backend.inpaint.sttn_auto_inpaint import STTNInpaint
+                    def load_sttn_auto():
+                        return STTNInpaint(device, model_config.STTN_AUTO_MODEL_PATH)
+                    sttn_model = ModelCacheManager.get_model("sttn_auto", load_sttn_auto)
+                    frames = [preview_frame.copy() for _ in range(5)]
+                    inpainted_frames = sttn_model(combined_mask, input_frames=frames)
+                    inpainted_frame = inpainted_frames[2]
+                elif inpaint_mode == InpaintMode.PROPAINTER:
+                    from backend.inpaint.propainter_inpaint import PropainterInpaint
+                    def load_propainter():
+                        return PropainterInpaint(device, model_config.PROPAINTER_MODEL_DIR)
+                    propainter_model = ModelCacheManager.get_model("propainter", load_propainter)
+                    frames = [preview_frame.copy() for _ in range(5)]
+                    inpainted_frames = propainter_model.inpaint(frames, combined_mask)
+                    inpainted_frame = inpainted_frames[2]
+                else:
+                    # Fallback to LAMA
+                    def load_lama_fallback():
+                        model_path = os.path.join(model_config.LAMA_MODEL_DIR, 'big-lama.pt')
+                        return LamaInpaint(device, model_path)
+                    lama_model = ModelCacheManager.get_model("lama", load_lama_fallback)
+                    inpainted_frame = lama_model(preview_frame, combined_mask)
+                    
+                # Áp dụng bộ lọc tái tạo vân bề mặt nếu cấu hình bật
+                if sharpen_enabled:
+                    gray_mask = combined_mask.astype(np.float32) / 255.0
+                    if gray_mask.ndim == 2:
+                        gray_mask = gray_mask[:, :, np.newaxis]
+                    smoothed = cv2.bilateralFilter(inpainted_frame, d=5, sigmaColor=50, sigmaSpace=50)
+                    details = cv2.subtract(inpainted_frame, smoothed)
+                    sharpened = cv2.addWeighted(inpainted_frame, 1.0, details, 1.8, 0)
+                    h, w = preview_frame.shape[:2]
+                    noise = np.random.normal(0, 2.0, (h, w, 3)).astype(np.float32)
+                    sharpened_with_noise = (sharpened.astype(np.float32) + noise).clip(0, 255).astype(np.uint8)
+                    inpainted_frame = (inpainted_frame * (1.0 - gray_mask) + sharpened_with_noise * gray_mask).clip(0, 255).astype(np.uint8)
+
+                # Cập nhật UI từ thread chính thông qua signal
+                self.mask_preview_result_signal.emit(inpainted_frame, None)
+
+            except Exception as e:
+                traceback.print_exc()
+                # Gửi lỗi về UI thread để fallback hiển thị mặt nạ đỏ
+                self.mask_preview_result_signal.emit(preview_frame, (e, combined_mask))
+
+        threading.Thread(target=_run_inpaint, daemon=True).start()
+
+    @Slot(object, object)
+    def _on_mask_preview_result(self, result_frame, error_info):
+        """Nhận kết quả inpaint từ background thread và cập nhật UI"""
+        try:
+            self.mask_preview_button.setEnabled(True)
+            if error_info is None:
+                # Hiển thị ảnh đã xóa phụ đề
+                resized_preview = self._img_resize(result_frame)
+                self.video_display_component.update_video_display(resized_preview, draw_selection=False)
+                InfoBar.success(
+                    title="Xem trước kết quả xóa",
+                    content="Đã xóa phụ đề thử nghiệm thành công. Kéo thanh trượt để quay lại bình thường.",
+                    duration=4000,
+                    parent=self
+                )
             else:
-                # Fallback to LAMA if unknown mode
-                def load_lama():
-                    model_path = os.path.join(model_config.LAMA_MODEL_DIR, 'big-lama.pt')
-                    return LamaInpaint(device, model_path)
-                lama_model = ModelCacheManager.get_model("lama", load_lama)
-                inpainted_frame = lama_model(preview_frame, combined_mask)
-                
-            # Áp dụng bộ lọc tái tạo vân bề mặt nếu cấu hình bật
-            if config.sharpenInpaintedArea.value:
-                gray_mask = combined_mask.astype(np.float32) / 255.0
-                if gray_mask.ndim == 2:
-                    gray_mask = gray_mask[:, :, np.newaxis]
-                smoothed = cv2.bilateralFilter(inpainted_frame, d=5, sigmaColor=50, sigmaSpace=50)
-                details = cv2.subtract(inpainted_frame, smoothed)
-                sharpened = cv2.addWeighted(inpainted_frame, 1.0, details, 1.8, 0)
-                h, w = self.current_frame.shape[:2]
-                noise = np.random.normal(0, 2.0, (h, w, 3)).astype(np.float32)
-                sharpened_with_noise = (sharpened.astype(np.float32) + noise).clip(0, 255).astype(np.uint8)
-                inpainted_frame = (inpainted_frame * (1.0 - gray_mask) + sharpened_with_noise * gray_mask).clip(0, 255).astype(np.uint8)
-                
-            preview_frame = inpainted_frame
-            
-            # Hiển thị ảnh xem trước đã xóa chữ lên màn hình
-            resized_preview = self._img_resize(preview_frame)
-            self.video_display_component.update_video_display(resized_preview, draw_selection=False)
-            
-            InfoBar.success(
-                title="Xem trước kết quả xóa",
-                content="Đã xóa phụ đề thử nghiệm thành công trên khung hình hiện tại.",
-                duration=3500,
-                parent=self
-            )
-            
-        except Exception as e:
+                e, combined_mask = error_info
+                self.append_output(f"Không thể chạy inpaint thử nghiệm (Lỗi: {e}). Chuyển sang hiển thị mặt nạ đỏ...")
+                # Fallback: vẽ đè màu đỏ lên vùng mặt nạ
+                red_overlay = np.zeros_like(result_frame)
+                red_overlay[:, :] = [0, 0, 255]  # BGR
+                mask_bool = combined_mask > 0
+                fallback_frame = result_frame.copy()
+                if np.any(mask_bool):
+                    fallback_frame[mask_bool] = cv2.addWeighted(result_frame, 0.4, red_overlay, 0.6, 0)[mask_bool]
+                resized_preview = self._img_resize(fallback_frame)
+                self.video_display_component.update_video_display(resized_preview, draw_selection=False)
+                InfoBar.warning(
+                    title=tr['Setting']['MaskPreview'],
+                    content="Đang hiển thị vùng mặt nạ xóa (màu đỏ). Kéo thanh trượt để quay lại bình thường.",
+                    duration=3500,
+                    parent=self
+                )
+        except Exception as ex:
             traceback.print_exc()
-            self.append_output(f"Không thể chạy inpaint thử nghiệm (Lỗi: {e}). Chuyển sang hiển thị mặt nạ đỏ...")
-            # Fallback sang vẽ đè màu đỏ để người dùng vẫn xem được mặt nạ
-            red_overlay = np.zeros_like(preview_frame)
-            red_overlay[:, :] = [0, 0, 255] # BGR
-            mask_bool = combined_mask > 0
-            if np.any(mask_bool):
-                preview_frame[mask_bool] = cv2.addWeighted(preview_frame, 0.4, red_overlay, 0.6, 0)[mask_bool]
-            
-            resized_preview = self._img_resize(preview_frame)
-            self.video_display_component.update_video_display(resized_preview, draw_selection=False)
-            
-            InfoBar.success(
-                title=tr['Setting']['MaskPreview'],
-                content="Đang hiển thị vùng mặt nạ xóa (màu đỏ). Di chuyển thanh trượt để quay lại bình thường.",
-                duration=3500,
-                parent=self
-            )
+            self.append_output(f"Lỗi khi cập nhật preview: {ex}")
+            self.mask_preview_button.setEnabled(True)
 
     def pause_resume_button_clicked(self):
         # Đổi trạng thái tạm dừng hàng đợi

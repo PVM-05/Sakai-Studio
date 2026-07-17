@@ -213,8 +213,10 @@ class VideoDisplayComponent(QWidget):
         if frame is None:
             return
 
-        # 调整视频帧大小以适应视频预览区域
-        frame = cv2.resize(frame, (self.video_preview_width, self.video_preview_height))
+        # Frame đã được _img_resize() resize chính xác về video_preview_width × video_preview_height
+        # Chỉ đảm bảo kích thước đúng để tránh lỗi nếu frame đến từ nguồn khác
+        if frame.shape[1] != self.video_preview_width or frame.shape[0] != self.video_preview_height:
+            frame = cv2.resize(frame, (self.video_preview_width, self.video_preview_height))
         # 将 OpenCV 帧（BGR 格式）转换为 QImage 并显示在 QLabel 上
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb_frame.shape
