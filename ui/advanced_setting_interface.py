@@ -296,14 +296,20 @@ class AdvancedSettingInterface(ScrollArea):
                 desc_len = len(content_text) if content_text else 0
                 title_len = len(title_text) if title_text else 0
                 
-                if desc_len == 0:
-                    height = 55
-                elif desc_len > 80 or (desc_len > 40 and title_len > 30):
+                # Đặt chiều cao tối thiểu cho nhãn mô tả tránh đè chữ
+                if desc_len > 80:
+                    child.contentLabel.setMinimumHeight(55)
                     height = 105
-                elif desc_len > 40 or title_len > 30:
+                elif desc_len > 40:
+                    child.contentLabel.setMinimumHeight(38)
                     height = 85
                 else:
+                    child.contentLabel.setMinimumHeight(18)
                     height = 70
+                    
+                if desc_len == 0:
+                    height = 55
+                    
                 child.setMinimumHeight(height)
                 child.setMaximumHeight(16777215)
 
@@ -455,13 +461,19 @@ class AdvancedSettingInterface(ScrollArea):
                 desc_len = len(content_text) if content_text else 0
                 title_len = len(title_text) if title_text else 0
                 
-                if desc_len == 0:
-                    height = 55
-                elif desc_len > 80 or (desc_len > 40 and title_len > 30):
+                # Đặt chiều cao tối thiểu cho nhãn mô tả tránh đè chữ
+                if desc_len > 80:
+                    child.contentLabel.setMinimumHeight(55)
                     height = 105
-                elif desc_len > 40 or title_len > 30:
+                elif desc_len > 40:
+                    child.contentLabel.setMinimumHeight(38)
                     height = 85
                 else:
+                    child.contentLabel.setMinimumHeight(18)
                     height = 70
+                    
+                if desc_len == 0:
+                    height = 55
+                    
                 child.setMinimumHeight(height)
                 child.setMaximumHeight(16777215)
