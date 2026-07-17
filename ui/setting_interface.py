@@ -141,6 +141,11 @@ class SettingInterface(QtWidgets.QVBoxLayout):
             if hasattr(child, 'contentLabel') and hasattr(child, 'titleLabel'):
                 child.contentLabel.setWordWrap(True)
                 child.titleLabel.setWordWrap(True)
+                
+                # Tăng chiều rộng tối thiểu để tiêu đề không bị xuống dòng vô lý
+                child.titleLabel.setMinimumWidth(400)
+                child.contentLabel.setMinimumWidth(400)
+                
                 content_text = child.contentLabel.text()
                 title_text = child.titleLabel.text()
                 desc_len = len(content_text) if content_text else 0
@@ -296,6 +301,11 @@ class SettingInterface(QtWidgets.QVBoxLayout):
             if hasattr(child, 'contentLabel') and hasattr(child, 'titleLabel'):
                 child.contentLabel.setWordWrap(True)
                 child.titleLabel.setWordWrap(True)
+                
+                # Tăng chiều rộng tối thiểu để tiêu đề không bị xuống dòng vô lý
+                child.titleLabel.setMinimumWidth(400)
+                child.contentLabel.setMinimumWidth(400)
+                
                 content_text = child.contentLabel.text()
                 title_text = child.titleLabel.text()
                 desc_len = len(content_text) if content_text else 0
