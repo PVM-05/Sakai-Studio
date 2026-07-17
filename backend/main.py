@@ -260,8 +260,11 @@ class SubtitleRemover:
                         elif len(temp_frames) == 1:
                             inner_index += 1
                             single_mask = self.get_mask(frame, sub_list[index])
-                            inpainted_frame = self.lama_inpaint.inpaint(frame, single_mask)
-                            inpainted_frame = self.apply_sharpening_to_inpainted_frame(frame, inpainted_frame, single_mask)
+                            if np.any(single_mask > 0):
+                                inpainted_frame = self.lama_inpaint.inpaint(frame, single_mask)
+                                inpainted_frame = self.apply_sharpening_to_inpainted_frame(frame, inpainted_frame, single_mask)
+                            else:
+                                inpainted_frame = frame
                             self.video_writer.write(inpainted_frame)
                             # self.append_output(f'write frame: {start_frame_no + inner_index} with mask {sub_list[start_frame_no]}')
                             self.update_progress(tbar, increment=1)
@@ -275,23 +278,32 @@ class SubtitleRemover:
                                 if len(batch) == 1:
                                     single_frame = batch[0]
                                     single_mask = self.get_mask(single_frame, sub_list[start_frame_no])
-                                    inpainted_frame = self.lama_inpaint.inpaint(single_frame, single_mask)
-                                    inpainted_frame = self.apply_sharpening_to_inpainted_frame(single_frame, inpainted_frame, single_mask)
+                                    if np.any(single_mask > 0):
+                                        inpainted_frame = self.lama_inpaint.inpaint(single_frame, single_mask)
+                                        inpainted_frame = self.apply_sharpening_to_inpainted_frame(single_frame, inpainted_frame, single_mask)
+                                    else:
+                                        inpainted_frame = single_frame
                                     self.video_writer.write(inpainted_frame)
                                     # self.append_output(f'write frame: {start_frame_no + inner_index} with mask {sub_list[start_frame_no]}')
                                     inner_index += 1
                                     self.update_progress(tbar, increment=1)
                                 elif len(batch) > 1:
-                                    inpainted_frames = propainter_inpaint(batch, mask)
-                                    # Lọc mượt thời gian khử nhấp nháy dòng phụ đề
-                                    if config.temporalSmoothing.value:
-                                        inpainted_frames = apply_temporal_smoothing(batch, inpainted_frames, mask, radius=config.temporalSmoothingRadius.value)
-                                    for i, inpainted_frame in enumerate(inpainted_frames):
-                                        inpainted_frame = self.apply_sharpening_to_inpainted_frame(batch[i], inpainted_frame, mask)
-                                        self.video_writer.write(inpainted_frame)
-                                        # self.append_output(f'write frame: {start_frame_no + inner_index} with mask {sub_list[index]}')
-                                        inner_index += 1
-                                        self.update_preview_with_comp(np.clip(batch[i]+mask[:,:,np.newaxis]*0.3,0,255).astype(np.uint8), inpainted_frame)
+                                    if np.any(mask > 0):
+                                        inpainted_frames = propainter_inpaint(batch, mask)
+                                        # Lọc mượt thời gian khử nhấp nháy dòng phụ đề
+                                        if config.temporalSmoothing.value:
+                                            inpainted_frames = apply_temporal_smoothing(batch, inpainted_frames, mask, radius=config.temporalSmoothingRadius.value)
+                                        for i, inpainted_frame in enumerate(inpainted_frames):
+                                            inpainted_frame = self.apply_sharpening_to_inpainted_frame(batch[i], inpainted_frame, mask)
+                                            self.video_writer.write(inpainted_frame)
+                                            # self.append_output(f'write frame: {start_frame_no + inner_index} with mask {sub_list[index]}')
+                                            inner_index += 1
+                                            self.update_preview_with_comp(np.clip(batch[i]+mask[:,:,np.newaxis]*0.3,0,255).astype(np.uint8), inpainted_frame)
+                                    else:
+                                        for single_frame in batch:
+                                            self.video_writer.write(single_frame)
+                                            inner_index += 1
+                                            self.update_preview_with_comp(single_frame, single_frame)
                                 self.update_progress(tbar, increment=len(batch))
 
     def get_mask(self, ref_frame, coords):
@@ -469,8 +481,12 @@ class SubtitleRemover:
             gc.collect()
             if len(sub_list):
                 mask = create_mask(original_frame.shape[0:2], sub_list)
-                inpainted_frame = self.lama_inpaint.inpaint(original_frame, mask)
-                self.update_preview_with_comp(np.clip(original_frame+mask[:,:,np.newaxis]*0.3,0,255).astype(np.uint8), inpainted_frame)
+                if np.any(mask > 0):
+                    inpainted_frame = self.lama_inpaint.inpaint(original_frame, mask)
+                    self.update_preview_with_comp(np.clip(original_frame+mask[:,:,np.newaxis]*0.3,0,255).astype(np.uint8), inpainted_frame)
+                else:
+                    inpainted_frame = original_frame
+                    self.update_preview_with_comp(original_frame, inpainted_frame)
             else:
                 inpainted_frame = original_frame
                 self.update_preview_with_comp(original_frame, inpainted_frame)

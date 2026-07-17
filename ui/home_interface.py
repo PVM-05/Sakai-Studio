@@ -355,6 +355,18 @@ class HomeInterface(QWidget):
             # 开启后台线程处理视频
             def task():
                 try:
+                    # Giải phóng VRAM tiến trình chính trước khi chạy hàng đợi
+                    try:
+                        from backend.main import ModelCacheManager
+                        ModelCacheManager.clear()
+                        import gc
+                        import torch
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                    except Exception:
+                        pass
+
                     while not self._stop_event.is_set():
                         try:
                             # Nếu hàng đợi bị tạm dừng, chờ cho đến khi được tiếp tục hoặc dừng hẳn
@@ -445,6 +457,15 @@ class HomeInterface(QWidget):
                             time.sleep(1)
                 finally:
                     self.toggle_buttons_signal.emit(True)
+                    # Giải phóng VRAM tiến trình chính sau khi hoàn thành hàng đợi
+                    try:
+                        import gc
+                        import torch
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                    except Exception:
+                        pass
 
             self._worker_thread = threading.Thread(target=task, daemon=True)
             self._worker_thread.start()
