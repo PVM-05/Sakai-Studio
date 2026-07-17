@@ -35,16 +35,8 @@ class STTNInpaint:
         # 3. # 将模型设置为评估模式
         model.eval()
         
-        # Apply torch.compile if running on GPU to optimize operation execution speed
-        if self.device.type == 'cuda':
-            try:
-                print("Compiling STTN inpainter model using torch.compile for maximum speed...")
-                self.model = torch.compile(model)
-            except Exception as e:
-                print(f"Failed to compile model: {e}. Falling back to standard model execution.")
-                self.model = model
-        else:
-            self.model = model
+        # Gỡ bỏ torch.compile trên Windows để tránh bị treo/biên dịch quá lâu lúc khởi động
+        self.model = model
 
         # 模型输入用的宽和高
         self.model_input_width, self.model_input_height = 640, 120
