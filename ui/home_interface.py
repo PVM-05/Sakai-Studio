@@ -758,10 +758,13 @@ class HomeInterface(QWidget):
         dilation = config.maskDilation.value
         feather = config.maskFeather.value
         
+        # Chuyển đổi từ format UI (ymin, ymax, xmin, xmax) sang format mask (xmin, xmax, ymin, ymax)
+        mask_coords = [(xmin, xmax, ymin, ymax) for (ymin, ymax, xmin, xmax) in selections]
+        
         if config.maskType.value == 'stroke':
-            combined_mask = create_stroke_mask(self.current_frame, mask_size, selections, dilation=dilation, feather_pixels=feather)
+            combined_mask = create_stroke_mask(self.current_frame, mask_size, mask_coords, dilation=dilation, feather_pixels=feather)
         else:
-            combined_mask = create_mask(mask_size, selections, dilation=dilation, feather_pixels=feather)
+            combined_mask = create_mask(mask_size, mask_coords, dilation=dilation, feather_pixels=feather)
             
         # 3. Sao chép các giá trị cần thiết trước khi vào thread
         preview_frame = self.current_frame.copy()
