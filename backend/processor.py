@@ -2223,7 +2223,7 @@ class SubtitleRemover:
     ) -> None:
         try:
             from backend.batch_report import write_output_sidecar
-            from gui.config import APP_VERSION
+            from backend.config import VERSION as APP_VERSION
         except Exception:
             return
         try:

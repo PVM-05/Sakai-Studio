@@ -93,8 +93,8 @@ def _ensure_runtime_helpers() -> None:
 
 def _app_version() -> str:
     try:
-        from gui.config import APP_VERSION
-        return APP_VERSION
+        from backend.config import VERSION
+        return VERSION
     except Exception:
         return ""
 

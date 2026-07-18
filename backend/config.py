@@ -706,7 +706,7 @@ import os
 import sys
 import configparser
 
-VERSION = "1.4.0"
+VERSION = "3.18.0"
 PROJECT_HOME_URL = "https://github.com/PVM-05/Sakai-Studio"
 PROJECT_ISSUES_URL = PROJECT_HOME_URL + "/issues"
 PROJECT_RELEASES_URL = PROJECT_HOME_URL + "/releases"
