@@ -143,13 +143,15 @@ class HomeInterface(QWidget):
         self.file_button.clicked.connect(self.open_file)
         button_layout.addWidget(self.file_button)
         
-        self.add_area_button = PushButton("Thêm vùng xóa", self)
+        self.add_area_button = PushButton(tr['Setting']['AddArea'], self)
         self.add_area_button.setIcon(FluentIcon.ADD)
+        self.add_area_button.setToolTip(tr['Setting']['AddAreaTooltip'])
         self.add_area_button.clicked.connect(self.add_area_button_clicked)
         button_layout.addWidget(self.add_area_button)
         
-        self.mask_preview_button = PushButton("Xem trước kết quả", self)
+        self.mask_preview_button = PushButton(tr['Setting']['MaskPreview'], self)
         self.mask_preview_button.setIcon(FluentIcon.VIEW)
+        self.mask_preview_button.setToolTip(tr['Setting']['MaskPreviewTooltip'])
         self.mask_preview_button.clicked.connect(self.mask_preview_button_clicked)
         button_layout.addWidget(self.mask_preview_button)
         
@@ -164,7 +166,7 @@ class HomeInterface(QWidget):
         self.stop_button.clicked.connect(self.stop_button_clicked)
         button_layout.addWidget(self.stop_button)
 
-        self.pause_resume_button = PushButton("Tạm dừng hàng đợi", self)
+        self.pause_resume_button = PushButton(tr['Setting'].get('PauseQueue', "Tạm dừng hàng đợi"), self)
         self.pause_resume_button.setIcon(FluentIcon.PAUSE)
         self.pause_resume_button.setVisible(False)
         self.pause_resume_button.clicked.connect(self.pause_resume_button_clicked)
@@ -448,7 +450,7 @@ class HomeInterface(QWidget):
                             # 更新任务状态为失败
                             if self.current_processing_task_index >= 0:
                                 self.task_status_signal.emit(self.current_processing_task_index, TaskStatus.FAILED)
-                            break
+                            continue
                         finally:
                             with self._video_cap_lock:
                                 if self.video_cap:
@@ -736,8 +738,8 @@ class HomeInterface(QWidget):
         get_current_task_index = self.task_list_component.get_current_task_index()
         if get_current_task_index == -1:
             InfoBar.warning(
-                title="Cảnh báo",
-                content="Vui lòng mở video hoặc chọn nhiệm vụ trước.",
+                title=tr['TaskList']['Warning'],
+                content=tr['SubtitleExtractorGUI']['PleaseSelectTask'],
                 parent=self,
                 duration=3000
             )
@@ -752,8 +754,8 @@ class HomeInterface(QWidget):
     def mask_preview_button_clicked(self):
         if not hasattr(self, 'current_frame') or self.current_frame is None:
             InfoBar.warning(
-                title="Cảnh báo",
-                content="Không có video hoặc hình ảnh hiện tại để xem trước mặt nạ.",
+                title=tr['TaskList']['Warning'],
+                content=tr['SubtitleExtractorGUI']['NoCurrentFrameForPreview'],
                 parent=self,
                 duration=3000
             )
@@ -765,8 +767,8 @@ class HomeInterface(QWidget):
         )
         if not selections:
             InfoBar.warning(
-                title="Cảnh báo",
-                content="Vui lòng khoanh vùng khu vực có phụ đề trước khi xem trước mặt nạ.",
+                title=tr['TaskList']['Warning'],
+                content=tr['SubtitleExtractorGUI']['PleaseSelectSubtitleArea'],
                 parent=self,
                 duration=3000
             )
@@ -956,26 +958,26 @@ class HomeInterface(QWidget):
             error_info = getattr(self, '_preview_error_info', None)
             
             if result_frame is None:
-                self.append_output("Lỗi: Không nhận được kết quả xem trước.")
+                self.append_output(tr['SubtitleExtractorGUI']['PreviewResultError'])
                 return
             
-            self.append_output(f"Đang cập nhật hiển thị... (frame shape: {result_frame.shape})")
+            self.append_output(tr['SubtitleExtractorGUI']['UpdatingDisplayLog'].format(result_frame.shape))
             
             if error_info is None:
                 # Hiển thị ảnh đã xóa phụ đề
                 resized_preview = self._img_resize(result_frame)
                 self.video_display_component.update_video_display(resized_preview, draw_selection=False)
                 self.video_display_component.video_display.repaint()
-                self.append_output("Đã hiển thị kết quả xóa phụ đề thành công!")
+                self.append_output(tr['SubtitleExtractorGUI']['PreviewSuccessLog'])
                 InfoBar.success(
-                    title="Xem trước kết quả xóa",
-                    content="Đã xóa phụ đề thử nghiệm thành công. Kéo thanh trượt để quay lại bình thường.",
+                    title=tr['SubtitleExtractorGUI']['PreviewSuccessTitle'],
+                    content=tr['SubtitleExtractorGUI']['PreviewSuccessContent'],
                     duration=4000,
                     parent=self
                 )
             else:
                 e, combined_mask = error_info
-                self.append_output(f"Không thể chạy inpaint thử nghiệm (Lỗi: {e}). Chuyển sang hiển thị mặt nạ đỏ...")
+                self.append_output(tr['SubtitleExtractorGUI']['PreviewFailedLog'].format(e))
                 # Fallback: vẽ đè màu đỏ lên vùng mặt nạ
                 red_overlay = np.zeros_like(result_frame)
                 red_overlay[:, :] = [0, 0, 255]  # BGR
@@ -988,13 +990,13 @@ class HomeInterface(QWidget):
                 self.video_display_component.video_display.repaint()
                 InfoBar.warning(
                     title=tr['Setting']['MaskPreview'],
-                    content="Đang hiển thị vùng mặt nạ xóa (màu đỏ). Kéo thanh trượt để quay lại bình thường.",
+                    content=tr['SubtitleExtractorGUI']['PreviewFallbackContent'],
                     duration=3500,
                     parent=self
                 )
         except Exception as ex:
             traceback.print_exc()
-            self.append_output(f"Lỗi khi cập nhật preview: {ex}")
+            self.append_output(tr['SubtitleExtractorGUI']['PreviewError'].format(ex))
             self.mask_preview_button.setEnabled(True)
             self.mask_preview_button.setText(tr['Setting'].get('MaskPreview', 'Xem trước kết quả'))
 
@@ -1006,20 +1008,20 @@ class HomeInterface(QWidget):
         if self.is_queue_paused:
             self.pause_resume_button.setText(tr['Setting'].get('ResumeQueue', "Tiếp tục hàng đợi"))
             self.pause_resume_button.setIcon(FluentIcon.PLAY)
-            self.append_output("Hàng đợi đã được TẠM DỪNG. Video hiện tại sẽ chạy nốt, video tiếp theo sẽ chờ...")
+            self.append_output(tr['SubtitleExtractorGUI']['QueuePausedLog'])
             InfoBar.warning(
-                title="Tạm dừng hàng đợi",
-                content="Hàng đợi sẽ tạm dừng sau khi video hiện tại xử lý xong.",
+                title=tr['SubtitleExtractorGUI']['PauseQueueTitle'],
+                content=tr['SubtitleExtractorGUI']['PauseQueueContent'],
                 duration=3500,
                 parent=self
             )
         else:
             self.pause_resume_button.setText(tr['Setting'].get('PauseQueue', "Tạm dừng hàng đợi"))
             self.pause_resume_button.setIcon(FluentIcon.PAUSE)
-            self.append_output("Hàng đợi đã được TIẾP TỤC.")
+            self.append_output(tr['SubtitleExtractorGUI']['QueueResumedLog'])
             InfoBar.success(
-                title="Tiếp tục hàng đợi",
-                content="Đang tiếp tục xử lý các video tiếp theo trong danh sách.",
+                title=tr['SubtitleExtractorGUI']['ResumeQueueTitle'],
+                content=tr['SubtitleExtractorGUI']['ResumeQueueContent'],
                 duration=3000,
                 parent=self
             )
@@ -1115,6 +1117,11 @@ class HomeInterface(QWidget):
         self.mask_preview_button.setToolTip(tr['Setting']['MaskPreviewTooltip'])
         self.run_button.setText(tr['SubtitleExtractorGUI']['Run'])
         self.stop_button.setText(tr['SubtitleExtractorGUI']['Stop'])
+        if self.is_queue_paused:
+            self.pause_resume_button.setText(tr['Setting'].get('ResumeQueue', "Tiếp tục hàng đợi"))
+        else:
+            self.pause_resume_button.setText(tr['Setting'].get('PauseQueue', "Tạm dừng hàng đợi"))
         self.setting_interface.retranslateUi()
         self.task_list_component.retranslateUi()
+        self.video_display_component.retranslateUi()
     

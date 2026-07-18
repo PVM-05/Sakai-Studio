@@ -1021,6 +1021,14 @@ class VideoDisplayComponent(QWidget):
         self.current_ab_start = -1
         self.update_preview_with_rect()
 
+    def retranslateUi(self):
+        """Cập nhật ngôn ngữ của context menu khi đổi ngôn ngữ nóng"""
+        self.action_mark_ab_start.setText(tr['SubtitleExtractorGUI']['MarkABStart'])
+        self.action_mark_ab_end.setText(tr['SubtitleExtractorGUI']['MarkABEnd'])
+        self.action_mark_ab_delete.setText(tr['SubtitleExtractorGUI']['DeleteABSection'])
+        self.action_delete_selection.setText(tr['SubtitleExtractorGUI']['DeleteSelection'])
+        self.action_clear_all_selections.setText(tr['SubtitleExtractorGUI'].get('ClearAllSelections', 'Clear All Selections'))
+
     def closeEvent(self, event):
         """窗口关闭时断开信号连接"""
         try:
