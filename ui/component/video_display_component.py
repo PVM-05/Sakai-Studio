@@ -181,6 +181,10 @@ class VideoDisplayComponent(QWidget):
         self.shortcut_delete_selection.activated.connect(self.__handle_delete_selection)
         self.shortcut_delete_selection.setContext(Qt.ApplicationShortcut)
 
+        self.shortcut_clear_all_selections = QShortcut(QtGui.QKeySequence("Ctrl+Delete"), self)
+        self.shortcut_clear_all_selections.activated.connect(self.clear_selections)
+        self.shortcut_clear_all_selections.setContext(Qt.ApplicationShortcut)
+
         # 添加左右键控制slider的快捷键
         self.shortcut_right = QShortcut(QtGui.QKeySequence(Qt.Key_Right), self)
         self.shortcut_right.activated.connect(lambda: self.__adjust_slider_value(self.fps))
@@ -997,6 +1001,11 @@ class VideoDisplayComponent(QWidget):
         self.action_delete_selection.triggered.connect(self.__handle_delete_selection)
         self.context_menu.addAction(self.action_delete_selection)
 
+        self.action_clear_all_selections = QAction(tr['SubtitleExtractorGUI'].get('ClearAllSelections', 'Clear All Selections'), self)
+        self.action_clear_all_selections.setShortcut("Ctrl+Delete")
+        self.action_clear_all_selections.triggered.connect(self.clear_selections)
+        self.context_menu.addAction(self.action_clear_all_selections)
+
     def get_ab_sections(self):
         """获取AB分区标记"""
         return self.ab_sections
@@ -1024,6 +1033,8 @@ class VideoDisplayComponent(QWidget):
             self.action_mark_ab_delete.triggered.disconnect(self.__handle_delete_ab_section)
             self.action_delete_selection.triggered.disconnect(self.__handle_delete_selection)
             self.shortcut_delete_selection.activated.disconnect(self.__handle_delete_selection)
+            self.action_clear_all_selections.triggered.disconnect(self.clear_selections)
+            self.shortcut_clear_all_selections.activated.disconnect(self.clear_selections)
         except Exception as e:
             print(f"Error during close window:", e)
         super().closeEvent(event)

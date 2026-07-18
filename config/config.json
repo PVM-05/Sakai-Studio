@@ -4,9 +4,9 @@
         "CheckUpdateOnStartup": true,
         "GpuVideoEncoding": true,
         "HardwareAcceleration": true,
-        "InpaintMode": "sttn-auto",
-        "MaskDilation": 14,
-        "MaskFeather": 8,
+        "InpaintMode": "propainter",
+        "MaskDilation": 10,
+        "MaskFeather": 4,
         "MaskType": "stroke",
         "PoissonBlending": true,
         "SaveDirectory": "",
@@ -31,7 +31,7 @@
         "Y": -8
     },
     "ProPainter": {
-        "MaxLoadNum": 70
+        "MaxLoadNum": 90
     },
     "Sttn": {
         "MaxLoadNum": 150,
