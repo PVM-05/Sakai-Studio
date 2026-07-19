@@ -5,7 +5,7 @@ import threading
 import multiprocessing
 import time
 import traceback
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QGridLayout
 from PySide6.QtCore import Slot, QRect, Signal
 from PySide6 import QtWidgets
 from datetime import datetime
@@ -132,47 +132,46 @@ class HomeInterface(QWidget):
         task_list_container.setLayout(task_list_layout)
         right_layout.addWidget(task_list_container, 1)  # 占满剩余空间
         
-        # 操作按钮容器
+        # Thẻ chứa các nút bấm hành động (dùng QGridLayout để gom nhóm 2 dòng tránh phình chiều rộng)
         button_container = CardWidget(self)
-        button_layout = QHBoxLayout()
-        button_layout.setContentsMargins(16, 16, 16, 16)
+        button_layout = QGridLayout(button_container)
+        button_layout.setContentsMargins(12, 12, 12, 12)
         button_layout.setSpacing(8)
         
         self.file_button = PushButton(tr['SubtitleExtractorGUI']['Open'], self)
         self.file_button.setIcon(FluentIcon.FOLDER)
         self.file_button.clicked.connect(self.open_file)
-        button_layout.addWidget(self.file_button)
+        button_layout.addWidget(self.file_button, 0, 0)
         
         self.add_area_button = PushButton(tr['Setting']['AddArea'], self)
         self.add_area_button.setIcon(FluentIcon.ADD)
         self.add_area_button.setToolTip(tr['Setting']['AddAreaTooltip'])
         self.add_area_button.clicked.connect(self.add_area_button_clicked)
-        button_layout.addWidget(self.add_area_button)
+        button_layout.addWidget(self.add_area_button, 0, 1)
         
         self.mask_preview_button = PushButton(tr['Setting']['MaskPreview'], self)
         self.mask_preview_button.setIcon(FluentIcon.VIEW)
         self.mask_preview_button.setToolTip(tr['Setting']['MaskPreviewTooltip'])
         self.mask_preview_button.clicked.connect(self.mask_preview_button_clicked)
-        button_layout.addWidget(self.mask_preview_button)
+        button_layout.addWidget(self.mask_preview_button, 0, 2)
         
         self.run_button = PushButton(tr['SubtitleExtractorGUI']['Run'], self)
         self.run_button.setIcon(FluentIcon.PLAY)
         self.run_button.clicked.connect(self.run_button_clicked)
-        button_layout.addWidget(self.run_button)
+        button_layout.addWidget(self.run_button, 1, 0)
         
         self.stop_button = PushButton(tr['SubtitleExtractorGUI']['Stop'], self)
         self.stop_button.setIcon(MyFluentIcon.Stop)
         self.stop_button.setVisible(False)
         self.stop_button.clicked.connect(self.stop_button_clicked)
-        button_layout.addWidget(self.stop_button)
-
+        button_layout.addWidget(self.stop_button, 1, 0)
+        
         self.pause_resume_button = PushButton(tr['Setting'].get('PauseQueue', "Tạm dừng hàng đợi"), self)
         self.pause_resume_button.setIcon(FluentIcon.PAUSE)
         self.pause_resume_button.setVisible(False)
         self.pause_resume_button.clicked.connect(self.pause_resume_button_clicked)
-        button_layout.addWidget(self.pause_resume_button)
-        
-        button_container.setLayout(button_layout)
+        button_layout.addWidget(self.pause_resume_button, 1, 1, 1, 2)
+
         right_layout.addWidget(button_container)
 
         main_layout.addLayout(right_layout, 1)
@@ -1124,4 +1123,12 @@ class HomeInterface(QWidget):
         self.setting_interface.retranslateUi()
         self.task_list_component.retranslateUi()
         self.video_display_component.retranslateUi()
+    
+    def open_downloaded_video(self, filepath):
+        if self.load_video(filepath):
+            self.append_output(f"{tr['SubtitleExtractorGUI']['OpenVideoSuccess']}: {filepath}")
+            self.task_list_component.add_task(filepath)
+            index = max(0, self.task_list_component.find_task_index_by_path(filepath))
+            self.task_list_component.select_task(index)
+
     

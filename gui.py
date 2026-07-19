@@ -32,6 +32,7 @@ from backend.tools.theme_listener import SystemThemeListener
 from backend.tools.process_manager import ProcessManager
 from ui.advanced_setting_interface import AdvancedSettingInterface
 from ui.home_interface import HomeInterface
+from ui.ytdlp_interface import YtdlpInterface
 
 
 class SubtitleExtractorGUI(FluentWindow): 
@@ -49,7 +50,7 @@ class SubtitleExtractorGUI(FluentWindow):
  
         # 设置窗口图标
         self.setWindowIcon(QtGui.QIcon("design/vsr.ico"))
-        self.setWindowTitle(tr['SubtitleExtractorGUI']['Title'] + " v" + VERSION)
+        self.setWindowTitle("Sakai Studio v" + VERSION)
         # 创建界面布局
         self._create_layout()
         self._connectSignalToSlot()
@@ -77,17 +78,19 @@ class SubtitleExtractorGUI(FluentWindow):
                 tr.read(translation_file, encoding='utf-8')
             
             # 2. Cập nhật tiêu đề cửa sổ chính
-            self.setWindowTitle(tr['SubtitleExtractorGUI']['Title'] + " v" + VERSION)
+            self.setWindowTitle("Sakai Studio v" + VERSION)
             
             # 3. Cập nhật tiêu đề các tab phụ trong Navigation Bar
             try:
                 self.navigationInterface.widget(self.homeInterface.objectName()).setText(tr['SubtitleExtractorGUI']['Title'])
+                self.navigationInterface.widget(self.ytdlpInterface.objectName()).setText(tr['SubtitleExtractorGUI']['YtdlpDownload'])
                 self.navigationInterface.widget(self.advancedSettingInterface.objectName()).setText(tr['Setting']['AdvancedSetting'])
             except Exception as e:
                 print("Lỗi đổi nhãn Navigation:", e)
             
             # 4. Gọi cập nhật giao diện nóng cho các component con
             self.homeInterface.retranslateUi()
+            self.ytdlpInterface.retranslateUi()
             self.advancedSettingInterface.retranslateUi()
             
             # 5. Hiển thị thông báo góc màn hình đổi thành công
@@ -110,22 +113,33 @@ class SubtitleExtractorGUI(FluentWindow):
         )
 
     def _create_layout(self):
-        # 创建主页面和高级设置页面
+        # 创建主页面、YT-DLP下载页面和高级设置页面
         self.homeInterface = HomeInterface(self)
         self.homeInterface.setObjectName("HomeInterface")
+        self.ytdlpInterface = YtdlpInterface(self)
+        self.ytdlpInterface.setObjectName("YtdlpInterface")
         self.advancedSettingInterface = AdvancedSettingInterface(self)
         self.advancedSettingInterface.setObjectName("AdvancedSettingInterface")
         
         # 添加到主窗口作为子界面
-        self.addSubInterface(self.homeInterface,FluentIcon.HOME, tr['SubtitleExtractorGUI']['Title'])
+        self.addSubInterface(self.homeInterface, FluentIcon.HOME, tr['SubtitleExtractorGUI']['Title'])
+        self.addSubInterface(self.ytdlpInterface, FluentIcon.DOWNLOAD, tr['SubtitleExtractorGUI']['YtdlpDownload'])
         self.addSubInterface(self.advancedSettingInterface, FluentIcon.SETTING, tr['Setting']['AdvancedSetting'], NavigationItemPosition.BOTTOM)
 
     def on_navigation_item_changed(self, key):
         """导航项变更时的处理函数"""
         if key == 'main':
             self.stackWidget.setCurrentIndex(0)
-        elif key == 'advanced':
+        elif key == 'ytdlp':
             self.stackWidget.setCurrentIndex(1)
+        elif key == 'advanced':
+            self.stackWidget.setCurrentIndex(2)
+
+    def open_video_in_remover(self, filepath):
+        """Switch to subtitle remover tab and open the downloaded video"""
+        self.switchTo(self.homeInterface)
+        if hasattr(self.homeInterface, 'open_downloaded_video'):
+            self.homeInterface.open_downloaded_video(filepath)
 
     def closeEvent(self, event):
         """程序关闭时保存窗口位置并清理资源"""

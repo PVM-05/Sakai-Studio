@@ -78,3 +78,9 @@ simple-lama-inpainting>=0.1.0
 
 # GUI Enhancement (optional)
 # tkinterdnd2>=0.3.0  # For native drag-drop support
+
+# YT-DLP Video Downloader
+yt-dlp
+quickjs
+
+

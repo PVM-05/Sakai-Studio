@@ -96,7 +96,7 @@ class VideoDisplayComponent(QWidget):
             border-top-right-radius: 10px;
             border: 0px solid transparent;
         """)
-        self.video_display.setMinimumSize(self.video_preview_width, self.video_preview_height)
+        self.video_display.setMinimumSize(480, 270)
         
         self.video_display.setMouseTracking(True)
         self.video_display.setScaledContents(True)
@@ -129,7 +129,7 @@ class VideoDisplayComponent(QWidget):
 
         # 设置固定的宽高比
         ratio_container.setFixedHeight(ratio_container.width() * 9 // 16)
-        ratio_container.setMinimumWidth(self.video_preview_width)
+        ratio_container.setMinimumWidth(480)
 
         # 添加到布局
         black_layout.addWidget(ratio_container)

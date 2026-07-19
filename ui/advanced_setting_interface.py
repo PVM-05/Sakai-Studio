@@ -293,8 +293,8 @@ class AdvancedSettingInterface(ScrollArea):
                 child.titleLabel.setWordWrap(True)
                 
                 # Tăng chiều rộng tối thiểu để tiêu đề không bị xuống dòng vô lý
-                child.titleLabel.setMinimumWidth(400)
-                child.contentLabel.setMinimumWidth(400)
+                child.titleLabel.setMinimumWidth(180)
+                child.contentLabel.setMinimumWidth(220)
                 
                 content_text = child.contentLabel.text()
                 title_text = child.titleLabel.text()
@@ -463,8 +463,8 @@ class AdvancedSettingInterface(ScrollArea):
                 child.titleLabel.setWordWrap(True)
                 
                 # Tăng chiều rộng tối thiểu để tiêu đề không bị xuống dòng vô lý
-                child.titleLabel.setMinimumWidth(400)
-                child.contentLabel.setMinimumWidth(400)
+                child.titleLabel.setMinimumWidth(180)
+                child.contentLabel.setMinimumWidth(220)
                 
                 content_text = child.contentLabel.text()
                 title_text = child.titleLabel.text()
