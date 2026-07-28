@@ -6,10 +6,10 @@ import multiprocessing
 import time
 import traceback
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QGridLayout
-from PySide6.QtCore import Slot, QRect, Signal
+from PySide6.QtCore import Slot, QRect, Signal, Qt, QThread
 from PySide6 import QtWidgets
 from datetime import datetime
-from qfluentwidgets import (PushButton, CardWidget, TextEdit, FluentIcon, InfoBar)
+from qfluentwidgets import (PushButton, PrimaryPushButton, CardWidget, TextEdit, FluentIcon, InfoBar, ScrollArea)
 from ui.setting_interface import SettingInterface
 from ui.component.video_display_component import VideoDisplayComponent
 from ui.component.task_list_component import TaskListComponent, TaskStatus, TaskOptions
@@ -19,6 +19,68 @@ from backend.tools.constant import InpaintMode
 from backend.tools.subtitle_remover_remote_call import SubtitleRemoverRemoteCall
 from backend.tools.process_manager import ProcessManager
 from backend.tools.common_tools import get_readable_path, is_image_file, read_image
+from backend.tools.subtitle_exporter import SubtitleExporter
+from backend.ocr_engine import VideoOcrEngine
+
+
+class FastSrtExtractThread(QThread):
+    progress_signal = Signal(float, str)
+    finished_signal = Signal(str, bool, str)  # (output_path, success, message)
+
+    def __init__(self, video_path: str, sub_areas: list, save_dir: str = "", parent=None):
+        super().__init__(parent=parent)
+        self.video_path = video_path
+        self.sub_areas = sub_areas
+        self.save_dir = save_dir
+        self._is_stopped = False
+
+    def stop(self):
+        self._is_stopped = True
+
+    def run(self):
+        if not self.video_path or not os.path.exists(self.video_path):
+            self.finished_signal.emit("", False, "Tệp video không tồn tại.")
+            return
+
+        cap = cv2.VideoCapture(self.video_path)
+        if not cap.isOpened():
+            self.finished_signal.emit("", False, "Không thể mở video.")
+            return
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        cap.release()
+
+        engine = VideoOcrEngine(
+            ocr_mode="auto",
+            ocr_lang="auto",
+            use_typo_map=True,
+            use_whisper_fallback=True,
+            use_voice_separation=False,
+        )
+        segments = engine.extract_subtitles(
+            video_path=self.video_path,
+            sub_areas=self.sub_areas,
+            progress_callback=lambda pct, msg: self.progress_signal.emit(pct, msg),
+        )
+
+        if not segments:
+            self.finished_signal.emit("", False, "Không phát hiện chữ phụ đề hay giọng nói trong video.")
+            return
+
+        items = [{"start_frame": s.start_frame, "end_frame": s.end_frame, "text": s.text} for s in segments]
+
+        from pathlib import Path
+        video_p = Path(self.video_path)
+        srt_name = f"{video_p.stem}.srt"
+        if self.save_dir and os.path.isdir(self.save_dir):
+            out_srt_path = os.path.join(self.save_dir, srt_name)
+        else:
+            out_srt_path = str(video_p.with_suffix('.srt'))
+
+        try:
+            SubtitleExporter.export_srt(out_srt_path, items, fps)
+            self.finished_signal.emit(out_srt_path, True, f"Đã trích xuất thành công {len(items)} câu phụ đề!")
+        except Exception as e:
+            self.finished_signal.emit("", False, f"Lỗi ghi file SRT: {e}")
 
 class HomeInterface(QWidget):
     progress_signal = Signal(int, bool)
@@ -59,6 +121,7 @@ class HomeInterface(QWidget):
 
         # 当前正在处理的任务索引
         self.current_processing_task_index = -1
+        self.last_exported_srt_path = None
 
         self.__init_widgets()
         self.progress_signal.connect(self.update_progress)
@@ -84,6 +147,7 @@ class HomeInterface(QWidget):
         
         # 创建视频显示组件
         self.video_display_component = VideoDisplayComponent(self)
+        self.video_display_component.set_player_mode("remover")
         self.video_display_component.ab_sections_changed.connect(self.ab_sections_changed)
         self.video_display_component.selections_changed.connect(self.selections_changed)
         left_layout.addWidget(self.video_display_component)
@@ -114,7 +178,7 @@ class HomeInterface(QWidget):
         right_layout = QVBoxLayout()
         right_layout.setSpacing(10)
 
-        # 设置容器
+        # 设置容器 (Bảng cài đặt nền trắng gốc sạch đẹp)
         settings_container = CardWidget(self)
         self.setting_interface = SettingInterface(settings_container)
         settings_container.setLayout(self.setting_interface)
@@ -149,28 +213,29 @@ class HomeInterface(QWidget):
         self.add_area_button.clicked.connect(self.add_area_button_clicked)
         button_layout.addWidget(self.add_area_button, 0, 1)
         
+
         self.mask_preview_button = PushButton(tr['Setting']['MaskPreview'], self)
         self.mask_preview_button.setIcon(FluentIcon.VIEW)
         self.mask_preview_button.setToolTip(tr['Setting']['MaskPreviewTooltip'])
         self.mask_preview_button.clicked.connect(self.mask_preview_button_clicked)
-        button_layout.addWidget(self.mask_preview_button, 0, 2)
+        button_layout.addWidget(self.mask_preview_button, 1, 0)
         
         self.run_button = PushButton(tr['SubtitleExtractorGUI']['Run'], self)
         self.run_button.setIcon(FluentIcon.PLAY)
         self.run_button.clicked.connect(self.run_button_clicked)
-        button_layout.addWidget(self.run_button, 1, 0)
+        button_layout.addWidget(self.run_button, 1, 1, 1, 2)
         
         self.stop_button = PushButton(tr['SubtitleExtractorGUI']['Stop'], self)
         self.stop_button.setIcon(MyFluentIcon.Stop)
         self.stop_button.setVisible(False)
         self.stop_button.clicked.connect(self.stop_button_clicked)
-        button_layout.addWidget(self.stop_button, 1, 0)
+        button_layout.addWidget(self.stop_button, 1, 1, 1, 2)
         
         self.pause_resume_button = PushButton(tr['Setting'].get('PauseQueue', "Tạm dừng hàng đợi"), self)
         self.pause_resume_button.setIcon(FluentIcon.PAUSE)
         self.pause_resume_button.setVisible(False)
         self.pause_resume_button.clicked.connect(self.pause_resume_button_clicked)
-        button_layout.addWidget(self.pause_resume_button, 1, 1, 1, 2)
+        button_layout.addWidget(self.pause_resume_button, 1, 3)
 
         right_layout.addWidget(button_container)
 
@@ -192,15 +257,36 @@ class HomeInterface(QWidget):
         with self._video_cap_lock:
             if self.video_cap is not None and self.video_cap.isOpened():
                 frame_no = self.video_slider.value()
-                self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
-                ret, frame = self.video_cap.read()
+                try:
+                    current_pos = int(self.video_cap.get(cv2.CAP_PROP_POS_FRAMES))
+                except Exception:
+                    current_pos = -1
+
+                # TỐI ƯU SIÊU TỐC CHO VIDEO DÀI:
+                # Nếu video đang phát liên tục (frame_no chênh lệch 0 đến 2 frame so với vị trí hiện tại của OpenCV),
+                # ĐỌC TRỰC TIẾP bằng cap.read() (tốc độ <0.5ms) thay vì cap.set() làm OpenCV decode lại từ I-Frame (tốn 80ms ➔ gây giật lag)
+                diff = frame_no - current_pos
+                if 0 <= diff <= 2:
+                    for _ in range(max(1, diff)):
+                        ret, frame = self.video_cap.read()
+                        if not ret:
+                            break
+                else:
+                    # Khi người dùng kéo thả slider nhảy cóc xa: mới gọi cap.set() để tua tới đúng vị trí
+                    self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
+                    ret, frame = self.video_cap.read()
+                
                 if not ret:
                     frame = None
+
         if frame is not None:
             # Khôi phục trạng thái xem trước bình thường (enable dragger và draw selection)
             self.video_display_component.set_dragger_enabled(True)
             # Cập nhật preview với frame mới từ slider
             self.update_preview(frame)
+        # Đồng bộ vị trí âm thanh
+        if hasattr(self, 'video_display_component'):
+            self.video_display_component.sync_audio_position(value)
 
     def ab_sections_changed(self, ab_sections):
         get_current_task_index = self.task_list_component.get_current_task_index()
@@ -213,6 +299,14 @@ class HomeInterface(QWidget):
         if get_current_task_index == -1:
             return
         self.task_list_component.update_task_option(get_current_task_index, TaskOptions.SUB_AREAS, selections)
+        # Nếu đang BẬT chế độ Tự động ôm khít nét chữ (config.autoTightenMask), tự động co hẹp bám sát nét chữ
+        if getattr(config, 'autoTightenMask', None) and config.autoTightenMask.value:
+            if not getattr(self, '_is_auto_tightening', False):
+                self._is_auto_tightening = True
+                try:
+                    self.tighten_area_button_clicked()
+                finally:
+                    self._is_auto_tightening = False
 
     def on_task_selected(self, index, file_path):
         """处理任务被选中事件
@@ -437,9 +531,21 @@ class HomeInterface(QWidget):
                             task_obj = self.task_list_component.get_task(self.current_processing_task_index)
                             if process.exitcode == 0 and task_obj and task_obj.status == TaskStatus.PROCESSING:
                                 self.progress_signal.emit(100, True)
-                                # 任务完成, 更新输出路径为只读
                                 task_obj.output_path = output_path
                                 self.task_status_signal.emit(self.current_processing_task_index, TaskStatus.COMPLETED)
+                                
+                                # Kiểm tra xem file SRT có được tạo ra không
+                                custom_dir = getattr(config, 'srtSaveDirectory', None)
+                                save_dir = custom_dir.value if (custom_dir and custom_dir.value and os.path.isdir(custom_dir.value)) else None
+                                if save_dir:
+                                    expected_srt = os.path.join(save_dir, Path(output_path).with_suffix('.srt').name)
+                                else:
+                                    expected_srt = str(Path(output_path).with_suffix('.srt'))
+                                
+                                if os.path.exists(expected_srt):
+                                    self.last_exported_srt_path = expected_srt
+                                    if hasattr(self, 'setting_interface') and hasattr(self.setting_interface, 'jump_to_translate_card'):
+                                        self.setting_interface.jump_to_translate_card.button.setEnabled(True)
                             else:
                                 self.task_status_signal.emit(self.current_processing_task_index, TaskStatus.FAILED)
 
@@ -492,7 +598,7 @@ class HomeInterface(QWidget):
             sr.video_out_path = output_path
             for key in options:
                 setattr(sr, key, options[key])
-            sr.add_progress_listener(lambda progress, isFinished: SubtitleRemoverRemoteCall.remote_call_update_progress(queue, progress, isFinished))
+            sr.add_progress_listener(lambda progress, isFinished, frame_no=0: SubtitleRemoverRemoteCall.remote_call_update_progress(queue, progress, isFinished, frame_no))
             sr.append_output = lambda *args: SubtitleRemoverRemoteCall.remote_call_append_log(queue, args)
             sr.manage_process = lambda pid: SubtitleRemoverRemoteCall.remote_call_manage_process(queue, pid)
             sr.update_preview_with_comp = lambda *args: SubtitleRemoverRemoteCall.remote_call_update_preview_with_comp(queue, args)
@@ -553,14 +659,15 @@ class HomeInterface(QWidget):
         # 重置当前处理任务索引
         self.current_processing_task_index = -1
 
-    @Slot(int, bool)
-    def update_progress(self, progress_total, isFinished):
+    def update_progress(self, progress_total, isFinished, frame_no=0):
         try:
-            pos = min(self.frame_count - 1, int(progress_total / 100 * self.frame_count))
-            if pos != self.video_slider.value():
-                self.video_slider.blockSignals(True)
-                self.video_slider.setValue(pos)
-                self.video_slider.blockSignals(False)
+            if frame_no > 0 and hasattr(self, 'frame_count') and self.frame_count and self.frame_count > 0:
+                pos = min(self.frame_count, max(1, frame_no))
+                if pos != self.video_slider.value():
+                    self.video_slider.blockSignals(True)
+                    self.video_slider.setValue(pos)
+                    self.video_slider.blockSignals(False)
+                    self.video_display_component.update_time_display()
             
             # Tính toán FPS và ETA
             fps = 0.0
@@ -631,7 +738,14 @@ class HomeInterface(QWidget):
     @Slot(list)
     def update_preview_with_comp(self, args):
         """Cập nhật preview khi đang xử lý video (hiển thị frame gốc bên trái và frame đã xóa bên phải)"""
-        frame_ori, frame_comp = args
+        frame_ori = args[0]
+        frame_comp = args[1]
+        if len(args) >= 3 and args[2] > 0 and hasattr(self, 'frame_count') and self.frame_count:
+            current_frame = min(self.frame_count, max(1, args[2]))
+            self.video_slider.blockSignals(True)
+            self.video_slider.setValue(current_frame)
+            self.video_slider.blockSignals(False)
+
         if self.current_processing_task_index >= 0:
             subtitle_areas = self.task_list_component.get_task_option(self.current_processing_task_index, TaskOptions.SUB_AREAS, [])
             if len(subtitle_areas) > 0:
@@ -657,6 +771,61 @@ class HomeInterface(QWidget):
         resized_frame = self._img_resize(preview_frame)
         self.video_display_component.update_video_display(resized_frame, draw_selection=False)
         self.video_display_component.set_dragger_enabled(False)
+        self.video_display_component.update_time_display()
+
+    def start_fast_srt_extraction(self):
+        """Kích hoạt trích xuất phụ đề nhanh (OCR & Whisper AI) mà không cần xóa video."""
+        if not hasattr(self, 'video_path') or not self.video_path or not os.path.exists(self.video_path):
+            InfoBar.warning(
+                title="Cảnh báo",
+                content=tr['SubtitleExtractorGUI']['OpenVideoFirst'],
+                parent=self,
+                duration=3000
+            )
+            return
+
+        if hasattr(self, '_fast_srt_thread') and self._fast_srt_thread and self._fast_srt_thread.isRunning():
+            InfoBar.info("Thông báo", "Đang trong quá trình trích xuất phụ đề...", parent=self, duration=3000)
+            return
+
+        selections = self.video_display_component.selection_rects if hasattr(self, 'video_display_component') else []
+        custom_dir = getattr(config, 'srtSaveDirectory', None)
+        save_dir = custom_dir.value if (custom_dir and custom_dir.value and os.path.isdir(custom_dir.value)) else ""
+
+        if hasattr(self, 'setting_interface') and hasattr(self.setting_interface, 'extract_srt_card'):
+            self.setting_interface.extract_srt_card.button.setEnabled(False)
+            self.setting_interface.extract_srt_card.button.setText("Đang trích xuất...")
+
+        InfoBar.info("Đang xử lý", "Đang trích xuất phụ đề độc lập từ video...", parent=self, duration=3000)
+
+        self._fast_srt_thread = FastSrtExtractThread(self.video_path, selections, save_dir, parent=self)
+        self._fast_srt_thread.finished_signal.connect(self._on_fast_srt_finished)
+        self._fast_srt_thread.finished.connect(self._fast_srt_thread.deleteLater)
+        self._fast_srt_thread.start()
+
+    def _on_fast_srt_finished(self, out_srt_path: str, success: bool, message: str):
+        if hasattr(self, 'setting_interface') and hasattr(self.setting_interface, 'extract_srt_card'):
+            self.setting_interface.extract_srt_card.button.setEnabled(True)
+            self.setting_interface.extract_srt_card.button.setText("Trích xuất SRT")
+
+        if success and out_srt_path:
+            self.last_exported_srt_path = out_srt_path
+            if hasattr(self, 'setting_interface') and hasattr(self.setting_interface, 'jump_to_translate_card'):
+                self.setting_interface.jump_to_translate_card.button.setEnabled(True)
+
+            InfoBar.success(
+                title="Trích xuất hoàn tất",
+                content=f"{message}\nFile đã lưu tại: {os.path.basename(out_srt_path)}. Nhấn 'Dịch SRT' để chuyển sang tab dịch!",
+                parent=self,
+                duration=4500
+            )
+        else:
+            InfoBar.error(
+                title="Thất bại",
+                content=message,
+                parent=self,
+                duration=3500
+            )
 
     @Slot(object)
     def on_task_error(self, e):
@@ -691,6 +860,10 @@ class HomeInterface(QWidget):
         self.update_preview(frame)
         self.video_slider.setMaximum(self.frame_count)
         self.video_slider.setValue(1)
+        self.video_display_component.fps = self.fps
+        self.video_display_component.set_video_path(video_path)
+        self.video_display_component.update_time_display()
+        self.video_display_component.set_controls_enabled(True)
         self.video_display_component.set_dragger_enabled(True)
         # 视频模式下恢复用户原始的 inpaint 模式选择
         self._unlock_inpaint_mode()
@@ -750,11 +923,85 @@ class HomeInterface(QWidget):
         selections = self.video_display_component.selection_rects
         self.task_list_component.update_task_option(get_current_task_index, TaskOptions.SUB_AREAS, selections)
 
-    def mask_preview_button_clicked(self):
+    def open_adv_setting_clicked(self):
+        """Chuyển trực tiếp sang tab Cài Đặt Nâng Cao"""
+        parent_window = self.window()
+        if hasattr(parent_window, 'advancedSettingInterface'):
+            parent_window.switchTo(parent_window.advancedSettingInterface)
+
+    def tighten_area_button_clicked(self):
+        """Tự động phân tích đường viền chữ bên trong khung chọn và co hẹp ôm khít nét chữ"""
         if not hasattr(self, 'current_frame') or self.current_frame is None:
             InfoBar.warning(
                 title=tr['TaskList']['Warning'],
-                content=tr['SubtitleExtractorGUI']['NoCurrentFrameForPreview'],
+                content=tr['SubtitleExtractorGUI']['OpenVideoFirst'],
+                parent=self,
+                duration=3000
+            )
+            return
+
+        selections = self.video_display_component.selection_rects
+        if not selections:
+            InfoBar.warning(
+                title=tr['TaskList']['Warning'],
+                content=tr['SubtitleExtractorGUI']['PleaseSelectSubtitleArea'],
+                parent=self,
+                duration=3000
+            )
+            return
+
+        frame_h, frame_w = self.current_frame.shape[:2]
+        new_selections = []
+
+        for rect in selections:
+            ymin_r, ymax_r, xmin_r, xmax_r = rect
+            y1 = max(0, int(ymin_r * frame_h))
+            y2 = min(frame_h, int(ymax_r * frame_h))
+            x1 = max(0, int(xmin_r * frame_w))
+            x2 = min(frame_w, int(xmax_r * frame_w))
+
+            if y2 - y1 < 5 or x2 - x1 < 5:
+                new_selections.append(rect)
+                continue
+
+            crop = self.current_frame[y1:y2, x1:x2]
+            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+            blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+            
+            edges = cv2.Canny(blurred, 50, 150)
+            _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            combined = cv2.bitwise_or(edges, thresh)
+
+            pts = np.argwhere(combined > 0)
+            if len(pts) > 10:
+                y_min_c, x_min_c = pts.min(axis=0)
+                y_max_c, x_max_c = pts.max(axis=0)
+
+                pad = 3
+                ny1 = max(y1, y1 + y_min_c - pad)
+                ny2 = min(y2, y1 + y_max_c + pad)
+                nx1 = max(x1, x1 + x_min_c - pad)
+                nx2 = min(x2, x1 + x_max_c + pad)
+
+                new_selections.append((ny1 / frame_h, ny2 / frame_h, nx1 / frame_w, nx2 / frame_w))
+            else:
+                new_selections.append(rect)
+
+        self.video_display_component.set_selection_rects(new_selections)
+        self.video_display_component.update_preview_with_rect()
+        InfoBar.success(
+            title="Thành công",
+            content="Đã tự động co hẹp và ôm khít 100% nét chữ!",
+            parent=self,
+            duration=3000
+        )
+
+    def mask_preview_button_clicked(self):
+        """Xử lý sự kiện xem trước kết quả xóa bằng thuật toán đã chọn"""
+        if not hasattr(self, 'current_frame') or self.current_frame is None:
+            InfoBar.warning(
+                title=tr['TaskList']['Warning'],
+                content=tr['SubtitleExtractorGUI']['OpenVideoFirst'],
                 parent=self,
                 duration=3000
             )
@@ -906,7 +1153,7 @@ class HomeInterface(QWidget):
                 try:
                     inpainted_frame = _do_inpaint(device)
                 except torch.cuda.OutOfMemoryError:
-                    self.append_log_signal.emit(["⚠️ GPU hết VRAM! Đang giải phóng bộ nhớ và chuyển sang CPU..."])
+                    self.append_log_signal.emit(["GPU hết VRAM! Đang giải phóng bộ nhớ và chuyển sang CPU..."])
                     torch.cuda.empty_cache()
                     cpu_device = torch.device("cpu")
                     inpainted_frame = _do_inpaint(cpu_device)
@@ -1060,14 +1307,38 @@ class HomeInterface(QWidget):
                 self._worker_thread.join(timeout=5)
 
             # 断开信号连接
-            self.progress_signal.disconnect(self.update_progress)
-            self.append_log_signal.disconnect(self.append_log)
-            self.update_preview_with_comp_signal.disconnect(self.update_preview_with_comp)
-            self.task_error_signal.disconnect(self.on_task_error)
-            self.toggle_buttons_signal.disconnect(self._toggle_buttons)
-            self.video_display_component.video_slider.valueChanged.disconnect(self.slider_changed)
-            self.video_display_component.ab_sections_changed.disconnect(self.ab_sections_changed)
-            self.video_display_component.selections_changed.disconnect(self.selections_changed)
+            try:
+                self.progress_signal.disconnect(self.update_progress)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                self.append_log_signal.disconnect(self.append_log)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                self.update_preview_with_comp_signal.disconnect(self.update_preview_with_comp)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                self.task_error_signal.disconnect(self.on_task_error)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                self.toggle_buttons_signal.disconnect(self._toggle_buttons)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                self.video_display_component.video_slider.valueChanged.disconnect(self.slider_changed)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                self.video_display_component.ab_sections_changed.disconnect(self.ab_sections_changed)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                self.video_display_component.selections_changed.disconnect(self.selections_changed)
+            except (RuntimeError, TypeError):
+                pass
             # 释放视频资源
             with self._video_cap_lock:
                 if self.video_cap:

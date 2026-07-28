@@ -1,34 +1,45 @@
 {
     "Main": {
         "AutoHardwareTuning": false,
+        "AutoTightenMask": true,
+        "BurnTranslatedSubtitles": true,
         "CheckUpdateOnStartup": true,
+        "ExportSrt": true,
         "GpuVideoEncoding": true,
         "HardwareAcceleration": true,
-        "InpaintMode": "propainter",
+        "InpaintMode": "sttn-auto",
         "MaskDilation": 10,
         "MaskFeather": 4,
         "MaskType": "stroke",
+        "MmoFlipVideo": true,
+        "MmoSpeedShift": true,
+        "MmoSubStyle": "tiktok_yellow",
+        "OcrLanguage": "ch",
+        "OcrMode": "auto",
         "PoissonBlending": true,
         "SaveDirectory": "",
         "SharpenInpaintedArea": true,
+        "SrtSaveDirectory": "",
         "SubtitleAreaDeviationPixel": 5,
         "SubtitleAreaPixelToleranceXPixel": 20,
         "SubtitleAreaPixelToleranceYPixel": 20,
         "SubtitleAreaYAxisDifferencePixel": 20,
         "SubtitleDetectMode": "PP_OCRv5_SERVER",
-        "SubtitleSelectionAreas": "0.7259,0.7741,0.4007,0.558",
+        "SubtitleSelectionAreas": "0.747,0.8024,0.1698,0.8368",
         "SubtitleTimelineBackwardFrameCount": 4,
         "subtitleTimelineForwardFrameCount": 3,
         "SubtitleYXAxisDifferencePixel": 20,
+        "TargetLanguage": "vi",
         "TemporalSmoothing": true,
-        "TemporalSmoothingRadius": 2
+        "TemporalSmoothingRadius": 2,
+        "TranslateSubtitles": true
     },
     "Window": {
         "Interface": "vi",
-        "Height": 1032,
-        "Width": 1920,
-        "X": 0,
-        "Y": -8
+        "Height": 600,
+        "Width": 944,
+        "X": 640,
+        "Y": 253
     },
     "ProPainter": {
         "MaxLoadNum": 90

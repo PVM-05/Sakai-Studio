@@ -73,13 +73,13 @@ class LamaInpaint:
         :param input_frames: 原视频帧
         :param input_mask: 字幕区域mask
         """
-        mask = input_mask[:, :, None]
+        mask = input_mask[:, :, None] if input_mask.ndim == 2 else input_mask
         H_ori, W_ori = mask.shape[:2]
         H_ori = int(H_ori + 0.5)
         W_ori = int(W_ori + 0.5)
         # 确定去字幕的垂直高度部分
         split_h = int(W_ori * 3 / 16)
-        inpaint_area = get_inpaint_area_by_mask(W_ori, H_ori, split_h, mask)
+        inpaint_area = get_inpaint_area_by_mask(W_ori, H_ori, split_h, ref_m)
         # 高分辨率帧存储列表
         frames_hr = [f.copy() for f in input_frames]
         comps = {}  # 存放补全后帧的字典

@@ -1,11 +1,29 @@
+import os
 import cv2
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QMenu
-from PySide6.QtCore import Qt, Signal, QRect, QRectF, QObject, QEvent
+from PySide6.QtCore import Qt, Signal, QRect, QRectF, QObject, QEvent, QUrl, QPoint
 from PySide6.QtGui import QAction, QShortcut, QCursor
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6 import QtCore, QtWidgets, QtGui 
-from qfluentwidgets import qconfig, CardWidget, HollowHandleStyle
+from qfluentwidgets import qconfig, CardWidget, HollowHandleStyle, TransparentToolButton, FluentIcon
 
 from backend.config import config, tr
+
+
+def format_seconds_to_hms(seconds: float) -> str:
+    if seconds < 0:
+        seconds = 0
+    total_sec = int(seconds)
+    hrs = total_sec // 3600
+    mins = (total_sec % 3600) // 60
+    secs = total_sec % 60
+    return f"{hrs:02d}:{mins:02d}:{secs:02d}"
+
+
+def make_white_icon(fluent_icon):
+    if hasattr(fluent_icon, 'icon'):
+        return fluent_icon.icon(color=QtGui.QColor(255, 255, 255))
+    return fluent_icon
 
 class VideoDisplayComponent(QWidget):
     """视频显示组件，包含视频预览和选择框功能"""
@@ -56,6 +74,25 @@ class VideoDisplayComponent(QWidget):
         self.border_top = 0
         self.fps = 30
 
+        # Timer phát video tự động
+        self.playback_timer = QtCore.QTimer(self)
+        self.playback_timer.timeout.connect(self._on_playback_tick)
+
+        # QMediaPlayer & QAudioOutput phát âm thanh đồng bộ
+        self.media_player = QMediaPlayer(self)
+        self.audio_output = QAudioOutput(self)
+        self.media_player.setAudioOutput(self.audio_output)
+        self.audio_output.setVolume(1.0)
+        self.media_player.positionChanged.connect(self._on_audio_position_changed)
+        self.video_source_path = None
+
+        # 🔴 Red Mask Overlay & 🖌️ Freehand Brush Masking
+        self.show_red_mask = False
+        self.draw_mode = 'box'  # 'box' hoặc 'brush'
+        self.brush_size = 20
+        self.freehand_strokes = []  # list các stroke {'radius': int, 'points': [(x_ratio, y_ratio)...]}
+        self.current_stroke = None
+
         self.__init_widgets()
         self.__init_shotcuts()
         
@@ -105,54 +142,222 @@ class VideoDisplayComponent(QWidget):
         self.video_display.mouseMoveEvent = self.selection_mouse_move
         self.video_display.mouseReleaseEvent = self.selection_mouse_release
         
-        # 视频滑块
+        # 视频滑块 - Thanh trượt Đỏ chuẩn YouTube
         self.video_slider = QtWidgets.QSlider(Qt.Horizontal)
         self.video_slider.setMinimum(1)
-        self.video_slider.setFixedHeight(22)
-        self.video_slider.setMaximum(100)  # 默认最大值设为100，与进度百分比一致
+        self.video_slider.setFixedHeight(16)
+        self.video_slider.setMaximum(100)
         self.video_slider.setValue(1)
-        self.video_slider.setStyle(HollowHandleStyle({
-            "handle.color": QtGui.QColor(255, 255, 255),
-            "handle.ring-width": 4,
-            "handle.hollow-radius": 6,
-            "handle.margin": 1
-        }))
+        self.video_slider.setCursor(Qt.PointingHandCursor)
+        self.video_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                height: 4px;
+                background: rgba(255, 255, 255, 0.25);
+                border-radius: 2px;
+            }
+            QSlider::sub-page:horizontal {
+                background: #FF0000;
+                border-radius: 2px;
+            }
+            QSlider::add-page:horizontal {
+                background: rgba(255, 255, 255, 0.25);
+                border-radius: 2px;
+            }
+            QSlider::handle:horizontal {
+                background: #FF0000;
+                width: 12px;
+                height: 12px;
+                margin-top: -4px;
+                margin-bottom: -4px;
+                border-radius: 6px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #FF0000;
+                width: 14px;
+                height: 14px;
+                margin-top: -5px;
+                margin-bottom: -5px;
+                border-radius: 7px;
+            }
+        """)
+        self.video_slider.valueChanged.connect(self.update_time_display)
         
-        # 视频预览区域
+        # Khung chứa hiển thị video linh hoạt theo tỉ lệ khung hình (Aspect Ratio)
         self.video_display.setObjectName('videoDisplay')
-        # black_layout.addWidget(self.video_display, 0, Qt.AlignCenter)
-        # 创建一个容器来保持比例
-        ratio_container = QWidget()
-        ratio_layout = QVBoxLayout(ratio_container)
+        self.ratio_container = QWidget()
+        ratio_layout = QVBoxLayout(self.ratio_container)
         ratio_layout.setContentsMargins(0, 0, 0, 0)
+        ratio_layout.setAlignment(Qt.AlignCenter)
         ratio_layout.addWidget(self.video_display)
 
-        # 设置固定的宽高比
-        ratio_container.setFixedHeight(ratio_container.width() * 9 // 16)
-        ratio_container.setMinimumWidth(480)
+        self.target_aspect_ratio = 9.0 / 16.0
+        self.ratio_container.setMinimumWidth(240)
 
-        # 添加到布局
-        black_layout.addWidget(ratio_container)
+        black_layout.addWidget(self.ratio_container, 0, Qt.AlignCenter)
 
-        # 添加一个事件过滤器来处理大小变化
+        outer_self = self
         class RatioEventFilter(QObject):
             def eventFilter(self, obj, event):
                 if event.type() == QEvent.Resize:
-                    obj.setFixedHeight(obj.width() * 9 // 16)
+                    aspect = getattr(outer_self, 'target_aspect_ratio', 9.0 / 16.0)
+                    if aspect <= 1.0:  # Landscape or Square
+                        new_h = int(obj.width() * aspect)
+                        if new_h > 480:
+                            new_h = 480
+                        obj.setFixedHeight(new_h)
                 return False
 
-        ratio_filter = RatioEventFilter(ratio_container)
-        ratio_container.installEventFilter(ratio_filter)
+        ratio_filter = RatioEventFilter(self.ratio_container)
+        self.ratio_container.installEventFilter(ratio_filter)
 
-        # 进度条和滑块容器
+        # 进度条和滑块容器 (Bảng điều khiển dạng YouTube Player)
         control_container = QWidget(self)
         control_layout = QVBoxLayout()
-        control_layout.setContentsMargins(8, 8, 8, 8)
+        control_layout.setContentsMargins(8, 4, 8, 6)
+        control_layout.setSpacing(4)
         control_layout.addWidget(self.video_slider)
         
+        # Thanh nút bấm & Thời gian chuẩn YouTube
+        player_bar_layout = QtWidgets.QHBoxLayout()
+        player_bar_layout.setContentsMargins(4, 2, 4, 2)
+        player_bar_layout.setSpacing(6)
+
+        btn_qss = """
+            QToolButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 4px;
+                padding: 4px;
+                min-width: 26px;
+                min-height: 26px;
+            }
+            QToolButton:hover {
+                background-color: rgba(255, 255, 255, 0.2);
+            }
+            QToolButton:disabled {
+                opacity: 0.3;
+            }
+        """
+
+        # 1. Nút Phát / Tạm dừng
+        self.play_btn = TransparentToolButton(make_white_icon(FluentIcon.PLAY), self)
+        self.play_btn.setToolTip("Phát / Tạm dừng")
+        self.play_btn.setCursor(Qt.PointingHandCursor)
+        self.play_btn.setStyleSheet(btn_qss)
+        self.play_btn.clicked.connect(self.toggle_play_pause)
+
+        # 2. Nút Tua lùi 5s
+        self.rewind_btn = TransparentToolButton(make_white_icon(FluentIcon.LEFT_ARROW), self)
+        self.rewind_btn.setToolTip("Tua lùi 5s")
+        self.rewind_btn.setCursor(Qt.PointingHandCursor)
+        self.rewind_btn.setStyleSheet(btn_qss)
+        self.rewind_btn.clicked.connect(self.seek_rewind)
+
+        # 3. Nút Tua tới 5s
+        self.forward_btn = TransparentToolButton(make_white_icon(FluentIcon.RIGHT_ARROW), self)
+        self.forward_btn.setToolTip("Tua tới 5s")
+        self.forward_btn.setCursor(Qt.PointingHandCursor)
+        self.forward_btn.setStyleSheet(btn_qss)
+        self.forward_btn.clicked.connect(self.seek_forward)
+
+        # 4. Nút Dừng và về đầu
+        self.stop_btn = TransparentToolButton(make_white_icon(FluentIcon.CANCEL if hasattr(FluentIcon, 'CANCEL') else FluentIcon.CLOSE), self)
+        self.stop_btn.setToolTip("Dừng và về đầu")
+        self.stop_btn.setCursor(Qt.PointingHandCursor)
+        self.stop_btn.setStyleSheet(btn_qss)
+        self.stop_btn.clicked.connect(self.stop_playback)
+
+        # 5. Đồng hồ Thời gian chuẩn YouTube: 00:00 / 01:30
+        self.time_display_label = QtWidgets.QLabel("00:00 / 00:00")
+        self.time_display_label.setStyleSheet("color: #EEEEEE; font-weight: 500; font-size: 13px; font-family: 'Segoe UI', Arial, sans-serif; padding-left: 6px;")
+
+        # 6. Nút Nút Tắt/Mở Loa âm lượng chuẩn YouTube
+        vol_icon = FluentIcon.VOLUME_LEVEL if hasattr(FluentIcon, 'VOLUME_LEVEL') else FluentIcon.MUSIC
+        self.volume_btn = TransparentToolButton(make_white_icon(vol_icon), self)
+        self.volume_btn.setToolTip("Tắt / Bật tiếng")
+        self.volume_btn.setCursor(Qt.PointingHandCursor)
+        self.volume_btn.setStyleSheet(btn_qss)
+        self.volume_btn.clicked.connect(self.toggle_mute)
+
+        # 7. Thanh cuộn âm lượng 0-100%
+        self.volume_slider = QtWidgets.QSlider(Qt.Horizontal, self)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(100)
+        self.volume_slider.setFixedWidth(75)
+        self.volume_slider.setCursor(Qt.PointingHandCursor)
+        self.volume_slider.setToolTip("Âm lượng: 100%")
+        self.volume_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                height: 4px;
+                background: rgba(255, 255, 255, 0.3);
+                border-radius: 2px;
+            }
+            QSlider::sub-page:horizontal {
+                background: #FFFFFF;
+                border-radius: 2px;
+            }
+            QSlider::handle:horizontal {
+                background: #FFFFFF;
+                width: 10px;
+                height: 10px;
+                margin: -3px 0;
+                border-radius: 5px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #FF0000;
+            }
+        """)
+        self.volume_slider.valueChanged.connect(self.on_volume_changed)
+
+        # 8. Nút Bật/Tắt Xem Trước Red Mask
+        red_icon = FluentIcon.VIEW if hasattr(FluentIcon, 'VIEW') else FluentIcon.SEARCH
+        self.red_mask_btn = TransparentToolButton(make_white_icon(red_icon), self)
+        self.red_mask_btn.setToolTip("Bật / Tắt xem trước Red Mask (Lớp phủ đỏ)")
+        self.red_mask_btn.setCursor(Qt.PointingHandCursor)
+        self.red_mask_btn.setStyleSheet(btn_qss)
+        self.red_mask_btn.clicked.connect(self.toggle_red_mask)
+
+        # 9. Nút Chế độ vẽ: Khoanh Hộp ↔ Cọ Vẽ Tự Do
+        brush_icon = FluentIcon.BRUSH if hasattr(FluentIcon, 'BRUSH') else FluentIcon.EDIT
+        self.brush_mode_btn = TransparentToolButton(make_white_icon(brush_icon), self)
+        self.brush_mode_btn.setToolTip("Chế độ: Khoanh Hộp (Mặc định)")
+        self.brush_mode_btn.setCursor(Qt.PointingHandCursor)
+        self.brush_mode_btn.setStyleSheet(btn_qss)
+        self.brush_mode_btn.clicked.connect(self.toggle_draw_mode)
+
+        # 10. Nút Xóa tất cả nét cọ
+        clear_icon = FluentIcon.DELETE if hasattr(FluentIcon, 'DELETE') else FluentIcon.CLOSE
+        self.clear_brush_btn = TransparentToolButton(make_white_icon(clear_icon), self)
+        self.clear_brush_btn.setToolTip("Xóa tất cả nét cọ vẽ tự do")
+        self.clear_brush_btn.setCursor(Qt.PointingHandCursor)
+        self.clear_brush_btn.setStyleSheet(btn_qss)
+        self.clear_brush_btn.clicked.connect(self.clear_freehand_strokes)
+
+        # Badge số Frame ở góc phải (kiểu HD badge)
+        self.frame_badge_label = QtWidgets.QLabel("1 / 100")
+        self.frame_badge_label.setStyleSheet("color: #CCCCCC; background-color: rgba(255, 255, 255, 0.12); border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: bold; font-family: Consolas, monospace;")
+
+        # Xếp thứ tự chuẩn YouTube: Play ➔ Tua lùi ➔ Tua tới ➔ Dừng ➔ Đồng hồ ➔ Loa ➔ Slider ➔ Red Mask ➔ Brush ➔ Xóa Cọ
+        player_bar_layout.addWidget(self.play_btn)
+        player_bar_layout.addWidget(self.rewind_btn)
+        player_bar_layout.addWidget(self.forward_btn)
+        player_bar_layout.addWidget(self.stop_btn)
+        player_bar_layout.addWidget(self.time_display_label)
+        player_bar_layout.addSpacing(10)
+        player_bar_layout.addWidget(self.volume_btn)
+        player_bar_layout.addWidget(self.volume_slider)
+        player_bar_layout.addSpacing(10)
+        player_bar_layout.addWidget(self.red_mask_btn)
+        player_bar_layout.addWidget(self.brush_mode_btn)
+        player_bar_layout.addWidget(self.clear_brush_btn)
+        player_bar_layout.addStretch(1)
+        player_bar_layout.addWidget(self.frame_badge_label)
+
+        control_layout.addLayout(player_bar_layout)
+
         control_container.setLayout(control_layout)
         control_container.setStyleSheet("""
-            background-color: black;
+            background-color: #0F0F0F;
             border-bottom-left-radius: 8px;
             border-bottom-right-radius: 8px;        
         """)
@@ -162,7 +367,211 @@ class VideoDisplayComponent(QWidget):
         video_layout.addWidget(self.black_container)
         self.video_container.setLayout(video_layout)
         main_layout.addWidget(self.video_container)
-    
+
+        # Chưa chọn video thì vô hiệu hóa nút bấm
+        self.set_controls_enabled(False)
+
+    def set_controls_enabled(self, enabled: bool):
+        """Bật / Tắt bộ điều khiển video khi có / chưa có video"""
+        self.play_btn.setEnabled(enabled)
+        self.stop_btn.setEnabled(enabled)
+        self.rewind_btn.setEnabled(enabled)
+        self.forward_btn.setEnabled(enabled)
+        self.volume_btn.setEnabled(enabled)
+        self.volume_slider.setEnabled(enabled)
+        self.red_mask_btn.setEnabled(enabled)
+        self.brush_mode_btn.setEnabled(enabled)
+        self.clear_brush_btn.setEnabled(enabled)
+        self.video_slider.setEnabled(enabled)
+
+    def set_player_mode(self, mode: str):
+        """Cấu hình giao diện trình phát phù hợp với từng tab chức năng:
+        - 'remover': Đầy đủ trình phát + Cọ vẽ tự do + Red Mask + Khung chọn
+        - 'extractor': Trình phát + Khung chọn khoanh vùng phụ đề (Không có cọ vẽ/Red Mask)
+        - 'translator' / 'player': Trình phát video tiêu chuẩn (Không vẽ/khoanh vùng)
+        """
+        self.player_mode = mode
+        if mode == "remover":
+            self.red_mask_btn.setVisible(True)
+            self.brush_mode_btn.setVisible(True)
+            self.clear_brush_btn.setVisible(True)
+            self.enable_mouse_events = True
+        elif mode == "extractor":
+            self.red_mask_btn.setVisible(False)
+            self.brush_mode_btn.setVisible(False)
+            self.clear_brush_btn.setVisible(False)
+            self.enable_mouse_events = True
+            self.draw_mode = 'box'
+        else:
+            self.red_mask_btn.setVisible(False)
+            self.brush_mode_btn.setVisible(False)
+            self.clear_brush_btn.setVisible(False)
+            self.enable_mouse_events = False
+            self.draw_mode = 'box'
+
+    def toggle_mute(self):
+        """Bật / Tắt tiếng preview video"""
+        if self.volume_slider.value() > 0:
+            self._last_volume = self.volume_slider.value()
+            self.volume_slider.setValue(0)
+        else:
+            restore_val = getattr(self, '_last_volume', 80)
+            self.volume_slider.setValue(restore_val if restore_val > 0 else 80)
+
+    def on_volume_changed(self, value: int):
+        """Thay đổi âm lượng âm thanh (0-100)"""
+        vol_float = max(0.0, min(1.0, value / 100.0))
+        if hasattr(self, 'audio_output'):
+            try:
+                self.audio_output.setVolume(vol_float)
+            except Exception:
+                pass
+        self.volume_slider.setToolTip(f"Âm lượng: {value}%")
+        if value == 0:
+            mute_icon = FluentIcon.MUTE if hasattr(FluentIcon, 'MUTE') else FluentIcon.CANCEL
+            self.volume_btn.setIcon(make_white_icon(mute_icon))
+            self.volume_btn.setToolTip("Bật tiếng")
+        else:
+            vol_icon = FluentIcon.VOLUME_LEVEL if hasattr(FluentIcon, 'VOLUME_LEVEL') else FluentIcon.MUSIC
+            self.volume_btn.setIcon(make_white_icon(vol_icon))
+            self.volume_btn.setToolTip("Tắt tiếng")
+
+    def set_video_path(self, path: str):
+        """Cài đặt đường dẫn tệp video nguồn để phát âm thanh đồng bộ"""
+        self.video_source_path = path
+        if path and os.path.exists(path) and not path.lower().endswith(('.jpg', '.png', '.jpeg', '.bmp', '.webp')):
+            try:
+                self.media_player.stop()
+                self.media_player.setSource(QUrl.fromLocalFile(os.path.abspath(path)))
+            except Exception as e:
+                print(f"Lỗi nạp âm thanh video: {e}")
+        else:
+            try:
+                self.media_player.stop()
+                self.media_player.setSource(QUrl())
+            except Exception:
+                pass
+
+    def sync_audio_position(self, frame_no=None):
+        """Đồng bộ vị trí phát âm thanh theo khung hình hiện tại"""
+        if frame_no is None:
+            frame_no = self.video_slider.value()
+        fps_val = self.fps if hasattr(self, 'fps') and self.fps and self.fps > 0 else 30
+        target_ms = int((frame_no - 1) / fps_val * 1000)
+        try:
+            if abs(self.media_player.position() - target_ms) > 300:
+                self.media_player.setPosition(target_ms)
+        except Exception:
+            pass
+
+    def toggle_play_pause(self):
+        """Phát hoặc Tạm dừng video kèm âm thanh"""
+        if not self.play_btn.isEnabled() or self.video_slider.maximum() <= 1:
+            return
+        if hasattr(self, 'playback_timer') and self.playback_timer.isActive():
+            self.playback_timer.stop()
+            try:
+                self.media_player.pause()
+            except Exception:
+                pass
+            self.play_btn.setIcon(make_white_icon(FluentIcon.PLAY))
+            self.play_btn.setToolTip("Phát / Tạm dừng")
+        else:
+            if self.video_slider.value() >= self.video_slider.maximum():
+                self.video_slider.setValue(1)
+            fps_val = self.fps if hasattr(self, 'fps') and self.fps and self.fps > 0 else 30
+            interval_ms = max(15, int(1000 / fps_val))
+
+            # Đồng bộ vị trí âm thanh
+            current_frame = self.video_slider.value()
+            current_ms = int((current_frame - 1) / fps_val * 1000)
+            try:
+                self.media_player.setPosition(current_ms)
+                self.media_player.play()
+            except Exception as e:
+                print(f"Lỗi phát âm thanh: {e}")
+
+            self.playback_timer.start(interval_ms)
+            self.play_btn.setIcon(make_white_icon(FluentIcon.PAUSE if hasattr(FluentIcon, 'PAUSE') else FluentIcon.CANCEL))
+            self.play_btn.setToolTip("Tạm dừng")
+
+    def stop_playback(self):
+        """Dừng video và quay về khung hình đầu tiên"""
+        if hasattr(self, 'playback_timer') and self.playback_timer.isActive():
+            self.playback_timer.stop()
+        try:
+            self.media_player.stop()
+            self.media_player.setPosition(0)
+        except Exception:
+            pass
+        self.play_btn.setIcon(make_white_icon(FluentIcon.PLAY))
+        self.play_btn.setToolTip("Phát / Tạm dừng")
+        self.video_slider.setValue(1)
+
+    def seek_rewind(self):
+        """Tua lùi 5 giây"""
+        if not self.rewind_btn.isEnabled() or self.video_slider.maximum() <= 1:
+            return
+        fps_val = self.fps if hasattr(self, 'fps') and self.fps and self.fps > 0 else 30
+        step = max(1, int(5 * fps_val))
+        current_val = self.video_slider.value()
+        new_val = max(self.video_slider.minimum(), current_val - step)
+        self.video_slider.setValue(new_val)
+        self.sync_audio_position(new_val)
+
+    def seek_forward(self):
+        """Tua tới 5 giây"""
+        if not self.forward_btn.isEnabled() or self.video_slider.maximum() <= 1:
+            return
+        fps_val = self.fps if hasattr(self, 'fps') and self.fps and self.fps > 0 else 30
+        step = max(1, int(5 * fps_val))
+        current_val = self.video_slider.value()
+        new_val = min(self.video_slider.maximum(), current_val + step)
+        self.video_slider.setValue(new_val)
+        self.sync_audio_position(new_val)
+
+    def _on_audio_position_changed(self, position_ms: int):
+        """Đồng bộ mượt mờ 100% không bị lag âm thanh bằng clock thực tế của QMediaPlayer"""
+        if hasattr(self, 'playback_timer') and self.playback_timer.isActive():
+            fps_val = self.fps if hasattr(self, 'fps') and self.fps and self.fps > 0 else 30
+            target_frame = max(1, min(self.video_slider.maximum(), int(position_ms / 1000.0 * fps_val) + 1))
+            if abs(self.video_slider.value() - target_frame) >= 1:
+                self.video_slider.setValue(target_frame)
+
+    def _on_playback_tick(self):
+        """Tiến tới khung hình tiếp theo khi đang phát"""
+        # Nếu media_player đang phát âm thanh, việc đồng bộ vị trí chuẩn do _on_audio_position_changed đảm nhiệm
+        if hasattr(self, 'media_player') and self.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            return
+        current_val = self.video_slider.value()
+        max_val = self.video_slider.maximum()
+        if current_val < max_val:
+            self.video_slider.setValue(current_val + 1)
+        else:
+            self.stop_playback()
+
+    def update_time_display(self):
+        """Cập nhật đồng hồ thời gian chuẩn YouTube (MM:SS / MM:SS) và Badge Khung hình"""
+        current_frame = self.video_slider.value()
+        total_frames = max(1, self.video_slider.maximum())
+        fps_val = self.fps if hasattr(self, 'fps') and self.fps and self.fps > 0 else 30
+
+        current_sec = (current_frame - 1) / fps_val
+        total_sec = total_frames / fps_val
+
+        curr_str = format_seconds_to_hms(current_sec)
+        total_str = format_seconds_to_hms(total_sec)
+
+        # Rút gọn 00:MM:SS -> MM:SS kiểu YouTube
+        if curr_str.startswith("00:"):
+            curr_str = curr_str[3:]
+        if total_str.startswith("00:"):
+            total_str = total_str[3:]
+
+        self.time_display_label.setText(f"{curr_str} / {total_str}")
+        if hasattr(self, 'frame_badge_label'):
+            self.frame_badge_label.setText(f"{current_frame} / {total_frames}")
+
     def __init_shotcuts(self):
         """初始化快捷键"""
         self.shortcut_ab_start = QShortcut(QtGui.QKeySequence("["), self)
@@ -213,15 +622,16 @@ class VideoDisplayComponent(QWidget):
         self.shortcut_shift_left.setContext(Qt.ApplicationShortcut)
 
     def update_video_display(self, frame, draw_selection=True):
-        """更新视频显示"""
+        """Cập nhật khung hình xem trước chuẩn tỉ lệ không méo."""
         if frame is None:
             return
 
-        # Frame đã được _img_resize() resize chính xác về video_preview_width × video_preview_height
-        # Chỉ đảm bảo kích thước đúng để tránh lỗi nếu frame đến từ nguồn khác
-        if frame.shape[1] != self.video_preview_width or frame.shape[0] != self.video_preview_height:
-            frame = cv2.resize(frame, (self.video_preview_width, self.video_preview_height))
-        # 将 OpenCV 帧（BGR 格式）转换为 QImage 并显示在 QLabel 上
+        target_w = getattr(self, 'video_preview_width', 640)
+        target_h = getattr(self, 'video_preview_height', 360)
+        if frame.shape[1] != target_w or frame.shape[0] != target_h:
+            frame = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
+
+        # Chuyển đổi OpenCV BGR sang QImage và QPixmap hiển thị lên QLabel
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb_frame.shape
         bytes_per_line = ch * w
@@ -263,6 +673,33 @@ class VideoDisplayComponent(QWidget):
         # 更新视频显示
         self.update_preview_with_rect(draw_selection=draw_selection)
     
+    def toggle_red_mask(self):
+        """Bật / Tắt xem trước Red Mask mờ"""
+        self.show_red_mask = not self.show_red_mask
+        if self.show_red_mask:
+            self.red_mask_btn.setToolTip("Tắt xem trước Red Mask (Đang bật)")
+        else:
+            self.red_mask_btn.setToolTip("Bật xem trước Red Mask (Lớp phủ đỏ)")
+        self.update_preview_with_rect()
+
+    def toggle_draw_mode(self):
+        """Chuyển đổi qua lại giữa Chế độ Khoanh Hộp ↔ Vẽ Cọ Tự Do"""
+        if self.draw_mode == 'box':
+            self.draw_mode = 'brush'
+            self.brush_mode_btn.setToolTip("Chế độ: Vẽ Cọ Tự Do (Đang bật)")
+            self.video_display.setCursor(Qt.CrossCursor)
+        else:
+            self.draw_mode = 'box'
+            self.brush_mode_btn.setToolTip("Chế độ: Khoanh Hộp (Mặc định)")
+            self.video_display.setCursor(Qt.ArrowCursor)
+        self.update_preview_with_rect()
+
+    def clear_freehand_strokes(self):
+        """Xóa tất cả các nét cọ vẽ tự do"""
+        self.freehand_strokes.clear()
+        self.current_stroke = None
+        self.update_preview_with_rect()
+
     def update_preview_with_rect(self, rect=None, draw_selection=True):
         """更新带有选择框的预览"""
         if not hasattr(self, 'current_pixmap') or self.current_pixmap is None:
@@ -275,54 +712,89 @@ class VideoDisplayComponent(QWidget):
         # 创建一个副本用于绘制
         pixmap_copy = self.current_pixmap.copy()
         painter = QtGui.QPainter(pixmap_copy)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
         
-        # 绘制所有选区
-        if draw_selection:
-            # 计算缩放比例
-            display_size = self.video_display.size()
-            pixmap_size = self.current_pixmap.size()
-            scale_x = pixmap_size.width() / display_size.width()
-            scale_y = pixmap_size.height() / display_size.height()
-            video_display_width = self.video_display.width()
-            video_display_height = self.video_display.height()
-            for i, rect in enumerate(self.selection_rects):
-                # 设置选择框样式
-                if i == self.active_selection_index:
-                    # 活动选区使用绿色
-                    pen = QtGui.QPen(QtGui.QColor(0, 255, 0))
+        pixmap_size = self.current_pixmap.size()
+        pw, ph = pixmap_size.width(), pixmap_size.height()
+
+        # 🔴 1. VẼ RED MASK OVERLAY NẾU ĐANG BẬT [👁️ Mask Đỏ]
+        if self.show_red_mask:
+            red_brush = QtGui.QBrush(QtGui.QColor(255, 0, 0, 110))
+            red_pen = QtGui.QPen(QtGui.QColor(255, 0, 0, 160), 2)
+            painter.setBrush(red_brush)
+            painter.setPen(red_pen)
+
+            # Vẽ phủ màu đỏ lên các hộp chữ nhật
+            for r in self.selection_rects:
+                ymin, ymax, xmin, xmax = r
+                pixel_rect = QRect(int(xmin * pw), int(ymin * ph), int((xmax - xmin) * pw), int((ymax - ymin) * ph))
+                painter.drawRect(pixel_rect)
+
+            # Vẽ phủ màu đỏ lên nét cọ tự do
+            all_strokes = list(self.freehand_strokes)
+            if getattr(self, 'current_stroke', None) and self.current_stroke.get('points'):
+                all_strokes.append(self.current_stroke)
+
+            for stroke in all_strokes:
+                pts = stroke.get('points', [])
+                if not pts:
+                    continue
+                r_val = stroke.get('radius', 20)
+                thick = max(6, int(r_val)) if r_val > 1 else max(6, int(r_val * pw * 2))
+                stroke_pen = QtGui.QPen(QtGui.QColor(255, 0, 0, 140), thick, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+                painter.setPen(stroke_pen)
+                
+                if len(pts) == 1:
+                    px, py = int(pts[0][0] * pw), int(pts[0][1] * ph)
+                    painter.drawPoint(px, py)
                 else:
-                    # 非活动选区使用黄色
-                    pen = QtGui.QPen(QtGui.QColor(255, 255, 0))
-                pen.setWidth(2)
+                    for i in range(len(pts) - 1):
+                        p1 = QPoint(int(pts[i][0] * pw), int(pts[i][1] * ph))
+                        p2 = QPoint(int(pts[i + 1][0] * pw), int(pts[i + 1][1] * ph))
+                        painter.drawLine(p1, p2)
+
+        # 🖌️ 2. VẼ CÁC NÉT CỌ TỰ DO (COLORFUL STROKES NẾU KHÔNG BẬT RED MASK)
+        if not self.show_red_mask:
+            all_strokes = list(self.freehand_strokes)
+            if getattr(self, 'current_stroke', None) and self.current_stroke.get('points'):
+                all_strokes.append(self.current_stroke)
+
+            for stroke in all_strokes:
+                pts = stroke.get('points', [])
+                if not pts:
+                    continue
+                r_val = stroke.get('radius', 20)
+                thick = max(6, int(r_val)) if r_val > 1 else max(6, int(r_val * pw * 2))
+                stroke_pen = QtGui.QPen(QtGui.QColor(0, 230, 255, 180), thick, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+                painter.setPen(stroke_pen)
+                
+                if len(pts) == 1:
+                    px, py = int(pts[0][0] * pw), int(pts[0][1] * ph)
+                    painter.drawPoint(px, py)
+                else:
+                    for i in range(len(pts) - 1):
+                        p1 = QPoint(int(pts[i][0] * pw), int(pts[i][1] * ph))
+                        p2 = QPoint(int(pts[i + 1][0] * pw), int(pts[i + 1][1] * ph))
+                        painter.drawLine(p1, p2)
+
+        # 3. VẼ HỘP CHỮ NHẬT KHUNG VIỀN SÁNG
+        if draw_selection:
+            painter.setBrush(Qt.NoBrush)
+            for i, rect in enumerate(self.selection_rects):
+                if i == self.active_selection_index:
+                    pen = QtGui.QPen(QtGui.QColor(0, 255, 0), 2)
+                else:
+                    pen = QtGui.QPen(QtGui.QColor(255, 255, 0), 2)
                 painter.setPen(pen)
-                
-                # 将比例坐标转换为像素坐标
                 ymin, ymax, xmin, xmax = rect
-                pixel_rect = QRect(
-                    int(xmin * pixmap_size.width()),
-                    int(ymin * pixmap_size.height()),
-                    int((xmax - xmin) * pixmap_size.width()),
-                    int((ymax - ymin) * pixmap_size.height())
-                )
-                
-                # 绘制选择框
+                pixel_rect = QRect(int(xmin * pw), int(ymin * ph), int((xmax - xmin) * pw), int((ymax - ymin) * ph))
                 painter.drawRect(pixel_rect)
             
-            # 如果正在绘制新选区，也绘制它
             if self.is_drawing and any(self.selection_rect):
-                pen = QtGui.QPen(QtGui.QColor(0, 255, 0))  # 绿色
-                pen.setWidth(2)
+                pen = QtGui.QPen(QtGui.QColor(0, 255, 0), 2)
                 painter.setPen(pen)
-                
-                # 将比例坐标转换为像素坐标
                 ymin, ymax, xmin, xmax = self.selection_rect
-                pixel_rect = QRect(
-                    int(xmin * pixmap_size.width()),
-                    int(ymin * pixmap_size.height()),
-                    int((xmax - xmin) * pixmap_size.width()),
-                    int((ymax - ymin) * pixmap_size.height())
-                )
-                
+                pixel_rect = QRect(int(xmin * pw), int(ymin * ph), int((xmax - xmin) * pw), int((ymax - ymin) * ph))
                 painter.drawRect(pixel_rect)
             
         # 绘制AB分区标记
@@ -387,18 +859,24 @@ class VideoDisplayComponent(QWidget):
         video_display_width = self.video_display.width()
         video_display_height = self.video_display.height()
 
-        # 开始绘制新选区
+        pos = event.pos()
+        y_ratio = max(0, min(1, (pos.y() - self.border_top) / video_display_height if video_display_height > 0 else 0))
+        x_ratio = max(0, min(1, (pos.x() - self.border_left) / video_display_width if video_display_width > 0 else 0))
+
+        # 🖌️ CHẾ ĐỘ VẼ CỌ TỰ DO
+        if getattr(self, 'draw_mode', 'box') == 'brush':
+            self.is_drawing_stroke = True
+            self.current_stroke = {
+                'radius': getattr(self, 'brush_size', 20),
+                'points': [(x_ratio, y_ratio)]
+            }
+            self.update_preview_with_rect()
+            return
+
+        # 开始绘制新选区 (Ctrl + Click)
         if event.modifiers() & Qt.ControlModifier:
-            self.is_drawing = True
-            pos = event.pos()
-            
-            # 转换为比例坐标
-            y_ratio = (pos.y() - self.border_top) / video_display_height if video_display_height > 0 else 0
-            x_ratio = (pos.x() - self.border_left) / video_display_width if video_display_width > 0 else 0
-            
-            # 初始化选区为单点
             self.selection_rect = (y_ratio, y_ratio, x_ratio, x_ratio)
-            self.drag_start_pos = (y_ratio, x_ratio)  # 保存起始点的比例坐标
+            self.drag_start_pos = (y_ratio, x_ratio)
             self.resize_edge = None
             self.active_selection_index = -1
             return
@@ -523,9 +1001,14 @@ class VideoDisplayComponent(QWidget):
         y_ratio = max(0, min(1, y_ratio))
         x_ratio = max(0, min(1, x_ratio))
         
+        # 🖌️ VẼ NÉT CỌ TỰ DO KHI RÊ CHUỘT
+        if getattr(self, 'is_drawing_stroke', False) and getattr(self, 'current_stroke', None):
+            self.current_stroke['points'].append((x_ratio, y_ratio))
+            self.update_preview_with_rect()
+            return
+
         # 根据不同的操作模式处理鼠标移动
         if self.is_drawing:  # 绘制新选择框
-            # 更新选择框的右下角，保留原始拖动方向
             start_y, _, start_x, _ = self.selection_rect
             self.selection_rect = (start_y, y_ratio, start_x, x_ratio)
             self.update_preview_with_rect()
@@ -534,11 +1017,8 @@ class VideoDisplayComponent(QWidget):
             start_y, start_x = self.drag_start_pos
             
             if self.resize_edge == "move":
-                # 移动整个选择框
                 dy = y_ratio - start_y
                 dx = x_ratio - start_x
-                
-                # 计算新位置，确保不超出边界
                 new_ymin = max(0, min(1 - (ymax - ymin), ymin + dy))
                 new_ymax = min(1, max(new_ymin + (ymax - ymin), new_ymin))
                 new_xmin = max(0, min(1 - (xmax - xmin), xmin + dx))
@@ -547,7 +1027,6 @@ class VideoDisplayComponent(QWidget):
                 self.selection_rects[self.active_selection_index] = (new_ymin, new_ymax, new_xmin, new_xmax)
                 self.drag_start_pos = (y_ratio, x_ratio)
             else:
-                # 调整选择框大小
                 if "left" in self.resize_edge:
                     xmin = min(xmax - 0.01, x_ratio)
                 if "right" in self.resize_edge:
@@ -557,13 +1036,11 @@ class VideoDisplayComponent(QWidget):
                 if "bottom" in self.resize_edge:
                     ymax = max(ymin + 0.01, y_ratio)
                 
-                # 确保选择框在有效范围内
                 xmin = max(0, min(xmin, 1))
                 xmax = max(0, min(xmax, 1))
                 ymin = max(0, min(ymin, 1))
                 ymax = max(0, min(ymax, 1))
                 
-                # 确保xmin < xmax, ymin < ymax
                 if xmin > xmax:
                     xmin, xmax = xmax, xmin
                 if ymin > ymax:
@@ -573,7 +1050,6 @@ class VideoDisplayComponent(QWidget):
             
             self.update_preview_with_rect()
         else:
-            # 更新鼠标光标形状
             self.update_cursor_shape(pos)
     
     def selection_mouse_release(self, event):
@@ -581,6 +1057,16 @@ class VideoDisplayComponent(QWidget):
         if not self.enable_mouse_events:
             return
             
+        # 🖌️ KẾT THÚC VẼ NÉT CỌ TỰ DO
+        if getattr(self, 'is_drawing_stroke', False) and getattr(self, 'current_stroke', None):
+            self.is_drawing_stroke = False
+            if len(self.current_stroke['points']) > 0:
+                self.freehand_strokes.append(self.current_stroke)
+            self.current_stroke = None
+            self.update_preview_with_rect()
+            self.selections_changed.emit(self.selection_rects)
+            return
+
         # 结束绘制或调整
         if self.is_drawing:
             # 标准化选择框（确保ymin < ymax, xmin < xmax）
@@ -718,18 +1204,82 @@ class VideoDisplayComponent(QWidget):
                              scaled_width=None, scaled_height=None, 
                              border_left=0, border_top=0, 
                              fps=30):
-        """设置视频参数"""
+        """Cài đặt thông số video và tự động tính toán tỷ lệ khung hình (Aspect Ratio) chính xác không bị méo."""
         self.frame_width = frame_width
         self.frame_height = frame_height
         self.scaled_width = scaled_width
         self.scaled_height = scaled_height
         self.border_left = border_left
         self.border_top = border_top
-        self.fps = fps
+        self.fps = fps if fps and fps > 0 else 30
+
+        if frame_width and frame_height and frame_width > 0 and frame_height > 0:
+            aspect = float(frame_height) / float(frame_width)
+            self.target_aspect_ratio = aspect
+
+            # Tự động tính kích thước xem trước tỉ lệ 1:1 chuẩn xác với mọi video (16:9, 9:16, 1:1, 4:3, 21:9...)
+            if aspect > 1.0:  # Video Dọc (Vertical Video: TikTok, Shorts 9:16)
+                self.video_preview_height = 420
+                self.video_preview_width = max(200, int(420 / aspect))
+            elif aspect == 1.0:  # Video Vuông (Square Video 1:1)
+                self.video_preview_height = 360
+                self.video_preview_width = 360
+            else:  # Video Ngang (Landscape Video 16:9, 4:3, 21:9)
+                self.video_preview_width = 680
+                self.video_preview_height = int(680 * aspect)
+
+            if hasattr(self, 'ratio_container') and self.ratio_container:
+                self.ratio_container.setFixedWidth(self.video_preview_width)
+                self.ratio_container.setFixedHeight(self.video_preview_height)
+            if hasattr(self, 'video_display') and self.video_display:
+                self.video_display.setFixedSize(self.video_preview_width, self.video_preview_height)
     
     def get_selection_coordinates(self):
-        """获取选择框坐标"""
-        return self.selection_rect
+        """Lấy danh sách tọa độ các vùng chọn (ymin, ymax, xmin, xmax)."""
+        if hasattr(self, 'selection_rects') and self.selection_rects:
+            return list(self.selection_rects)
+        if hasattr(self, 'selection_rect') and any(self.selection_rect):
+            return [self.selection_rect]
+        return []
+
+    def set_mask_mode(self, mode):
+        """Thiết lập chế độ chọn mask: 'rect' (ô vuông) hoặc 'brush' (cọ vẽ tự do)"""
+        self.mask_mode = mode
+        if mode == "brush":
+            self.video_display.setCursor(Qt.CrossCursor)
+        else:
+            self.video_display.setCursor(Qt.ArrowCursor)
+        self.update_preview_with_rect()
+
+    def set_brush_size(self, size):
+        """Thiết lập đường kính cọ vẽ (pixels)"""
+        self.brush_size = max(2, min(200, size))
+
+    def clear_brush_strokes(self):
+        """Xóa tất cả các nét cọ vẽ"""
+        self.brush_strokes = []
+        self.update_preview_with_rect()
+
+    def set_split_view(self, enabled, after_frame=None):
+        """Bật/Tắt chế độ so sánh Split-View trước/sau"""
+        self.split_view_enabled = enabled
+        if after_frame is not None:
+            self.set_after_frame(after_frame)
+        self.update_preview_with_rect()
+
+    def set_after_frame(self, frame):
+        """Nạp khung hình đã inpaint/xóa để hiển thị so sánh Split-View"""
+        if frame is None:
+            self.after_pixmap = None
+            return
+        try:
+            h, w, c = frame.shape
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            qimg = QtGui.QImage(rgb_frame.data, w, h, w * c, QtGui.QImage.Format_RGB888)
+            self.after_pixmap = QtGui.QPixmap.fromImage(qimg)
+        except Exception:
+            self.after_pixmap = None
+        self.update_preview_with_rect()
     
     def set_selection_rects(self, rects):
         """设置选择框"""
@@ -783,12 +1333,14 @@ class VideoDisplayComponent(QWidget):
     
     def preview_coordinates_to_video_coordinates(self, preview_selection_rects):
         """获取选择框在原始视频中的坐标"""
-        if getattr(self, 'scaled_width', None) is None:
+        if getattr(self, 'scaled_width', None) is None or not self.scaled_width or not self.scaled_height:
             return []
         
         selection_rects = []
         video_display_height = self.video_display.height()
         video_display_width = self.video_display.width()
+        if not video_display_width or not video_display_height:
+            return []
         for rect in preview_selection_rects:
             ymin, ymax, xmin, xmax = rect
                 
@@ -850,8 +1402,9 @@ class VideoDisplayComponent(QWidget):
         return self.selection_rects
     
     def clear_selections(self):
-        """清除所有选区"""
+        """清除所有选区与 cọ vẽ"""
         self.selection_rects = []
+        self.brush_strokes = []
         self.active_selection_index = -1
         self.update_preview_with_rect()
         self.selections_changed.emit(self.selection_rects)

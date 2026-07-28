@@ -216,7 +216,9 @@ class SubtitleDetect:
                     sampled_results[current_frame_no] = temp_list
             tbar.update(1)
             if sub_remover:
-                sub_remover.progress_total = (100 * float(current_frame_no) / float(frame_count)) // 2
+                sub_remover.current_frame_no = current_frame_no
+                sub_remover.progress_total = int((float(current_frame_no) / float(frame_count)) * 40)
+                sub_remover.notify_progress_listeners()
         video_cap.release()
         # 阶段2：插值填充 — 两个采样帧之间都有字幕时，中间帧也标记为有字幕
         subtitle_frame_no_box_dict = {}

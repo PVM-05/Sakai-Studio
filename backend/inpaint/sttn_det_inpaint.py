@@ -40,7 +40,7 @@ class STTNDetInpaint:
         :param input_frames: 原视频帧
         :param mask: 字幕区域mask
         """
-        mask = input_mask[:, :, None]
+        mask = input_mask[:, :, None] if input_mask.ndim == 2 else input_mask
         H_ori, W_ori = mask.shape[:2]
         H_ori = int(H_ori + 0.5)
         W_ori = int(W_ori + 0.5)
@@ -65,10 +65,11 @@ class STTNDetInpaint:
         # 读取并缩放帧
         for j in range(len(frames_hr)):
             image = frames_hr[j]
+            cur_mask = mask
             # 对每个去除部分进行切割和缩放
             for k in range(len(inpaint_area)):
                 image_crop = image[inpaint_area[k][0]:inpaint_area[k][1], :, :]  # 切割
-                mask_crop = mask[inpaint_area[k][0]:inpaint_area[k][1], :, :]  # 切割
+                mask_crop = cur_mask[inpaint_area[k][0]:inpaint_area[k][1], :, :]  # 切割
                 image_resize = cv2.resize(image_crop, (self.model_input_width, self.model_input_height))  # 缩放
                 mask_resize = cv2.resize(mask_crop, (self.model_input_width, self.model_input_height))  # 缩放
                 frames_scaled[k].append(image_resize)  # 将缩放后的帧添加到对应列表

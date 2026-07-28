@@ -13,6 +13,10 @@ working unchanged.
 
 from __future__ import annotations
 
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning, module='.*onnxruntime.*')
+warnings.filterwarnings('ignore', message='.*Unsupported Windows version.*')
+
 import logging
 from dataclasses import dataclass
 from enum import Enum
@@ -316,6 +320,11 @@ class ProcessingConfig:
     karaoke_grouping: bool = False
     karaoke_x_gap_px: int = 20
     karaoke_y_overlap: float = 0.5   # 0..1 vertical overlap to call "same line"
+
+    # Dynamic Translation & Subtitle Export settings
+    translate_subtitles: bool = False
+    burn_translated_subtitles: bool = False
+    target_language: str = "vi"
 
 
 def _coerce_bool(value, default: bool) -> bool:
@@ -771,9 +780,20 @@ class Config(QConfig):
     autoHardwareTuning = ConfigItem("Main", "AutoHardwareTuning", True, BoolValidator())
     gpuVideoEncoding = ConfigItem("Main", "GpuVideoEncoding", True, BoolValidator())
     sharpenInpaintedArea = ConfigItem("Main", "SharpenInpaintedArea", True, BoolValidator())
+    autoTightenMask = ConfigItem("Main", "AutoTightenMask", True, BoolValidator())
     maskDilation = RangeConfigItem("Main", "MaskDilation", 8, RangeValidator(0, 50))
     maskFeather = RangeConfigItem("Main", "MaskFeather", 8, RangeValidator(0, 30))
     temporalSmoothingRadius = RangeConfigItem("Main", "TemporalSmoothingRadius", 2, RangeValidator(1, 10))
+    translateSubtitles = ConfigItem("Main", "TranslateSubtitles", False, BoolValidator())
+    burnTranslatedSubtitles = ConfigItem("Main", "BurnTranslatedSubtitles", False, BoolValidator())
+    targetLanguage = ConfigItem("Main", "TargetLanguage", "vi", ConfigValidator())
+    exportSrt = ConfigItem("Main", "ExportSrt", False, BoolValidator())
+    srtSaveDirectory = ConfigItem("Main", "SrtSaveDirectory", "", ConfigValidator())
+    ocrMode = OptionsConfigItem("Main", "OcrMode", "auto", OptionsValidator(["auto", "fast", "precise"]))
+    ocrLanguage = OptionsConfigItem("Main", "OcrLanguage", "vi", OptionsValidator(["vi", "en", "ch", "japan", "korean", "french", "german", "ru", "es"]))
+    mmoFlipVideo = ConfigItem("Main", "MmoFlipVideo", True, BoolValidator())
+    mmoSpeedShift = ConfigItem("Main", "MmoSpeedShift", True, BoolValidator())
+    mmoSubStyle = ConfigItem("Main", "MmoSubStyle", "tiktok_yellow", ConfigValidator())
 
 CONFIG_FILE = 'config/config.json'
 if not os.path.exists(CONFIG_FILE):

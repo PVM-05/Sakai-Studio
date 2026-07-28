@@ -34,26 +34,40 @@ models/*.pth
 models/*.pt
 models/*.onnx
 models/*.bin
+models/*.gguf
 !models/README.txt
 
 # Ignore all model weights under backend/models
 backend/models/
 
+# Test media files
+test/*.mp4
+test/*.avi
+test/*.mkv
+test/*.png
+test/*.jpg
+test/*.wav
+test/*.mp3
+
+# User-specific config (auto-generated at runtime)
+config/folder_memory.json
+config/translation_api_config.json
+config/ytdlp_settings.json
+
 # Environment
 .env
 .env.local
 .python-version
+.condarc
+
+# AI assistant config
 CLAUDE.md
-
-# Markdown files local-only (except README)
-*.md
-!README.md
-
-# AI config
 CODEX_CHANGELOG.md
 AGENTS.md
+PROJECT_CONTEXT.md
+CONTINUATION_PROMPT.md
+design_rules.md
 .claude/
 .codex/
 .ai/
-PROJECT_CONTEXT.md
-CONTINUATION_PROMPT.md
+.gemini/

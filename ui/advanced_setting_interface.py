@@ -10,6 +10,7 @@ from qfluentwidgets import (ScrollArea, ExpandLayout, CardWidget, SubtitleLabel,
                            HyperlinkCard, PrimaryPushSettingCard, PushSettingCard,
                            MessageBox)
 from backend.config import config, tr, VERSION, PROJECT_HOME_URL, PROJECT_ISSUES_URL, PROJECT_RELEASES_URL
+from backend.tools.folder_memory import FolderMemoryDialog
 from backend.tools.version_service import VersionService
 from backend.tools.concurrent import TaskExecutor
 
@@ -42,6 +43,15 @@ class AdvancedSettingInterface(ScrollArea):
         self.setup_layout()
 
     def setup_layout(self):
+        self.subtitle_removal_group.addSettingCard(self.hardware_acceleration)
+        self.subtitle_removal_group.addSettingCard(self.poisson_blending)
+        self.subtitle_removal_group.addSettingCard(self.temporal_smoothing)
+        self.subtitle_removal_group.addSettingCard(self.sharpen_inpainted_area)
+        self.subtitle_removal_group.addSettingCard(self.mask_dilation)
+        self.subtitle_removal_group.addSettingCard(self.mask_feather)
+        self.subtitle_removal_group.addSettingCard(self.auto_tighten_card)
+        self.expandLayout.addWidget(self.subtitle_removal_group)
+
         self.subtitle_detection_group.addSettingCard(self.subtitle_yx_axis_difference_pixel)
         self.subtitle_detection_group.addSettingCard(self.subtitle_area_deviation_pixel)
         self.subtitle_detection_group.addSettingCard(self.subtitle_area_y_axis_difference_pixel)
@@ -63,8 +73,6 @@ class AdvancedSettingInterface(ScrollArea):
         self.advanced_group.addSettingCard(self.check_update_on_startup)
         self.advanced_group.addSettingCard(self.auto_hardware_tuning)
         self.advanced_group.addSettingCard(self.gpu_video_encoding)
-        self.advanced_group.addSettingCard(self.mask_dilation)
-        self.advanced_group.addSettingCard(self.mask_feather)
         self.advanced_group.addSettingCard(self.temporal_smoothing_radius)
         self.expandLayout.addWidget(self.advanced_group)
 
@@ -75,9 +83,72 @@ class AdvancedSettingInterface(ScrollArea):
         self.expandLayout.addWidget(self.about_group)
         self.expandLayout.setSpacing(16)
         self.expandLayout.setContentsMargins(16, 16, 16, 48)
+
+    def _trigger_auto_tighten_from_advanced(self):
+        """Kích hoạt tính năng Ôm Khít Nét Chữ trên giao diện chính HomeInterface"""
+        parent_window = self.window()
+        if hasattr(parent_window, 'homeInterface'):
+            parent_window.switchTo(parent_window.homeInterface)
+            if hasattr(parent_window.homeInterface, 'tighten_area_button_clicked'):
+                parent_window.homeInterface.tighten_area_button_clicked()
         
     def setup_ui(self):
         """设置UI"""
+        # Nhóm tính năng nâng cao Xóa phụ đề
+        self.subtitle_removal_group = SettingCardGroup(" Tùy Chọn Xóa Phụ Đề & Nét Chữ Nâng Cao", self.scrollWidget)
+
+        # 1. 🎯 Smart Auto-Tighten Mask
+        self.auto_tighten_card = SwitchSettingCard(
+            configItem=config.autoTightenMask,
+            icon=FluentIcon.ZOOM_IN if hasattr(FluentIcon, 'ZOOM_IN') else FluentIcon.SEARCH,
+            title="Tự động ôm khít nét chữ (Smart Auto-Tighten Mask)",
+            content="Tự động phân tích Canny Edge & Otsu Thresholding co hẹp khung vừa khít 100% nét chữ thực tế",
+            parent=self.subtitle_removal_group
+        )
+        self.auto_tighten_card.setToolTip("Khi bật tự động, hệ thống sẽ tự động ôm khít 100% nét chữ sau khi nhận diện và khóa chỉnh tay. Tắt đi để tùy chỉnh thủ công.")
+        self.auto_tighten_card.switchButton.checkedChanged.connect(self.on_auto_tighten_changed)
+        QtCore.QTimer.singleShot(0, lambda: self.on_auto_tighten_changed(config.autoTightenMask.value))
+
+        # 2. Hardware Acceleration
+        self.hardware_acceleration = SwitchSettingCard(
+            configItem=config.hardwareAcceleration,
+            icon=FluentIcon.SPEED_HIGH, 
+            title=tr["Setting"]["HardwareAcceleration"],
+            content=tr["Setting"]["HardwareAccelerationDesc"],
+            parent=self.subtitle_removal_group
+        )
+        self.hardware_acceleration.setToolTip("Bật hoặc Tắt tăng tốc đồ họa phần cứng GPU (CUDA hoặc DirectML).")
+
+        # 3. Poisson Blending
+        self.poisson_blending = SwitchSettingCard(
+            configItem=config.poissonBlending,
+            icon=FluentIcon.BRUSH, 
+            title=tr["Setting"]["PoissonBlending"],
+            content=tr["Setting"]["PoissonBlendingDesc"],
+            parent=self.subtitle_removal_group
+        )
+        self.poisson_blending.setToolTip("Sử dụng thuật toán Poisson Blending để hòa trộn mượt mà biên giao thoa giữa vùng được xóa và video gốc.")
+
+        # 4. Temporal Smoothing
+        self.temporal_smoothing = SwitchSettingCard(
+            configItem=config.temporalSmoothing,
+            icon=FluentIcon.MOVIE, 
+            title="Temporal Smoothing (Lọc mượt chống nhấp nháy)",
+            content="Khử nhấp nháy, rung hạt nền bằng bộ lọc thích ứng chuyển động",
+            parent=self.subtitle_removal_group
+        )
+        self.temporal_smoothing.setToolTip("Khử hiện tượng nhấp nháy hoặc rung hạt nhiễu (flickering) ở vùng inpaint bằng cách nội suy trung bình trọng số thích ứng chuyển động.")
+
+        # 5. Sharpen Inpainted Area
+        self.sharpen_inpainted_area = SwitchSettingCard(
+            configItem=config.sharpenInpaintedArea,
+            icon=FluentIcon.EDIT,
+            title="Làm nét vùng xóa (Sharpen Inpainted Area)",
+            content="Làm nét nhẹ vùng nền sau khi xóa phụ đề",
+            parent=self.subtitle_removal_group
+        )
+        self.sharpen_inpainted_area.setToolTip("Áp dụng bộ lọc Unsharp Mask làm nét cục bộ vùng ảnh sau khi xóa.")
+
         # 字幕检测设置组
         self.subtitle_detection_group = SettingCardGroup(tr["Setting"]["SubtitleDetectionSetting"], self.scrollWidget)
         # STTN设置组
@@ -297,9 +368,7 @@ class AdvancedSettingInterface(ScrollArea):
                 child.contentLabel.setMinimumWidth(220)
                 
                 content_text = child.contentLabel.text()
-                title_text = child.titleLabel.text()
                 desc_len = len(content_text) if content_text else 0
-                title_len = len(title_text) if title_text else 0
                 
                 # Đặt chiều cao tối thiểu cho nhãn mô tả tránh đè chữ
                 if desc_len > 80:
@@ -317,6 +386,13 @@ class AdvancedSettingInterface(ScrollArea):
                     
                 child.setMinimumHeight(height)
                 child.setMaximumHeight(16777215)
+
+    def on_auto_tighten_changed(self, is_checked: bool):
+        """Khi bật tự động ôm khít, khóa tinh chỉnh tay (Mask Dilation, Mask Feather). Ngược lại mở cho chỉnh tay."""
+        if hasattr(self, 'mask_dilation'):
+            self.mask_dilation.setEnabled(not is_checked)
+        if hasattr(self, 'mask_feather'):
+            self.mask_feather.setEnabled(not is_checked)
 
     def show_message_box(self, title: str, content: str, showYesButton=False, yesSlot=None):
         """ show message box """
@@ -357,10 +433,9 @@ class AdvancedSettingInterface(ScrollArea):
             )
     
     def choose_save_directory(self):
-        """选择保存目录"""
-        last_save_directory = "./" if not config.saveDirectory.value else config.saveDirectory.value
-        folder = QFileDialog.getExistingDirectory(
-            self, tr['Setting']['ChooseDirectory'], last_save_directory)
+        """Chọn thư mục lưu mặc định"""
+        folder = FolderMemoryDialog.getExistingDirectory(
+            self, tr['Setting']['ChooseDirectory'], category="default")
         if not folder:
             folder = ""
 
@@ -455,7 +530,7 @@ class AdvancedSettingInterface(ScrollArea):
         self.project_link.setTitle(tr["Setting"]["ProjectLinkTitle"])
         self.project_link.setContent(tr["Setting"]["ProjectLinkDesc"])
 
-        # Cập nhật lại chiều cao các thẻ cài đặt sau khi đổi ngôn ngữ
+        # Cập nhật lại tự động xuống dòng và chiều cao sau khi đổi ngôn ngữ
         from PySide6.QtWidgets import QWidget
         for child in self.findChildren(QWidget):
             if hasattr(child, 'contentLabel') and hasattr(child, 'titleLabel'):
@@ -467,9 +542,7 @@ class AdvancedSettingInterface(ScrollArea):
                 child.contentLabel.setMinimumWidth(220)
                 
                 content_text = child.contentLabel.text()
-                title_text = child.titleLabel.text()
                 desc_len = len(content_text) if content_text else 0
-                title_len = len(title_text) if title_text else 0
                 
                 # Đặt chiều cao tối thiểu cho nhãn mô tả tránh đè chữ
                 if desc_len > 80:

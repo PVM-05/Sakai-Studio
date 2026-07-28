@@ -76,6 +76,11 @@ easyocr>=1.7.0
 # onnxruntime nor opencv-python >= 5.0 is available.
 simple-lama-inpainting>=0.1.0
 
+# Local Offline NMT AI Translation (MarianMT)
+transformers>=4.30.0
+sacremoses>=0.0.53
+sentencepiece>=0.1.99
+
 # GUI Enhancement (optional)
 # tkinterdnd2>=0.3.0  # For native drag-drop support
 

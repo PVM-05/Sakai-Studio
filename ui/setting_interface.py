@@ -14,7 +14,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
         super().__init__()
         self.setContentsMargins(16, 16, 16, 16)
         
-        # 界面语言设置
+        # 1. 界面语言设置
         self.interface_combo = ComboBoxSettingCard(
             configItem=config.interface,
             icon=FluentIcon.LANGUAGE,
@@ -26,7 +26,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
         self.interface_combo.setToolTip("Chọn ngôn ngữ hiển thị cho giao diện phần mềm.")
         self.addWidget(self.interface_combo)
         
-        # 处理模式设置
+        # 2. 处理模式设置 (Mô hình AI xóa chữ)
         self.inpaint_mode_combo = ComboBoxSettingCard(
             configItem=config.inpaintMode,
             icon=FluentIcon.GLOBE,
@@ -44,6 +44,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
         )
         self.addWidget(self.inpaint_mode_combo)
 
+        # 3. Mô hình OCR phát hiện phụ đề
         self.subtitle_detect_model_combo = ComboBoxSettingCard(
             configItem=config.subtitleDetectMode,
             icon=FluentIcon.SEARCH,
@@ -59,58 +60,14 @@ class SettingInterface(QtWidgets.QVBoxLayout):
         )
         self.addWidget(self.subtitle_detect_model_combo)
 
-        # 是否启用硬件加速
-        self.hardware_acceleration = SwitchSettingCard(
-            configItem=config.hardwareAcceleration,
-            icon=FluentIcon.SPEED_HIGH, 
-            title=tr["Setting"]["HardwareAcceleration"],
-            content=tr["Setting"]["HardwareAccelerationDesc"],
-            parent=parent
-        )
-        self.hardware_acceleration.setToolTip("Bật hoặc Tắt tăng tốc đồ họa phần cứng GPU (CUDA hoặc DirectML).")
-        self.addWidget(self.hardware_acceleration)
-
-        # 是否启用 Poisson Blending
-        self.poisson_blending = SwitchSettingCard(
-            configItem=config.poissonBlending,
-            icon=FluentIcon.BRUSH, 
-            title=tr["Setting"]["PoissonBlending"],
-            content=tr["Setting"]["PoissonBlendingDesc"],
-            parent=parent
-        )
-        self.poisson_blending.setToolTip("Sử dụng thuật toán Poisson Blending để hòa trộn mượt mà biên giao thoa giữa vùng được xóa và video gốc, loại bỏ vệt cắt răng cưa.")
-        self.addWidget(self.poisson_blending)
-
-        # 是否启用 Temporal Smoothing
-        self.temporal_smoothing = SwitchSettingCard(
-            configItem=config.temporalSmoothing,
-            icon=FluentIcon.MOVIE, 
-            title="Temporal Smoothing (Lọc mượt thời gian)",
-            content="Khử nhấp nháy, rung hạt nền bằng bộ lọc thích ứng chuyển động",
-            parent=parent
-        )
-        self.temporal_smoothing.setToolTip("Khử hiện tượng nhấp nháy hoặc rung hạt nhiễu (flickering) ở vùng inpaint bằng cách nội suy trung bình trọng số thích ứng chuyển động với các khung hình lân cận.")
-        self.addWidget(self.temporal_smoothing)
-
-        # Whether to sharpen inpainted area
-        self.sharpen_inpainted_area = SwitchSettingCard(
-            configItem=config.sharpenInpaintedArea,
-            icon=FluentIcon.EDIT,
-            title="Làm nét vùng xóa (Sharpen Inpainted Area)",
-            content="Làm nét nhẹ vùng nền sau khi xóa phụ đề",
-            parent=parent
-        )
-        self.sharpen_inpainted_area.setToolTip("Áp dụng bộ lọc Unsharp Mask làm nét cục bộ vùng ảnh sau khi xóa để bù đắp lại các chi tiết bị mờ do quá trình nội suy AI tạo ra.")
-        self.addWidget(self.sharpen_inpainted_area)
-
-        # 选用的 Mask 类型 (Mask Type)
+        # 4. 选用的 Mask 类型 (Mask Type)
         self.mask_type_combo = ComboBoxSettingCard(
             configItem=config.maskType,
             icon=FluentIcon.BROOM,
             title="Kiểu mặt nạ xóa chữ (Mask Type)",
             content="Chọn phương pháp tạo mặt nạ phụ đề để xóa",
             parent=parent,
-            texts=["Nét chữ (Stroke - Sạch nhất, không ghost)", "Hộp chữ nhật (Box - Kiểu cũ)"]
+            texts=["Nét chữ", "Hộp chữ nhật"]
         )
         self.mask_type_combo.setToolTip(
             "Chọn phương pháp che phủ dòng chữ:\n"
@@ -119,7 +76,9 @@ class SettingInterface(QtWidgets.QVBoxLayout):
         )
         self.addWidget(self.mask_type_combo)
 
-        # GPU / VRAM Info Card
+
+
+        # 5. GPU / VRAM Info Card
         self.gpu_info_card = SettingCard(
             icon=FluentIcon.INFO,
             title="Thiết bị: Đang quét...",
@@ -129,47 +88,39 @@ class SettingInterface(QtWidgets.QVBoxLayout):
         self.gpu_info_card.setToolTip("Hiển thị thông tin tên GPU đồ họa, dung lượng VRAM thực tế và hạn mức số khung hình được phân bổ tối đa cho việc xử lý đồng thời.")
         self.addWidget(self.gpu_info_card)
 
+        # 7. Thẻ Mở Cài Đặt Nâng Cao
+        self.open_advanced_card = PushSettingCard(
+            text=tr["Setting"].get("OpenAdvancedSetting", "Mở Cài Đặt"),
+            icon=FluentIcon.SETTING,
+            title="Cài đặt nâng cao",
+            content="Mở toàn bộ tùy chọn cấu hình chi tiết (Tăng tốc GPU, Poisson, Feathering, Mask, Auto-Tighten...)",
+            parent=parent
+        )
+        self.open_advanced_card.clicked.connect(self._on_open_advanced_settings)
+        self.addWidget(self.open_advanced_card)
+
         # Listen to config changes to dynamically update GPU / VRAM card info
         config.autoHardwareTuning.valueChanged.connect(self.update_gpu_info)
         config.propainterMaxLoadNum.valueChanged.connect(self.update_gpu_info)
         config.sttnMaxLoadNum.valueChanged.connect(self.update_gpu_info)
         self.update_gpu_info()
 
-        # Cho phép các nhãn mô tả tự động xuống dòng và co giãn chiều cao theo độ dài chữ
+        # Listen to Auto-Tighten changes to disable Mask Type if ON
+        if hasattr(config, 'autoTightenMask'):
+            config.autoTightenMask.valueChanged.connect(self._on_auto_tighten_changed)
+            self._on_auto_tighten_changed(config.autoTightenMask.value)
+
+
+
+        # Cho phép các nhãn mô tả tự động xuống dòng
         from PySide6.QtWidgets import QWidget
         for child in self.findChildren(QWidget):
             if hasattr(child, 'contentLabel') and hasattr(child, 'titleLabel'):
                 child.contentLabel.setWordWrap(True)
                 child.titleLabel.setWordWrap(True)
-                
-                # Tăng chiều rộng tối thiểu để tiêu đề không bị xuống dòng vô lý
-                child.titleLabel.setMinimumWidth(180)
-                child.contentLabel.setMinimumWidth(220)
-                
-                content_text = child.contentLabel.text()
-                title_text = child.titleLabel.text()
-                desc_len = len(content_text) if content_text else 0
-                title_len = len(title_text) if title_text else 0
-                
-                # Đặt chiều cao tối thiểu cho nhãn mô tả tránh đè chữ
-                if desc_len > 80:
-                    child.contentLabel.setMinimumHeight(55)
-                    height = 105
-                elif desc_len > 40:
-                    child.contentLabel.setMinimumHeight(38)
-                    height = 85
-                else:
-                    child.contentLabel.setMinimumHeight(18)
-                    height = 70
-                    
-                if desc_len == 0:
-                    height = 55
-                    
-                child.setMinimumHeight(height)
-                child.setMaximumHeight(16777215)
 
         # 如果硬件加速选项被禁用, 设置硬件加速为False并只读
-        if not HARDWARD_ACCELERATION_OPTION:
+        if not HARDWARD_ACCELERATION_OPTION and hasattr(self, 'hardware_acceleration'):
             self.hardware_acceleration.switchButton.setChecked(False)
             self.hardware_acceleration.switchButton.setEnabled(False)
             self.hardware_acceleration.setContent(tr["Setting"]["HardwareAccelerationNO"])
@@ -177,6 +128,35 @@ class SettingInterface(QtWidgets.QVBoxLayout):
         # 添加一些空间
         self.addStretch(1)
     
+    def _on_auto_tighten_changed(self, value):
+        self.mask_type_combo.setDisabled(value)
+
+    def _on_choose_save_directory(self):
+
+        folder = QtWidgets.QFileDialog.getExistingDirectory(
+            self.parentWidget(),
+            tr["Setting"].get("SaveDirectory", "Chọn Thư Mục Lưu Video"),
+            config.saveDirectory.value
+        )
+        if folder:
+            config.set(config.saveDirectory, folder)
+            try:
+                self.save_directory.setContent(folder)
+            except AttributeError:
+                pass
+
+
+
+    def _on_open_advanced_settings(self):
+        """Chuyển sang trang Cài Đặt Nâng Cao khi click vào thẻ cài đặt nâng cao"""
+        w = self.parentWidget()
+        while w and not hasattr(w, 'advancedSettingInterface'):
+            w = w.parentWidget()
+        if w and hasattr(w, 'advancedSettingInterface'):
+            w.switchTo(w.advancedSettingInterface)
+
+
+
     def set_inpaint_mode_enabled(self, enabled):
         """启用或禁用 inpaint 模式下拉框"""
         self.inpaint_mode_combo.comboBox.setEnabled(enabled)
@@ -212,7 +192,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
                         performance_tier = "Tự động - Phổ thông"
                     else:
                         max_load_pp, max_load_sttn = 25, 30
-                        performance_tier = "Tự động - Thấp (Low VRAM)"
+                        performance_tier = "Tự động - Thấp"
                 except Exception:
                     max_load_pp, max_load_sttn = 50, 50
                     performance_tier = "Tự động - Không xác định"
@@ -220,7 +200,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
             # Nếu người dùng tắt tự động tối ưu hóa, lấy thông số thực tế của thanh trượt
             max_load_pp = config.propainterMaxLoadNum.value
             max_load_sttn = config.sttnMaxLoadNum.value
-            performance_tier = "Thủ công (Manual)"
+            performance_tier = "Thủ công"
 
         # Lấy thông tin thiết bị đồ họa
         gpu_title = "Thiết bị: CPU Only"
@@ -262,68 +242,23 @@ class SettingInterface(QtWidgets.QVBoxLayout):
         self.subtitle_detect_model_combo.comboBox.blockSignals(False)
         self.subtitle_detect_model_combo.setToolTip(tr["Setting"].get("SubtitleDetectModeTooltip", "Select OCR model"))
         
-        self.hardware_acceleration.setTitle(tr["Setting"]["HardwareAcceleration"])
-        if not HARDWARD_ACCELERATION_OPTION:
-            self.hardware_acceleration.setContent(tr["Setting"]["HardwareAccelerationNO"])
-        else:
-            self.hardware_acceleration.setContent(tr["Setting"]["HardwareAccelerationDesc"])
-        self.hardware_acceleration.setToolTip(tr["Setting"].get("HardwareAccelerationTooltip", "GPU acceleration"))
-        
-        self.poisson_blending.setTitle(tr["Setting"]["PoissonBlending"])
-        self.poisson_blending.setContent(tr["Setting"]["PoissonBlendingDesc"])
-        self.poisson_blending.setToolTip(tr["Setting"]["PoissonBlendingTooltip"])
-        
-        self.temporal_smoothing.setTitle(tr["Setting"]["TemporalSmoothing"])
-        self.temporal_smoothing.setContent(tr["Setting"]["TemporalSmoothingDesc"])
-        self.temporal_smoothing.setToolTip(tr["Setting"]["TemporalSmoothingTooltip"])
-        
-        self.sharpen_inpainted_area.setTitle(tr["Setting"]["SharpenInpaintedArea"])
-        self.sharpen_inpainted_area.setContent(tr["Setting"]["SharpenInpaintedAreaDesc"])
-        self.sharpen_inpainted_area.setToolTip(tr["Setting"]["SharpenInpaintedAreaTooltip"])
-        
         # Cập nhật combo mask type
         self.mask_type_combo.comboBox.blockSignals(True)
         current_mask_idx = self.mask_type_combo.comboBox.currentIndex()
-        self.mask_type_combo.setTitle(tr["Setting"]["MaskType"])
-        self.mask_type_combo.setContent(tr["Setting"]["MaskTypeDesc"])
+        self.mask_type_combo.setTitle(tr["Setting"].get("MaskType", "Kiểu mặt nạ xóa chữ (Mask Type)"))
+        self.mask_type_combo.setContent(tr["Setting"].get("MaskTypeDesc", "Chọn phương pháp tạo mặt nạ phụ đề để xóa"))
         self.mask_type_combo.comboBox.clear()
-        self.mask_type_combo.comboBox.addItems([tr['Setting']['MaskTypeStroke'], tr['Setting']['MaskTypeBox']])
+        self.mask_type_combo.comboBox.addItems([tr['Setting'].get('MaskTypeStroke', 'Nét chữ'), tr['Setting'].get('MaskTypeBox', 'Hộp chữ nhật')])
         self.mask_type_combo.comboBox.setCurrentIndex(current_mask_idx)
         self.mask_type_combo.comboBox.blockSignals(False)
-        self.mask_type_combo.setToolTip(tr["Setting"]["MaskTypeTooltip"])
+        self.mask_type_combo.setToolTip(tr["Setting"].get("MaskTypeTooltip", "Mask type tooltip"))
         
         self.gpu_info_card.setToolTip(tr["Setting"].get("GpuInfoTooltip", "GPU information"))
         self.update_gpu_info()
 
-        # Cập nhật lại chiều cao các thẻ cài đặt sau khi đổi ngôn ngữ
+        # Cập nhật lại tự động xuống dòng sau khi đổi ngôn ngữ
         from PySide6.QtWidgets import QWidget
         for child in self.findChildren(QWidget):
             if hasattr(child, 'contentLabel') and hasattr(child, 'titleLabel'):
                 child.contentLabel.setWordWrap(True)
                 child.titleLabel.setWordWrap(True)
-                
-                # Tăng chiều rộng tối thiểu để tiêu đề không bị xuống dòng vô lý
-                child.titleLabel.setMinimumWidth(180)
-                child.contentLabel.setMinimumWidth(220)
-                
-                content_text = child.contentLabel.text()
-                title_text = child.titleLabel.text()
-                desc_len = len(content_text) if content_text else 0
-                title_len = len(title_text) if title_text else 0
-                
-                # Đặt chiều cao tối thiểu cho nhãn mô tả tránh đè chữ
-                if desc_len > 80:
-                    child.contentLabel.setMinimumHeight(55)
-                    height = 105
-                elif desc_len > 40:
-                    child.contentLabel.setMinimumHeight(38)
-                    height = 85
-                else:
-                    child.contentLabel.setMinimumHeight(18)
-                    height = 70
-                    
-                if desc_len == 0:
-                    height = 55
-                    
-                child.setMinimumHeight(height)
-                child.setMaximumHeight(16777215)

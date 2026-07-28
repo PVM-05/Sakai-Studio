@@ -97,10 +97,13 @@ class FFmpegVideoWriter:
             '-preset', 'ultrafast'
         ]
         
-        # Nếu được bật tối ưu hóa mã hóa GPU, tự động dò quét và cấu hình tham số thích hợp
-        from backend.config import config
-        if getattr(config, 'gpuVideoEncoding', None) and config.gpuVideoEncoding.value:
-            detected_codec = self.detect_gpu_encoder()
+        # Tự động dò quét GPU hardware encoder (NVENC / AMF / QSV) nếu có phần cứng hỗ trợ
+        detected_codec = self.detect_gpu_encoder()
+        use_gpu_enc = True
+        if getattr(config, 'gpuVideoEncoding', None) is not None:
+            use_gpu_enc = config.gpuVideoEncoding.value
+
+        if use_gpu_enc and detected_codec != 'libx264':
             if detected_codec == 'h264_nvenc':
                 codec = 'h264_nvenc'
                 # CQ 19 = visual lossless, preset p1 = performance 1 (fastest NVENC)

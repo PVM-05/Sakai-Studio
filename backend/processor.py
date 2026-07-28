@@ -2038,9 +2038,45 @@ class SubtitleRemover:
                     temp_mask_path = None
                     logger.info(f"Mask video written: {mask_path}")
 
-                if self.config.export_srt and self._srt_entries:
-                    srt_path = str(Path(final_output_path).with_suffix('.srt'))
-                    self._write_srt(srt_path, fps, start_frame)
+                is_export_enabled = getattr(self.config, 'export_srt', False)
+                from backend.config import config as main_config
+                if not is_export_enabled and hasattr(main_config, 'exportSrt'):
+                    is_export_enabled = main_config.exportSrt.value
+
+                if is_export_enabled:
+                    custom_dir = getattr(main_config, 'srtSaveDirectory', None)
+                    save_dir = custom_dir.value if (custom_dir and custom_dir.value and os.path.isdir(custom_dir.value)) else None
+                    
+                    if save_dir:
+                        srt_filename = Path(final_output_path).with_suffix('.srt').name
+                        srt_path = os.path.join(save_dir, srt_filename)
+                    else:
+                        srt_path = str(Path(final_output_path).with_suffix('.srt'))
+
+                    if not self._srt_entries:
+                        try:
+                            from backend import whisper_fallback as _wf
+                            import tempfile as _tmp_mod
+                            logger.info("No OCR subtitle entries found. Attempting Whisper Speech-to-Text for SRT export...")
+                            w_dir = _tmp_mod.mkdtemp(prefix="vsr_whisper_srt_")
+                            audio_path = _wf.extract_audio_to_temp(input_path, w_dir)
+                            if audio_path:
+                                segments = _wf.run_whisper_segments(audio_path, model_size="tiny", language=(self.config.detection_lang or None))
+                                if segments:
+                                    for seg_s, seg_e, text in segments:
+                                        f_start = int(seg_s * fps)
+                                        f_end = int(seg_e * fps)
+                                        for f_i in range(f_start, f_end + 1):
+                                            self._srt_entries.append((f_i, text))
+                            if w_dir and os.path.exists(w_dir):
+                                import shutil
+                                shutil.rmtree(w_dir, ignore_errors=True)
+                        except Exception as exc:
+                            logger.warning(f"Automatic Whisper Speech-to-Text export failed: {exc}", exc_info=True)
+
+                    if self._srt_entries:
+                        self._write_srt(srt_path, fps, start_frame)
+                        logger.info(f"SRT exported successfully to {srt_path}")
 
                 # RM-78 / RM-80: optional post-restore passes (Real-ESRGAN
                 # upscale, film-grain re-synthesis). Run after the main mux

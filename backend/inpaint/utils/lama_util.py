@@ -24,7 +24,10 @@ def get_image(image):
 
     assert img.ndim == 3
 
-    img = img.astype(np.float32) / 255
+    if img.dtype == np.uint8 or img.max() > 1.0:
+        img = img.astype(np.float32) / 255.0
+    else:
+        img = img.astype(np.float32)
     return img
 
 

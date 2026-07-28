@@ -51,8 +51,8 @@ class SubtitleRemoverRemoteCall:
         self.callbacks[Command.ERROR] = callback
 
     @staticmethod
-    def remote_call_update_progress(queue, progress, isFinished):
-        queue.put((Command.PROGRESS, (progress, isFinished,)))
+    def remote_call_update_progress(queue, progress, isFinished, frame_no=0):
+        queue.put((Command.PROGRESS, (progress, isFinished, frame_no)))
 
     @staticmethod
     def remote_call_append_log(queue, *args):

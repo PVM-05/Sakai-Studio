@@ -36,11 +36,19 @@ def create_mask(size, coords_list, dilation=8, feather_pixels=8):
         for coords in coords_list:
             xmin, xmax, ymin, ymax = coords
             
-            # Phóng to ô bằng tham số dilation để tránh bị sót viền chữ
-            x1 = max(0, xmin - dilation)
-            y1 = max(0, ymin - dilation)
-            x2 = min(size[1], xmax + dilation)
-            y2 = min(size[0], ymax + dilation)
+            # Tự động chọn thuật toán lề:
+            # - Tự động (autoHardwareTuning = True): Tính lề lùi linh hoạt theo font chữ
+            # - Thủ công (autoHardwareTuning = False): Dùng chính xác 100% tham số dilation người dùng cài đặt
+            if getattr(config, 'autoHardwareTuning', None) and config.autoHardwareTuning.value:
+                box_height = abs(ymax - ymin)
+                dynamic_dilation = max(dilation, int(box_height * 0.15))
+            else:
+                dynamic_dilation = dilation
+            
+            x1 = max(0, xmin - dynamic_dilation)
+            y1 = max(0, ymin - dynamic_dilation)
+            x2 = min(size[1], xmax + dynamic_dilation)
+            y2 = min(size[0], ymax + dynamic_dilation)
             cv2.rectangle(mask, (x1, y1), (x2, y2), 255, thickness=-1)
     
     # Gaussian Alpha Feathering: Làm mịn mượt biên mask
@@ -49,6 +57,77 @@ def create_mask(size, coords_list, dilation=8, feather_pixels=8):
         ksize = 2 * feather_pixels + 1
         blurred = cv2.GaussianBlur(mask, (ksize, ksize), 0)
         # Chuyển đổi về dạng float32 trong khoảng [0.0, 1.0] để nhân trộn điểm ảnh mềm
+        float_mask = blurred.astype(np.float32) / 255.0
+    else:
+        float_mask = (mask > 0).astype(np.float32)
+        
+    return float_mask
+
+def create_stroke_mask(size, strokes, dilation=8, feather_pixels=8):
+    """
+    Tạo mặt nạ từ các nét cọ tự do (freehand strokes).
+    strokes: list các stroke dict {'radius': float_r, 'points': [(x_ratio, y_ratio), ...]}
+    """
+    return create_combined_mask(size, coords_list=None, strokes_list=strokes, dilation=dilation, feather_pixels=feather_pixels)
+
+def create_combined_mask(size, coords_list=None, strokes_list=None, dilation=8, feather_pixels=8):
+    """
+    Tạo mặt nạ tổng hợp từ cả hộp chữ nhật (coords_list) và nét cọ vẽ tự do (strokes_list).
+    """
+    h, w = size[:2]
+    mask = np.zeros((h, w), dtype="uint8")
+
+    # 1. Vẽ các hộp chữ nhật
+    if coords_list:
+        for coords in coords_list:
+            xmin, xmax, ymin, ymax = coords
+            if getattr(config, 'autoHardwareTuning', None) and config.autoHardwareTuning.value:
+                box_height = abs(ymax - ymin)
+                dynamic_dilation = max(dilation, int(box_height * 0.15))
+            else:
+                dynamic_dilation = dilation
+            
+            x1 = max(0, xmin - dynamic_dilation)
+            y1 = max(0, ymin - dynamic_dilation)
+            x2 = min(w, xmax + dynamic_dilation)
+            y2 = min(h, ymax + dynamic_dilation)
+            cv2.rectangle(mask, (x1, y1), (x2, y2), 255, thickness=-1)
+
+    # 2. Vẽ các nét cọ tự do
+    if strokes_list:
+        for stroke in strokes_list:
+            if isinstance(stroke, dict):
+                pts = stroke.get('points', [])
+                r_val = stroke.get('radius', 0.02)
+            else:
+                pts = stroke
+                r_val = 0.02
+
+            # Nếu r_val là float 0..1 thì nhân với chiều rộng, nếu >1 thì xem như pixel
+            if isinstance(r_val, float) and r_val <= 1.0:
+                thickness = max(4, int(r_val * w * 2)) + dilation
+            else:
+                thickness = max(4, int(r_val)) + dilation
+
+            if len(pts) == 1:
+                px = int(pts[0][0] * w) if pts[0][0] <= 1.0 else int(pts[0][0])
+                py = int(pts[0][1] * h) if pts[0][1] <= 1.0 else int(pts[0][1])
+                cv2.circle(mask, (px, py), thickness // 2, 255, thickness=-1)
+            elif len(pts) > 1:
+                int_pts = []
+                for p in pts:
+                    px = int(p[0] * w) if p[0] <= 1.0 else int(p[0])
+                    py = int(p[1] * h) if p[1] <= 1.0 else int(p[1])
+                    int_pts.append([px, py])
+                int_pts = np.array(int_pts, dtype=np.int32)
+                cv2.polylines(mask, [int_pts], isClosed=False, color=255, thickness=thickness, lineType=cv2.LINE_AA)
+                for pt in int_pts:
+                    cv2.circle(mask, (pt[0], pt[1]), thickness // 2, 255, thickness=-1)
+
+    # 3. Gaussian Alpha Feathering: Làm mịn mượt biên mask
+    if feather_pixels > 0 and np.any(mask > 0):
+        ksize = 2 * feather_pixels + 1
+        blurred = cv2.GaussianBlur(mask, (ksize, ksize), 0)
         float_mask = blurred.astype(np.float32) / 255.0
     else:
         float_mask = (mask > 0).astype(np.float32)

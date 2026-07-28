@@ -14,6 +14,10 @@ if sys.platform.startswith('win'):
         sys.stderr.reconfigure(encoding='utf-8', errors='replace')
     except AttributeError:
         pass
+
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning, module='.*onnxruntime.*')
+warnings.filterwarnings('ignore', message='.*Unsupported Windows version.*')
 import configparser
 import cv2
 import multiprocessing
@@ -30,9 +34,13 @@ from qframelesswindow.utils import getSystemAccentColor
 from backend.config import config, tr, VERSION
 from backend.tools.theme_listener import SystemThemeListener
 from backend.tools.process_manager import ProcessManager
+from ui.auto_pipeline_interface import AutoPipelineInterface
 from ui.advanced_setting_interface import AdvancedSettingInterface
+from ui.tools_interface import ToolsInterface
 from ui.home_interface import HomeInterface
+from ui.extractor_interface import ExtractorInterface
 from ui.ytdlp_interface import YtdlpInterface
+from ui.translation_interface import TranslationInterface
 
 
 class SubtitleExtractorGUI(FluentWindow): 
@@ -51,6 +59,15 @@ class SubtitleExtractorGUI(FluentWindow):
         # 设置窗口图标
         self.setWindowIcon(QtGui.QIcon("design/vsr.ico"))
         self.setWindowTitle("Sakai Studio v" + VERSION)
+        
+        # Đặt kích thước tối thiểu an toàn hợp lệ
+        self.setMinimumSize(960, 600)
+        
+        # Đảm bảo TitleBar hiển thị chuẩn, nằm trên cùng và di chuyển được cửa sổ
+        if hasattr(self, 'titleBar'):
+            self.titleBar.raise_()
+            self.titleBar.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, False)
+
         # 创建界面布局
         self._create_layout()
         self._connectSignalToSlot()
@@ -82,15 +99,15 @@ class SubtitleExtractorGUI(FluentWindow):
             
             # 3. Cập nhật tiêu đề các tab phụ trong Navigation Bar
             try:
-                self.navigationInterface.widget(self.homeInterface.objectName()).setText(tr['SubtitleExtractorGUI']['Title'])
-                self.navigationInterface.widget(self.ytdlpInterface.objectName()).setText(tr['SubtitleExtractorGUI']['YtdlpDownload'])
                 self.navigationInterface.widget(self.advancedSettingInterface.objectName()).setText(tr['Setting']['AdvancedSetting'])
             except Exception as e:
                 print("Lỗi đổi nhãn Navigation:", e)
             
             # 4. Gọi cập nhật giao diện nóng cho các component con
-            self.homeInterface.retranslateUi()
-            self.ytdlpInterface.retranslateUi()
+            if hasattr(self.homeInterface, 'retranslateUi'):
+                self.homeInterface.retranslateUi()
+            if hasattr(self.ytdlpInterface, 'retranslateUi'):
+                self.ytdlpInterface.retranslateUi()
             self.advancedSettingInterface.retranslateUi()
             
             # 5. Hiển thị thông báo góc màn hình đổi thành công
@@ -113,33 +130,33 @@ class SubtitleExtractorGUI(FluentWindow):
         )
 
     def _create_layout(self):
-        # 创建主页面、YT-DLP下载页面和高级设置页面
-        self.homeInterface = HomeInterface(self)
-        self.homeInterface.setObjectName("HomeInterface")
-        self.ytdlpInterface = YtdlpInterface(self)
-        self.ytdlpInterface.setObjectName("YtdlpInterface")
+        # 1. Tab Trang Chủ - Luồng Tự Động Tất-Cả-Trong-Một (MMO Auto-Pipeline)
+        self.autoPipelineInterface = AutoPipelineInterface(self)
+        self.autoPipelineInterface.setObjectName("AutoPipelineInterface")
+        
+        # 2. Tab Công Cụ Chuyên Sâu (Hub gộp 4 sub-tools: Tải video, Trích xuất, Dịch sub, Xóa sub)
+        self.toolsInterface = ToolsInterface(self)
+        self.toolsInterface.setObjectName("ToolsInterface")
+        
+        # Shortcuts / Properties tương thích ngược
+        self.homeInterface = self.toolsInterface.homeInterface
+        self.extractorInterface = self.toolsInterface.extractorInterface
+        self.translationInterface = self.toolsInterface.translationInterface
+        self.ytdlpInterface = self.toolsInterface.ytdlpInterface
+
+        # 3. Tab Cấu Hình Nâng Cao
         self.advancedSettingInterface = AdvancedSettingInterface(self)
         self.advancedSettingInterface.setObjectName("AdvancedSettingInterface")
         
-        # 添加到主窗口作为子界面
-        self.addSubInterface(self.homeInterface, FluentIcon.HOME, tr['SubtitleExtractorGUI']['Title'])
-        self.addSubInterface(self.ytdlpInterface, FluentIcon.DOWNLOAD, tr['SubtitleExtractorGUI']['YtdlpDownload'])
+        # Bổ sung 3 tab chính vào Navigation Bar
+        self.addSubInterface(self.autoPipelineInterface, FluentIcon.HOME, "Tự Động")
+        self.addSubInterface(self.toolsInterface, FluentIcon.DEVELOPER_TOOLS, "Công Cụ")
         self.addSubInterface(self.advancedSettingInterface, FluentIcon.SETTING, tr['Setting']['AdvancedSetting'], NavigationItemPosition.BOTTOM)
 
-    def on_navigation_item_changed(self, key):
-        """导航项变更时的处理函数"""
-        if key == 'main':
-            self.stackWidget.setCurrentIndex(0)
-        elif key == 'ytdlp':
-            self.stackWidget.setCurrentIndex(1)
-        elif key == 'advanced':
-            self.stackWidget.setCurrentIndex(2)
-
     def open_video_in_remover(self, filepath):
-        """Switch to subtitle remover tab and open the downloaded video"""
-        self.switchTo(self.homeInterface)
-        if hasattr(self.homeInterface, 'open_downloaded_video'):
-            self.homeInterface.open_downloaded_video(filepath)
+        """Chuyen sang Tab Cong Cu -> Sub-tab Xoa Sub va mo video da tai"""
+        self.switchTo(self.toolsInterface)
+        self.toolsInterface.open_video_in_remover(filepath)
 
     def closeEvent(self, event):
         """程序关闭时保存窗口位置并清理资源"""
@@ -151,45 +168,36 @@ class SubtitleExtractorGUI(FluentWindow):
         super()._onThemeChangedFinished()
 
     def save_window_position(self):
-        """保存窗口位置到配置文件"""
-        # 保存窗口位置和大小
-        config.set(config.windowX, self.x())
-        config.set(config.windowY, self.y())
-        config.set(config.windowW, self.width())
-        config.set(config.windowH, self.height())
-
+        """Lưu vị trí cửa sổ an toàn (tránh tọa độ âm khi Maximize)"""
+        try:
+            if self.isMaximized():
+                rect = self.normalGeometry()
+            else:
+                rect = self.geometry()
+            config.set(config.windowX, max(0, rect.x()))
+            config.set(config.windowY, max(0, rect.y()))
+            config.set(config.windowW, max(800, rect.width()))
+            config.set(config.windowH, max(600, rect.height()))
+        except Exception:
+            pass
 
     def load_window_position(self):
-        # 尝试读取窗口位置
+        """Luôn luôn mở rộng toàn màn hình (Full Screen / Maximized) mỗi khi mở ứng dụng"""
         try:
-            x = config.windowX.value
-            y = config.windowY.value
-            width = config.windowW.value
-            height = config.windowH.value
-
-            if not x or not y:
-                self.center_window()
-                return
-
-            # 确保窗口在屏幕内
-            screen_rect = QtWidgets.QApplication.primaryScreen().availableGeometry()
-            if (x >= 0 and y >= 0 and 
-                x + width <= screen_rect.width() and 
-                y + height <= screen_rect.height()):
-                self.setGeometry(x, y, width, height)
-            else:
-                self.center_window()
+            self.showMaximized()
         except Exception as e:
-            print(e)
-            self.center_window()
-    
+            print(f"Lỗi mở toàn màn hình: {e}")
+            self.showMaximized()
+
     def center_window(self):
-        """将窗口居中显示"""
+        """Đặt cửa sổ nằm đúng chính giữa màn hình làm việc"""
         screen_rect = QtWidgets.QApplication.primaryScreen().availableGeometry()
-        window_rect = self.frameGeometry()
-        center_point = screen_rect.center()
-        window_rect.moveCenter(center_point)
-        self.move(window_rect.topLeft())
+        w = min(1280, screen_rect.width() - 40)
+        h = min(800, screen_rect.height() - 40)
+        self.resize(w, h)
+        x = screen_rect.left() + (screen_rect.width() - w) // 2
+        y = screen_rect.top() + (screen_rect.height() - h) // 2
+        self.move(x, y)
 
     def keyPressEvent(self, event):
         """处理键盘事件"""
@@ -205,8 +213,15 @@ if __name__ == '__main__':
     multiprocessing.freeze_support()
     multiprocessing.set_start_method("spawn")
     QApplication.setHighDpiScaleFactorRoundingPolicy(
-    Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QtWidgets.QApplication(sys.argv)
+    
+    # Đặt font hệ thống mặc định hợp lệ để tiêu diệt triệt để lỗi QFont::setPointSize: Point size <= 0 (-1)
+    default_font = QtGui.QFont("Segoe UI", 9)
+    default_font.setPointSize(9)
+    default_font.setStyleStrategy(QtGui.QFont.PreferAntialias)
+    app.setFont(default_font)
+
     app.setAttribute(Qt.AA_DontCreateNativeWidgetSiblings)
     window = SubtitleExtractorGUI()
     # 先设置透明, 再显示, 否则会有闪烁的效果

@@ -82,3 +82,16 @@ def maybe_compile_engine(onnx_path: str, precision: str = "fp16") -> Optional[Pa
     except (subprocess.TimeoutExpired, OSError) as exc:
         logger.warning(f"TensorRT compile failed: {exc}")
     return None
+
+
+def get_tensorrt_provider_options() -> tuple[str, dict]:
+    """Trả về cấu hình tối ưu cho TensorrtExecutionProvider trong ONNX Runtime."""
+    trt_path = str(cache_dir())
+    return (
+        'TensorrtExecutionProvider', {
+            'trt_engine_cache_enable': True,
+            'trt_engine_cache_path': trt_path,
+            'trt_fp16_enable': True,
+            'trt_max_workspace_size': 2147483648,
+        }
+    )

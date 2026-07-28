@@ -32,6 +32,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -283,17 +284,32 @@ def run_whisper_segments(audio_path: str, model_size: str = "tiny",
         return None
 
 
+def _find_ffmpeg_executable() -> Optional[str]:
+    if shutil.which("ffmpeg"):
+        return "ffmpeg"
+    possible_paths = [
+        os.path.join(os.path.dirname(__file__), "ffmpeg", "win_x64", "ffmpeg.exe"),
+        os.path.join(os.getcwd(), "backend", "ffmpeg", "win_x64", "ffmpeg.exe"),
+        os.path.join(getattr(sys, "_MEIPASS", ""), "backend", "ffmpeg", "win_x64", "ffmpeg.exe"),
+    ]
+    for p in possible_paths:
+        if os.path.exists(p):
+            return p
+    return None
+
+
 def extract_audio_to_temp(video_path: str, temp_dir: str) -> Optional[str]:
     """Strip audio from `video_path` via ffmpeg to a wav file in
     `temp_dir`. Returns the wav path or None on any failure (no audio
     stream, ffmpeg missing, etc.).
     """
-    if shutil.which("ffmpeg") is None:
-        logger.info("ffmpeg not on PATH; cannot extract audio for Whisper")
+    ffmpeg_bin = _find_ffmpeg_executable()
+    if not ffmpeg_bin:
+        logger.info("ffmpeg executable not found; cannot extract audio for Whisper")
         return None
     dst = os.path.join(temp_dir, "whisper_audio.wav")
     cmd = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-nostats",
+        ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error", "-nostats",
         "-i", video_path, "-vn", "-ac", "1", "-ar", "16000",
         "-acodec", "pcm_s16le", dst,
     ]
