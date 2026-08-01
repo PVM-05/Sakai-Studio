@@ -206,6 +206,11 @@ class ExtractorInterface(QWidget):
         self.btn_jump_translate.clicked.connect(self._jump_to_translate)
         button_layout.addWidget(self.btn_jump_translate, 1, 1)
 
+        self.btn_save_config = PrimaryPushButton("Lưu Cài Đặt", self)
+        self.btn_save_config.setIcon(FluentIcon.SAVE)
+        self.btn_save_config.clicked.connect(self._save_extractor_config)
+        button_layout.addWidget(self.btn_save_config, 2, 0, 1, 2)
+
         right_layout.addWidget(button_container)
         main_layout.addLayout(right_layout, 1)
 
@@ -253,6 +258,30 @@ class ExtractorInterface(QWidget):
         if directory:
             config.set(config.srtSaveDirectory, directory)
             self.save_dir_card.setContent(directory)
+
+    def _save_extractor_config(self):
+        try:
+            cfg_file = Path("config") / "auto_pipeline_config.json"
+            cfg_file.parent.mkdir(parents=True, exist_ok=True)
+            data = {}
+            if cfg_file.exists():
+                try:
+                    data = json.loads(cfg_file.read_text(encoding="utf-8"))
+                except Exception:
+                    data = {}
+
+            data["ocr_lang"] = self.lang_card.comboBox.currentText()
+            data["ocr_mode"] = self.mode_card.comboBox.currentText()
+            cfg_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            InfoBar.success(
+                "Đã Lưu Cài Đặt Trích Xuất",
+                f"Ngôn ngữ OCR: {data['ocr_lang']}. Tab Tự Động đã được đồng bộ!",
+                parent=self,
+                duration=3500
+            )
+        except Exception as e:
+            InfoBar.error("Lỗi", f"Không thể lưu cài đặt trích xuất: {e}", parent=self, duration=3000)
 
     def _on_open_typo_map(self):
         typo_file = os.path.join("config", "typoMap.json")

@@ -16,14 +16,14 @@ import threading
 import multiprocessing
 from pathlib import Path
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QFileDialog
+    QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QDialog, QTableWidget, QTableWidgetItem
 )
 from PySide6.QtCore import Qt, Signal, Slot, QThread
 from PySide6.QtGui import QShowEvent
 from qfluentwidgets import (
     CardWidget, PushButton, PrimaryPushButton, ComboBox, TitleLabel,
     BodyLabel, CaptionLabel, InfoBar, FluentIcon, ProgressBar, TextEdit,
-    SubtitleLabel
+    SubtitleLabel, CheckBox
 )
 
 from backend.config import config, tr
@@ -39,12 +39,95 @@ from ui.translation_interface import CONFIG_API_FILE, PROVIDERS_INFO
 CONFIG_PIPELINE_FILE = Path(__file__).parent.parent / "config" / "auto_pipeline_config.json"
 
 
+def _remover_process_worker(queue, video_path, output_path, options):
+    """Top-level worker function for subtitle removal process."""
+    sr = None
+    try:
+        import traceback
+        from backend.main import SubtitleRemover
+        sr = SubtitleRemover(video_path, True)
+        sr.video_out_path = output_path
+        for key, val in options.items():
+            setattr(sr, key, val)
+        sr.add_progress_listener(
+            lambda progress, isFinished, frame_no=0: SubtitleRemoverRemoteCall.remote_call_update_progress(
+                queue, progress, isFinished, frame_no
+            )
+        )
+        sr.append_output = lambda *args: SubtitleRemoverRemoteCall.remote_call_append_log(queue, list(args))
+        sr.manage_process = lambda pid: SubtitleRemoverRemoteCall.remote_call_manage_process(queue, pid)
+        sr.update_preview_with_comp = lambda *args: SubtitleRemoverRemoteCall.remote_call_update_preview_with_comp(
+            queue, list(args)
+        )
+        sr.run()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        SubtitleRemoverRemoteCall.remote_call_catch_error(queue, e)
+    finally:
+        if sr:
+            sr.isFinished = True
+            sr.vsf_running = False
+        SubtitleRemoverRemoteCall.remote_call_finish(queue)
+
+
+class SubtitleReviewDialog(QDialog):
+    """Hộp thoại Duyệt & Chỉnh Sửa Phụ Đề Nhanh trước khi Ghép Video trong Luồng Tự Động."""
+
+    def __init__(self, blocks: list[SubtitleBlock], parent=None):
+        super().__init__(parent=parent)
+        self.setWindowTitle("Duyệt & Chỉnh Sửa Phụ Đề Nhanh (Luồng Tự Động)")
+        self.resize(760, 500)
+        self.blocks = blocks
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(14, 14, 14, 14)
+
+        layout.addWidget(SubtitleLabel("Duyệt câu chữ phụ đề đã dịch (Bạn có thể chỉnh sửa nội dung trực tiếp):", self))
+
+        self.table = QTableWidget(len(blocks), 4, self)
+        self.table.setHorizontalHeaderLabels(["STT", "Bắt Đầu", "Kết Thúc", "Văn Bản Phụ Đề Dịch"])
+        self.table.setColumnWidth(0, 50)
+        self.table.setColumnWidth(1, 110)
+        self.table.setColumnWidth(2, 110)
+        self.table.horizontalHeader().setStretchLastSection(True)
+
+        for row, blk in enumerate(blocks):
+            self.table.setItem(row, 0, QTableWidgetItem(str(blk.index)))
+            self.table.setItem(row, 1, QTableWidgetItem(blk.start_time))
+            self.table.setItem(row, 2, QTableWidgetItem(blk.end_time))
+            txt_item = QTableWidgetItem(blk.translated_text or blk.text)
+            self.table.setItem(row, 3, txt_item)
+
+        layout.addWidget(self.table, 1)
+
+        btn_box = QHBoxLayout()
+        btn_continue = PrimaryPushButton("Lưu & Tiếp Tục Render Video", self)
+        btn_continue.setIcon(FluentIcon.PLAY)
+        btn_continue.clicked.connect(self._save_and_accept)
+        btn_box.addStretch(1)
+        btn_box.addWidget(btn_continue)
+
+        layout.addLayout(btn_box)
+
+    def _save_and_accept(self):
+        for row, blk in enumerate(self.blocks):
+            item = self.table.item(row, 3)
+            if item:
+                txt = item.text()
+                blk.translated_text = txt
+                blk.text = txt
+        self.accept()
+
+
 class AutoPipelineWorker(QThread):
     """Worker Thread chạy 1-Click luồng MMO Auto Pipeline (Chạy song song Dịch + Xóa sub)."""
     progress_signal = Signal(int, str)
     step_signal = Signal(int)
     log_signal = Signal(str)
     finished_signal = Signal(bool, str, str)
+    review_requested_signal = Signal(object, object)  # (extracted_blocks, threading.Event)
 
     def __init__(
         self,
@@ -57,6 +140,7 @@ class AutoPipelineWorker(QThread):
         inpaint_mode: str,
         sub_areas: list,
         style_type: str,
+        pause_for_review: bool = False,
         parent=None
     ):
         super().__init__(parent=parent)
@@ -69,6 +153,7 @@ class AutoPipelineWorker(QThread):
         self.inpaint_mode = inpaint_mode
         self.sub_areas = sub_areas
         self.style_type = style_type
+        self.pause_for_review = pause_for_review
         self._is_stopped = False
 
     def stop(self):
@@ -104,7 +189,14 @@ class AutoPipelineWorker(QThread):
             def task_translation():
                 try:
                     if extracted_blocks:
-                        self.log_signal.emit(f"  └─► [Nhánh Dịch AI] Đang dịch {len(extracted_blocks)} câu bằng {self.engine_type.upper()}...")
+                        engine_name_map = {
+                            "gguf": f"Local GGUF ({self.api_config.get('model_name', 'Qwen2.5')})",
+                            "marian": "Local MarianMT",
+                            "llm": f"{self.api_config.get('provider_name', 'AI')} ({self.api_config.get('model_name', '')})",
+                            "google": "Free Google Translate"
+                        }
+                        display_engine_name = engine_name_map.get(self.engine_type, self.engine_type.upper())
+                        self.log_signal.emit(f"  └─► [Nhánh Dịch AI] Đang dịch {len(extracted_blocks)} câu bằng {display_engine_name}...")
                         translator = SubtitleTranslator(
                             engine=self.engine_type,
                             api_key=self.api_config.get("api_key"),
@@ -153,12 +245,22 @@ class AutoPipelineWorker(QThread):
             if remover_error[0]:
                 raise remover_error[0]
 
+            # Pause for user review if requested
+            if self.pause_for_review and extracted_blocks:
+                self.log_signal.emit("⏸️ Luồng Tự Động tạm dừng để người dùng duyệt & chỉnh sửa phụ đề...")
+                evt = threading.Event()
+                self.review_requested_signal.emit(extracted_blocks, evt)
+                evt.wait()
+                if self._is_stopped:
+                    return
+                self.log_signal.emit("▶️ Đã hoàn thành duyệt phụ đề. Tiếp tục render video!")
+
             # =============================================================
             # BƯỚC 3: MERGE (Cleaned Video + Translated Subtitle -> Output)
             # =============================================================
             self.step_signal.emit(3)
             self.progress_signal.emit(85, "Bước 3/3: Đang ghép phụ đề mới và render Output Video...")
-            self.log_signal.emit("🧩 BẮT ĐẦU MERGE: Ghép phụ đề mới vào Video đã xóa sub...")
+            self.log_signal.emit("🧩 BẮT ĐẦU MERGE: Ghép phụ đề mới vào Video...")
 
             ass_path = str(Path(self.output_path).parent / f"{Path(self.video_path).stem}_translated_temp.ass")
             sub_items = []
@@ -179,11 +281,13 @@ class AutoPipelineWorker(QThread):
 
             SubtitleExporter.export_ass(ass_path, sub_items, fps, style_type=self.style_type)
 
-            if sub_items and os.path.exists(cleaned_video_path):
-                self._overlay_subtitle_ffmpeg(cleaned_video_path, ass_path, self.output_path)
-            elif os.path.exists(cleaned_video_path):
+            input_video_for_merge = cleaned_video_path if (os.path.exists(cleaned_video_path) and os.path.getsize(cleaned_video_path) > 0) else self.video_path
+
+            if sub_items:
+                self._overlay_subtitle_ffmpeg(input_video_for_merge, ass_path, self.output_path)
+            elif os.path.exists(input_video_for_merge) and os.path.getsize(input_video_for_merge) > 0:
                 import shutil
-                shutil.copy(cleaned_video_path, self.output_path)
+                shutil.copy(input_video_for_merge, self.output_path)
 
             for tmp in [cleaned_video_path, ass_path]:
                 if os.path.exists(tmp):
@@ -230,9 +334,6 @@ class AutoPipelineWorker(QThread):
         return blocks
 
     def _run_subtitle_remover(self, output_path: str):
-        from backend.main import SubtitleRemover
-        remover = SubtitleRemover(self.video_path, gui_mode=False)
-
         options = {
             "sub_areas": self.sub_areas if self.sub_areas else [],
             "inpaint_mode": self.inpaint_mode,
@@ -246,8 +347,8 @@ class AutoPipelineWorker(QThread):
         )
 
         p = multiprocessing.Process(
-            target=remover.run_removesub_thread,
-            args=(options, output_path, remote_call.queue)
+            target=_remover_process_worker,
+            args=(remote_call.queue, self.video_path, output_path, options)
         )
         p.start()
 
@@ -263,22 +364,36 @@ class AutoPipelineWorker(QThread):
 
     def _overlay_subtitle_ffmpeg(self, video_in: str, ass_in: str, video_out: str):
         import subprocess
+        import shutil
         from backend.tools.ffmpeg_cli import FFmpegCLI
-        ffmpeg_bin = FFmpegCLI.get_ffmpeg_path()
+        ffmpeg_bin = FFmpegCLI.instance().ffmpeg_path
 
         clean_ass = os.path.abspath(ass_in).replace('\\', '/').replace(':', '\\:')
         cmd = [
             ffmpeg_bin, "-y",
             "-i", os.path.abspath(video_in),
-            "-vf", f"subtitles={clean_ass}",
+            "-vf", f"subtitles='{clean_ass}'",
             "-c:v", "libx264", "-preset", "fast", "-crf", "18",
             "-c:a", "copy",
             os.path.abspath(video_out)
         ]
+
+        if os.path.exists(video_out) and os.path.getsize(video_out) == 0:
+            try:
+                os.remove(video_out)
+            except Exception:
+                pass
+
         res = subprocess.run(cmd, capture_output=True, text=True)
-        if res.returncode != 0 and not os.path.exists(video_out):
-            import shutil
-            shutil.copy(video_in, video_out)
+
+        if not os.path.exists(video_out) or os.path.getsize(video_out) == 0:
+            self.log_signal.emit("⚠️ FFmpeg burn subtitle gặp sự cố. Tiến hành sao chép video gốc làm tệp đầu ra...")
+            if os.path.exists(video_out):
+                try:
+                    os.remove(video_out)
+                except Exception:
+                    pass
+            shutil.copy(os.path.abspath(video_in), os.path.abspath(video_out))
 
 
 class AutoPipelineInterface(QWidget):
@@ -340,7 +455,7 @@ class AutoPipelineInterface(QWidget):
         self.lbl_video_status = BodyLabel("Đã nạp: Chưa chọn video nào", self)
         self.lbl_video_status.setStyleSheet("color: #666666; font-style: italic;")
 
-        self.btn_nav_ytdlp = PushButton("Chỉnh sửa chi tiết Tải Video", self)
+        self.btn_nav_ytdlp = PushButton("Tải Video", self)
         self.btn_nav_ytdlp.setIcon(FluentIcon.DOWNLOAD)
 
         row1.addWidget(self.btn_select_video)
@@ -362,7 +477,7 @@ class AutoPipelineInterface(QWidget):
         self.lbl_summary_translate = CaptionLabel("Thiết lập: OCR (Tự động) ➔ Dịch (Miễn phí)", self)
         self.lbl_summary_translate.setStyleSheet("background: rgba(0,120,212,0.1); padding: 4px 10px; border-radius: 6px; color: #0078d4;")
 
-        self.btn_nav_translate = PushButton("Chỉnh sửa chi tiết Dịch phụ đề", self)
+        self.btn_nav_translate = PushButton("Chỉnh sửa chi tiết", self)
         self.btn_nav_translate.setIcon(FluentIcon.SETTING)
 
         row2.addWidget(lbl_trans_title)
@@ -383,7 +498,7 @@ class AutoPipelineInterface(QWidget):
         self.lbl_summary_remover = CaptionLabel("Thiết lập: STTN Auto | GPU Acceleration: BẬT", self)
         self.lbl_summary_remover.setStyleSheet("background: rgba(16,124,65,0.1); padding: 4px 10px; border-radius: 6px; color: #107c41;")
 
-        self.btn_nav_remover = PushButton("Chỉnh sửa chi tiết Xóa phụ đề", self)
+        self.btn_nav_remover = PushButton("Chỉnh sửa chi tiết", self)
         self.btn_nav_remover.setIcon(FluentIcon.SETTING)
 
         row3.addWidget(lbl_remove_title)
@@ -454,6 +569,9 @@ class AutoPipelineInterface(QWidget):
         self.progress_bar.setValue(0)
         action_layout.addWidget(self.progress_bar, 1)
 
+        self.pause_review_checkbox = CheckBox("Dừng duyệt & sửa phụ đề trước khi ghép video", self)
+        action_layout.addWidget(self.pause_review_checkbox)
+
         self.status_label = BodyLabel("Sẵn sàng chạy luồng tự động.", self)
         action_layout.addWidget(self.status_label)
 
@@ -491,30 +609,89 @@ class AutoPipelineInterface(QWidget):
             main_win.switchTo(main_win.toolsInterface)
             main_win.toolsInterface.switch_to_sub_tab(0)
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._update_settings_summary()
+
     def _update_settings_summary(self):
         """Đọc và hiển thị các thiết lập hiện tại lên giao diện tối giản."""
         # 1. Cấu hình Tab Dịch Phụ Đề
         if CONFIG_API_FILE.exists():
             try:
                 data = json.loads(CONFIG_API_FILE.read_text(encoding="utf-8"))
-                provider_idx = data.get("provider_index", 0)
-                provider_keys = list(PROVIDERS_INFO.keys())
-                provider_name = provider_keys[provider_idx] if 0 <= provider_idx < len(provider_keys) else "Google Gemini"
-                model_name = data.get("model_name", "gemini-1.5-flash")
-                has_key = bool(data.get("api_key", "").strip())
-                key_str = "🔑 Key hợp lệ" if has_key else "⚠️ Chưa nạp Key"
-                self.lbl_summary_translate.setText(f"OCR: Auto ➔ Dịch AI: {provider_name} ({model_name}) | {key_str}")
+                engine_idx = data.get("engine_index", 0)
+                if engine_idx == 0:
+                    self.lbl_summary_translate.setText("OCR: Auto ➔ Dịch AI: Google Translate (Miễn phí)")
+                else:
+                    provider_idx = data.get("provider_index", 0)
+                    provider_keys = list(PROVIDERS_INFO.keys())
+                    provider_name = data.get("provider_name") or (provider_keys[provider_idx] if 0 <= provider_idx < len(provider_keys) else "GGUF Model")
+                    model_name = data.get("model_name", "Qwen2.5 / Local Model")
+                    engine_type = data.get("engine_type", "")
+                    if not engine_type:
+                        if provider_name == "GGUF Model":
+                            engine_type = "gguf"
+                        elif provider_name == "MarianMT":
+                            engine_type = "marian"
+                        elif data.get("api_key"):
+                            engine_type = "llm"
+                        else:
+                            engine_type = "google"
+
+                    if engine_type == "gguf":
+                        self.lbl_summary_translate.setText(f"OCR: Auto ➔ Dịch Local GGUF: {model_name} |  Offline Engine")
+                    elif engine_type == "marian":
+                        self.lbl_summary_translate.setText("OCR: Auto ➔ Dịch Local MarianMT |  Offline Engine")
+                    else:
+                        has_key = bool(data.get("api_key", "").strip())
+                        key_str = "🔑 Key hợp lệ" if has_key else "⚠️ Chưa nạp Key"
+                        self.lbl_summary_translate.setText(f"OCR: Auto ➔ Dịch AI: {provider_name} ({model_name}) | {key_str}")
             except Exception:
-                self.lbl_summary_translate.setText("OCR: Auto ➔ Dịch AI: Google Translate (Miễn phí)")
+                self.lbl_summary_translate.setText("OCR: Auto ➔ Dịch AI: Google Translate")
         else:
-            self.lbl_summary_translate.setText("OCR: Auto ➔ Dịch AI: Google Translate (Miễn phí)")
+            self.lbl_summary_translate.setText("OCR: Auto ➔ Dịch AI: Google Translate)")
 
         # 2. Cấu hình Tab Xóa Sub & Phần cứng
         from backend.config import config as main_cfg
         hw_enabled = getattr(main_cfg.hardwareAcceleration, 'value', True)
         hw_str = "GPU CUDA/DirectML: BẬT" if hw_enabled else "CPU Mode"
-        inpaint_text = self.inpaint_combo.currentText()
+
+        raw_mode = getattr(main_cfg.inpaintMode, 'value', 'sttn_auto')
+        cfg_file = Path("config") / "auto_pipeline_config.json"
+        if cfg_file.exists():
+            try:
+                auto_cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+                if "inpaint_mode" in auto_cfg and auto_cfg["inpaint_mode"]:
+                    raw_mode = auto_cfg["inpaint_mode"]
+            except Exception:
+                pass
+
+        if hasattr(raw_mode, 'value'):
+            raw_mode = raw_mode.value
+        if hasattr(raw_mode, 'value'):
+            raw_mode = raw_mode.value
+
+        mode_str = str(raw_mode).lower().replace('-', '_')
+        if 'lama' in mode_str:
+            mode_code = 'lama'
+        elif 'propainter' in mode_str:
+            mode_code = 'propainter'
+        elif 'opencv' in mode_str:
+            mode_code = 'opencv'
+        else:
+            mode_code = 'sttn_auto'
+
+        inpaint_display_map = {
+            "sttn_auto": "STTN Auto (Khuyên dùng)",
+            "lama": "Lama Inpaint",
+            "propainter": "Propainter",
+            "opencv": "OpenCV Rapid"
+        }
+        inpaint_text = inpaint_display_map.get(mode_code, mode_code)
         self.lbl_summary_remover.setText(f"Mô hình Xóa: {inpaint_text} | Tăng tốc: {hw_str}")
+
+        combo_map = {'sttn_auto': 0, 'lama': 1, 'propainter': 2, 'opencv': 3}
+        self.inpaint_combo.setCurrentIndex(combo_map.get(mode_code, 0))
 
     def _select_video_file(self):
         filepath, _ = FolderMemoryDialog.getOpenFileName(
@@ -592,15 +769,48 @@ class AutoPipelineInterface(QWidget):
 
         ocr_lang = ocr_map.get(self.ocr_lang_combo.currentText(), "auto")
         target_lang = tgt_map.get(self.target_lang_combo.currentText(), "vi")
-        # Xác định engine_type từ config đã lưu hoặc suy luận từ provider
-        saved_engine = api_config.get("engine_type", "")
-        if saved_engine in ("gguf", "local_nmt", "marian"):
-            engine_type = saved_engine
-        elif saved_engine == "llm" or api_config.get("api_key"):
-            engine_type = "llm"
-        else:
+        # Xác định engine_type chuẩn xác từ config đã đồng bộ
+        engine_idx = api_config.get("engine_index", 0)
+        if engine_idx == 0:
             engine_type = "google"
-        inpaint_mode = inpaint_map.get(self.inpaint_combo.currentText(), "sttn_auto")
+        else:
+            engine_type = api_config.get("engine_type", "")
+            if not engine_type:
+                provider_idx = api_config.get("provider_index", 0)
+                provider_keys = list(PROVIDERS_INFO.keys())
+                p_name = api_config.get("provider_name") or (provider_keys[provider_idx] if 0 <= provider_idx < len(provider_keys) else "")
+                if p_name == "GGUF Model":
+                    engine_type = "gguf"
+                elif p_name == "MarianMT":
+                    engine_type = "marian"
+                elif api_config.get("api_key"):
+                    engine_type = "llm"
+        # Sync inpaint mode from config
+        from backend.config import config as main_cfg
+        raw_mode = getattr(main_cfg.inpaintMode, 'value', 'sttn_auto')
+        cfg_file = Path("config") / "auto_pipeline_config.json"
+        if cfg_file.exists():
+            try:
+                auto_cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+                if "inpaint_mode" in auto_cfg and auto_cfg["inpaint_mode"]:
+                    raw_mode = auto_cfg["inpaint_mode"]
+            except Exception:
+                pass
+
+        if hasattr(raw_mode, 'value'):
+            raw_mode = raw_mode.value
+        if hasattr(raw_mode, 'value'):
+            raw_mode = raw_mode.value
+
+        mode_str = str(raw_mode).lower().replace('-', '_')
+        if 'lama' in mode_str:
+            inpaint_mode = 'lama'
+        elif 'propainter' in mode_str:
+            inpaint_mode = 'propainter'
+        elif 'opencv' in mode_str:
+            inpaint_mode = 'opencv'
+        else:
+            inpaint_mode = 'sttn_auto'
         style_type = style_map.get(self.style_combo.currentText(), "tiktok_yellow")
 
         vd_p = Path(self.current_video_path)
@@ -622,6 +832,7 @@ class AutoPipelineInterface(QWidget):
             inpaint_mode=inpaint_mode,
             sub_areas=sub_areas,
             style_type=style_type,
+            pause_for_review=self.pause_review_checkbox.isChecked(),
             parent=self
         )
 
@@ -629,9 +840,15 @@ class AutoPipelineInterface(QWidget):
         self.pipeline_worker.step_signal.connect(self._on_step_changed)
         self.pipeline_worker.log_signal.connect(self._on_log)
         self.pipeline_worker.finished_signal.connect(self._on_finished)
+        self.pipeline_worker.review_requested_signal.connect(self._on_review_requested)
         self.pipeline_worker.finished.connect(self.pipeline_worker.deleteLater)
 
         self.pipeline_worker.start()
+
+    def _on_review_requested(self, blocks, evt):
+        dialog = SubtitleReviewDialog(blocks, parent=self)
+        dialog.exec()
+        evt.set()
 
     @Slot(int, str)
     def _on_progress(self, percent: int, msg: str):

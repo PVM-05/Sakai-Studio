@@ -1,15 +1,18 @@
 import os
 import cv2
 import numpy as np
+import json
+from pathlib import Path
 import threading
 import multiprocessing
 import time
 import traceback
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QGridLayout
-from PySide6.QtCore import Slot, QRect, Signal, Qt, QThread
-from PySide6 import QtWidgets
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QGridLayout, QDialog
+from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtCore import Slot, QRect, Signal, Qt, QThread, QTimer
+from PySide6 import QtWidgets, QtCore
 from datetime import datetime
-from qfluentwidgets import (PushButton, PrimaryPushButton, CardWidget, TextEdit, FluentIcon, InfoBar, ScrollArea)
+from qfluentwidgets import (PushButton, PrimaryPushButton, CardWidget, TextEdit, FluentIcon, InfoBar, ScrollArea, SubtitleLabel, CaptionLabel)
 from ui.setting_interface import SettingInterface
 from ui.component.video_display_component import VideoDisplayComponent
 from ui.component.task_list_component import TaskListComponent, TaskStatus, TaskOptions
@@ -23,67 +26,13 @@ from backend.tools.subtitle_exporter import SubtitleExporter
 from backend.ocr_engine import VideoOcrEngine
 
 
-class FastSrtExtractThread(QThread):
-    progress_signal = Signal(float, str)
-    finished_signal = Signal(str, bool, str)  # (output_path, success, message)
 
-    def __init__(self, video_path: str, sub_areas: list, save_dir: str = "", parent=None):
-        super().__init__(parent=parent)
-        self.video_path = video_path
-        self.sub_areas = sub_areas
-        self.save_dir = save_dir
-        self._is_stopped = False
 
-    def stop(self):
-        self._is_stopped = True
 
-    def run(self):
-        if not self.video_path or not os.path.exists(self.video_path):
-            self.finished_signal.emit("", False, "Tệp video không tồn tại.")
-            return
-
-        cap = cv2.VideoCapture(self.video_path)
-        if not cap.isOpened():
-            self.finished_signal.emit("", False, "Không thể mở video.")
-            return
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        cap.release()
-
-        engine = VideoOcrEngine(
-            ocr_mode="auto",
-            ocr_lang="auto",
-            use_typo_map=True,
-            use_whisper_fallback=True,
-            use_voice_separation=False,
-        )
-        segments = engine.extract_subtitles(
-            video_path=self.video_path,
-            sub_areas=self.sub_areas,
-            progress_callback=lambda pct, msg: self.progress_signal.emit(pct, msg),
-        )
-
-        if not segments:
-            self.finished_signal.emit("", False, "Không phát hiện chữ phụ đề hay giọng nói trong video.")
-            return
-
-        items = [{"start_frame": s.start_frame, "end_frame": s.end_frame, "text": s.text} for s in segments]
-
-        from pathlib import Path
-        video_p = Path(self.video_path)
-        srt_name = f"{video_p.stem}.srt"
-        if self.save_dir and os.path.isdir(self.save_dir):
-            out_srt_path = os.path.join(self.save_dir, srt_name)
-        else:
-            out_srt_path = str(video_p.with_suffix('.srt'))
-
-        try:
-            SubtitleExporter.export_srt(out_srt_path, items, fps)
-            self.finished_signal.emit(out_srt_path, True, f"Đã trích xuất thành công {len(items)} câu phụ đề!")
-        except Exception as e:
-            self.finished_signal.emit("", False, f"Lỗi ghi file SRT: {e}")
+# FastSrtExtractThread has been refactored and moved to ui/extractor_interface.py to prevent code duplication.
 
 class HomeInterface(QWidget):
-    progress_signal = Signal(int, bool)
+    progress_signal = Signal(int, bool, int)
     append_log_signal = Signal(list)
     update_preview_with_comp_signal = Signal(list)
     task_error_signal = Signal(object)
@@ -92,6 +41,10 @@ class HomeInterface(QWidget):
     select_task_signal = Signal(int)  # task_index
     # Tín hiệu trả kết quả inpaint preview từ background thread về UI thread
     mask_preview_result_signal = Signal(object, object)  # (result_frame, error_info)
+    # Tín hiệu trả khung hình tua bất đồng bộ (background thread -> UI thread)
+    async_seek_signal = Signal(object, int)
+    # Tín hiệu trả kết quả nhận diện chữ AI (background thread -> UI thread)
+    auto_detect_result_signal = Signal(object)
     def __init__(self, parent=None):
         super().__init__(parent=parent)
         self.setObjectName("HomeInterface")
@@ -123,6 +76,11 @@ class HomeInterface(QWidget):
         self.current_processing_task_index = -1
         self.last_exported_srt_path = None
 
+        # Biến trạng thái tua mượt liên tục & RAM Frame Cache
+        self._is_seeking_frame = False
+        self._current_seeking_value = None
+        self._frame_cache = {}  # {frame_no: frame_ndarray}
+
         self.__init_widgets()
         self.progress_signal.connect(self.update_progress)
         self.append_log_signal.connect(self.append_log)
@@ -133,6 +91,8 @@ class HomeInterface(QWidget):
         self.select_task_signal.connect(self.task_list_component.select_task)
         # Kết nối signal trả kết quả xem trước (background thread → UI thread)
         self.mask_preview_result_signal.connect(self._on_mask_preview_result)
+        self.async_seek_signal.connect(self._apply_seek_frame)
+        self.auto_detect_result_signal.connect(self._apply_auto_detected_rects)
         self.setAcceptDrops(True)
 
     def __init_widgets(self):
@@ -150,12 +110,15 @@ class HomeInterface(QWidget):
         self.video_display_component.set_player_mode("remover")
         self.video_display_component.ab_sections_changed.connect(self.ab_sections_changed)
         self.video_display_component.selections_changed.connect(self.selections_changed)
+        self.video_display_component.auto_detect_clicked.connect(self._on_auto_detect_clicked)
         left_layout.addWidget(self.video_display_component)
         
-        # 获取视频显示和滑块的引用
+        # Kết nối tín hiệu thanh trượt đỏ (kéo chuột liên tục chuẩn YouTube)
         self.video_display = self.video_display_component.video_display
         self.video_slider = self.video_display_component.video_slider
         self.video_slider.valueChanged.connect(self.slider_changed)
+        self.video_slider.sliderMoved.connect(self.slider_changed)
+        self.video_slider.sliderReleased.connect(lambda: self.slider_changed(self.video_slider.value()))
         
         # 输出文本区域
         self.output_text = TextEdit()
@@ -183,6 +146,28 @@ class HomeInterface(QWidget):
         self.setting_interface = SettingInterface(settings_container)
         settings_container.setLayout(self.setting_interface)
         right_layout.addWidget(settings_container)
+        
+        # Kết nối các công cụ từ SettingInterface (bên phải) sang VideoDisplayComponent
+        if hasattr(self.setting_interface, 'auto_detect_frame_btn'):
+            self.setting_interface.auto_detect_frame_btn.clicked.connect(self._on_auto_detect_clicked)
+        elif hasattr(self.setting_interface, 'auto_detect_card'):
+            self.setting_interface.auto_detect_card.clicked.connect(self._on_auto_detect_clicked)
+
+        if hasattr(self.setting_interface, 'brush_mode_btn'):
+            self.video_display_component.brush_mode_btn = self.setting_interface.brush_mode_btn
+            self.setting_interface.brush_mode_btn.clicked.connect(self.video_display_component.toggle_draw_mode)
+        if hasattr(self.setting_interface, 'red_mask_btn'):
+            self.video_display_component.red_mask_btn = self.setting_interface.red_mask_btn
+            self.setting_interface.red_mask_btn.clicked.connect(self.video_display_component.toggle_red_mask)
+        if hasattr(self.setting_interface, 'clear_brush_btn'):
+            self.setting_interface.clear_brush_btn.clicked.connect(self.video_display_component.clear_freehand_strokes)
+        
+        # Kết nối sự kiện bật/tắt công tắc Tự động (OCR / Tracking)
+        if getattr(config, 'autoDetectTextFrameByFrame', None):
+            config.autoDetectTextFrameByFrame.valueChanged.connect(self._update_manual_tools_state)
+        if getattr(config, 'movingSubtitleTracking', None):
+            config.movingSubtitleTracking.valueChanged.connect(self._update_manual_tools_state)
+        QtCore.QTimer.singleShot(100, lambda: self._update_manual_tools_state(None))
         
         # 添加任务列表容器
         task_list_container = CardWidget(self)
@@ -218,6 +203,8 @@ class HomeInterface(QWidget):
         self.mask_preview_button.setIcon(FluentIcon.VIEW)
         self.mask_preview_button.setToolTip(tr['Setting']['MaskPreviewTooltip'])
         self.mask_preview_button.clicked.connect(self.mask_preview_button_clicked)
+        self.mask_preview_button.pressed.connect(self._on_mask_preview_pressed)
+        self.mask_preview_button.released.connect(self._on_mask_preview_released)
         button_layout.addWidget(self.mask_preview_button, 1, 0)
         
         self.run_button = PushButton(tr['SubtitleExtractorGUI']['Run'], self)
@@ -235,12 +222,66 @@ class HomeInterface(QWidget):
         self.pause_resume_button.setIcon(FluentIcon.PAUSE)
         self.pause_resume_button.setVisible(False)
         self.pause_resume_button.clicked.connect(self.pause_resume_button_clicked)
-        button_layout.addWidget(self.pause_resume_button, 1, 3)
+        button_layout.addWidget(self.pause_resume_button, 0, 0)
+        
+        self.btn_save_config = PrimaryPushButton("Lưu Cài Đặt", self)
+        self.btn_save_config.setIcon(FluentIcon.SAVE)
+        self.btn_save_config.clicked.connect(self.save_remover_config)
+        button_layout.addWidget(self.btn_save_config, 2, 0, 1, 3)
 
         right_layout.addWidget(button_container)
 
         main_layout.addLayout(right_layout, 1)
     
+    def save_remover_config(self):
+        try:
+            from backend.config import config as main_cfg
+            main_cfg.save()
+            raw_mode = getattr(main_cfg.inpaintMode, 'value', 'sttn_auto')
+            if hasattr(raw_mode, 'value'):
+                raw_mode = raw_mode.value
+            if hasattr(raw_mode, 'value'):
+                raw_mode = raw_mode.value
+            inpaint_str = str(raw_mode).lower().replace('-', '_')
+
+            if 'lama' in inpaint_str:
+                mode_code = 'lama'
+            elif 'propainter' in inpaint_str:
+                mode_code = 'propainter'
+            elif 'opencv' in inpaint_str:
+                mode_code = 'opencv'
+            else:
+                mode_code = 'sttn_auto'
+
+            cfg_file = Path("config") / "auto_pipeline_config.json"
+            cfg_file.parent.mkdir(parents=True, exist_ok=True)
+            data = {}
+            if cfg_file.exists():
+                try:
+                    data = json.loads(cfg_file.read_text(encoding="utf-8"))
+                except Exception:
+                    data = {}
+
+            data["inpaint_mode"] = mode_code
+            cfg_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            display_names = {
+                "sttn_auto": "STTN Auto (Khuyên dùng)",
+                "lama": "Lama Inpaint",
+                "propainter": "Propainter",
+                "opencv": "OpenCV Rapid"
+            }
+            mode_label = display_names.get(mode_code, mode_code)
+
+            InfoBar.success(
+                "Đã Lưu Cài Đặt Xóa Sub",
+                f"Mô hình xóa: {mode_label}. Tab Tự Động đã được đồng bộ!",
+                parent=self,
+                duration=3500
+            )
+        except Exception as e:
+            InfoBar.error("Lỗi", f"Không thể lưu cài đặt xóa sub: {e}", parent=self, duration=3000)
+
     def on_scroll_change(self, value):
         """监控滚动条位置变化"""
         scrollbar = self.output_text.verticalScrollBar()
@@ -253,40 +294,318 @@ class HomeInterface(QWidget):
 
     
     def slider_changed(self, value):
-        frame = None
-        with self._video_cap_lock:
-            if self.video_cap is not None and self.video_cap.isOpened():
-                frame_no = self.video_slider.value()
+        # Reset preview state khi người dùng tua video
+        self._preview_original_frame = None
+        self._preview_inpainted_frame = None
+        if hasattr(self, 'mask_preview_button') and self.mask_preview_button.text() != tr['Setting']['MaskPreview']:
+            self.mask_preview_button.setText(tr['Setting']['MaskPreview'])
+            self.mask_preview_button.setToolTip(tr['Setting']['MaskPreviewTooltip'])
+
+        # Nếu video đang PLAY (đang phát), không giải mã bằng OpenCV CPU để tránh xung đột với QMediaPlayer
+        if hasattr(self, 'video_display_component') and hasattr(self.video_display_component, 'media_player'):
+            from PySide6.QtMultimedia import QMediaPlayer
+            if getattr(self.video_display_component.media_player, 'playbackState', None):
+                if self.video_display_component.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                    return
+
+        # 🚀 KIỂM TRA RAM FRAME CACHE HỖ TRỢ TUA TỨC THÌ (0ms Latency Hit)
+        if hasattr(self, '_frame_cache') and value in self._frame_cache:
+            self._pending_seek_value = value
+            if hasattr(self, 'video_display_component'):
+                self.video_display_component.update_time_display()
+                self.video_display_component.sync_audio_position(value)
+            self.update_preview(self._frame_cache[value])
+            return
+
+        # Lưu vị trí tua cần chuyển tới
+        self._pending_seek_value = value
+
+        # Cập nhật ngay giao diện đồng hồ thời gian (0ms UI latency)
+        if hasattr(self, 'video_display_component'):
+            self.video_display_component.update_time_display()
+
+        # Kích hoạt giải mã ngay lập tức. Nếu luồng đang bận, nó sẽ tự động bỏ qua (chờ luồng hiện tại xong rồi tự lặp)
+        self._do_async_seek()
+
+    def _do_async_seek(self):
+        target_value = getattr(self, '_pending_seek_value', None)
+        if target_value is None:
+            return
+
+        # Nếu frame đã có trong RAM cache -> Hiển thị 0ms tức thì
+        if hasattr(self, '_frame_cache') and target_value in self._frame_cache:
+            self._apply_seek_frame(self._frame_cache[target_value], target_value)
+
+        if getattr(self, '_is_seeking_frame', False):
+            return
+            
+        self._is_seeking_frame = True
+
+        def _bg_seek_worker():
+            while True:
+                # Lấy vị trí target_value mới nhất mà con trỏ chuột đang chỉ tới
+                cur_target = getattr(self, '_pending_seek_value', None)
+                if cur_target is None:
+                    break
+
+                # Nếu frame này đã sẵn sàng trong RAM cache -> Đưa ra UI ngay
+                if hasattr(self, '_frame_cache') and cur_target in self._frame_cache:
+                    self.async_seek_signal.emit(self._frame_cache[cur_target], cur_target)
+                    if getattr(self, '_pending_seek_value', None) == cur_target:
+                        break
+                    continue
+
+                frame = None
                 try:
-                    current_pos = int(self.video_cap.get(cv2.CAP_PROP_POS_FRAMES))
+                    with self._video_cap_lock:
+                        if self.video_cap is not None and self.video_cap.isOpened():
+                            target_frame_idx = max(0, cur_target - 1)
+                            try:
+                                current_pos = int(self.video_cap.get(cv2.CAP_PROP_POS_FRAMES))
+                            except Exception:
+                                current_pos = -1
+
+                            diff = target_frame_idx - current_pos
+                            # Tua ngắn (1-60 frames) dùng read() siêu tốc <4ms per batch
+                            if 0 <= diff <= 60:
+                                for _ in range(max(1, diff)):
+                                    ret, frame = self.video_cap.read()
+                                    if not ret:
+                                        break
+                            else:
+                                self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame_idx)
+                                ret, frame = self.video_cap.read()
+
+                            if not ret:
+                                frame = None
                 except Exception:
-                    current_pos = -1
-
-                # TỐI ƯU SIÊU TỐC CHO VIDEO DÀI:
-                # Nếu video đang phát liên tục (frame_no chênh lệch 0 đến 2 frame so với vị trí hiện tại của OpenCV),
-                # ĐỌC TRỰC TIẾP bằng cap.read() (tốc độ <0.5ms) thay vì cap.set() làm OpenCV decode lại từ I-Frame (tốn 80ms ➔ gây giật lag)
-                diff = frame_no - current_pos
-                if 0 <= diff <= 2:
-                    for _ in range(max(1, diff)):
-                        ret, frame = self.video_cap.read()
-                        if not ret:
-                            break
-                else:
-                    # Khi người dùng kéo thả slider nhảy cóc xa: mới gọi cap.set() để tua tới đúng vị trí
-                    self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
-                    ret, frame = self.video_cap.read()
+                    pass
                 
-                if not ret:
-                    frame = None
+                # Gửi frame giải mã về UI thread để hiển thị lập tức
+                self.async_seek_signal.emit(frame if frame is not None else -1, cur_target)
 
-        if frame is not None:
-            # Khôi phục trạng thái xem trước bình thường (enable dragger và draw selection)
+                # Nếu con trỏ chuột dừng kéo (vị trí target không đổi) -> Hoàn tất tua, thoát luồng
+                if getattr(self, '_pending_seek_value', None) == cur_target:
+                    break
+
+            self._is_seeking_frame = False
+
+        threading.Thread(target=_bg_seek_worker, daemon=True).start()
+
+    @Slot(object, int)
+    def _apply_seek_frame(self, frame, value):
+        if frame is not None and isinstance(frame, np.ndarray):
+            # Lưu vào RAM Frame Cache (Giới hạn tối đa 300 frames)
+            if hasattr(self, '_frame_cache'):
+                self._frame_cache[value] = frame.copy()
+                if len(self._frame_cache) > 300:
+                    oldest_keys = list(self._frame_cache.keys())[:50]
+                    for k in oldest_keys:
+                        self._frame_cache.pop(k, None)
+
             self.video_display_component.set_dragger_enabled(True)
-            # Cập nhật preview với frame mới từ slider
             self.update_preview(frame)
-        # Đồng bộ vị trí âm thanh
+            # Ép cập nhật lại màn hình hiển thị tức thì theo vị trí con trỏ chuột
+            if hasattr(self.video_display_component, 'video_display') and self.video_display_component.video_display:
+                self.video_display_component.video_display.repaint()
+            
         if hasattr(self, 'video_display_component'):
             self.video_display_component.sync_audio_position(value)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not getattr(self, '_session_checked', False):
+            self._session_checked = True
+            QtCore.QTimer.singleShot(300, self._check_session_recovery)
+
+    def _check_session_recovery(self):
+        if hasattr(self, 'task_list_component') and self.task_list_component.has_saved_session():
+            from qfluentwidgets import MessageDialog
+            dialog = MessageDialog(
+                title="Khôi phục phiên làm việc",
+                content="Phát hiện danh sách nhiệm vụ chưa hoàn thành từ lần làm việc trước. Bạn có muốn khôi phục không?",
+                parent=self
+            )
+            dialog.yesButton.setText("Khôi phục")
+            dialog.cancelButton.setText("Bỏ qua")
+            if dialog.exec():
+                self.task_list_component.load_session()
+                InfoBar.success(
+                    title="Khôi phục thành công",
+                    content="Đã tải lại toàn bộ danh sách video và cấu hình trước đó.",
+                    parent=self,
+                    duration=3000
+                )
+
+    def _update_manual_tools_state(self, _=None):
+        """Khóa/Mở khóa các công cụ vẽ thủ công khi Bật/Tắt chế độ Tự động (ON/OFF)"""
+        is_auto_ocr = getattr(config, 'autoDetectTextFrameByFrame', None) and config.autoDetectTextFrameByFrame.value
+        is_moving_sub = getattr(config, 'movingSubtitleTracking', None) and config.movingSubtitleTracking.value
+        is_auto = is_auto_ocr or is_moving_sub
+
+        # 1. Bật/Tắt các nút bấm trong bảng Cài Đặt (SettingInterface)
+        if hasattr(self, 'setting_interface'):
+            if hasattr(self.setting_interface, 'auto_detect_frame_btn'):
+                self.setting_interface.auto_detect_frame_btn.setEnabled(not is_auto)
+            if hasattr(self.setting_interface, 'brush_mode_btn'):
+                self.setting_interface.brush_mode_btn.setEnabled(not is_auto)
+            if hasattr(self.setting_interface, 'clear_brush_btn'):
+                self.setting_interface.clear_brush_btn.setEnabled(not is_auto)
+            if hasattr(self.setting_interface, 'mask_type_combo'):
+                self.setting_interface.mask_type_combo.setEnabled(not is_auto)
+
+        # 2. Bật/Tắt khả năng kéo vẽ trên trình phát video
+        if hasattr(self, 'video_display_component'):
+            self.video_display_component.set_dragger_enabled(not is_auto)
+
+        # 3. Hiển thị thông báo hướng dẫn cho người dùng (Chỉ khi có thay đổi từ user)
+        if _ is not None and isinstance(_, bool):
+            if is_auto:
+                InfoBar.info(
+                    title="Chế độ Tự động (ON)",
+                    content="Tính năng tự động đang bật. Đã khóa các công cụ vẽ thủ công để tránh xung đột.",
+                    parent=self,
+                    duration=3000
+                )
+            else:
+                InfoBar.info(
+                    title="Chế độ Thủ công (OFF)",
+                    content="Đã mở lại bộ công cụ cọ vẽ, khoanh vùng và nút Quét AI 1 frame.",
+                    parent=self,
+                    duration=3000
+                )
+
+    def _on_auto_detect_clicked(self):
+        if not hasattr(self, 'current_frame') or self.current_frame is None:
+            InfoBar.warning(
+                title="Cảnh báo",
+                content="Vui lòng tải một video trước khi thực hiện tự động nhận diện chữ.",
+                parent=self,
+                duration=3000
+            )
+            return
+
+        selected_lang = getattr(config, 'ocrLanguage', None) and config.ocrLanguage.value
+        lang_display = {
+            'auto': 'Tự động phát hiện',
+            'vi': 'Tiếng Việt',
+            'en': 'Tiếng Anh',
+            'ch': 'Tiếng Trung',
+            'japan': 'Tiếng Nhật',
+            'korean': 'Tiếng Hàn'
+        }.get(selected_lang, 'Tự động phát hiện')
+
+        InfoBar.info(
+            title="Đang xử lý AI OCR",
+            content=f"Đang quét tìm kiếm vị trí các dòng phụ đề (Ngôn ngữ: {lang_display})...",
+            parent=self,
+            duration=3000
+        )
+
+        frame = self.current_frame.copy()
+        h, w = frame.shape[:2]
+
+        def _bg_detect():
+            detected_rects = []
+            try:
+                from rapidocr_onnxruntime import RapidOCR
+                import re
+
+                if selected_lang and selected_lang != 'auto':
+                    engine = RapidOCR(lang=selected_lang)
+                else:
+                    engine = RapidOCR()
+                result, _ = engine(frame)
+                if result:
+                    for dt_box, text, score in result:
+                        clean_text = text.strip() if text else ""
+                        if not clean_text:
+                            continue
+
+                        # 1. 🛑 LỌC ICON GIẢ CHỮ VÀ HUD GAME (ví dụ: OOOOOO, 000000, ......, ||||||)
+                        if len(set(clean_text)) == 1 and len(clean_text) >= 3:
+                            continue
+                        if re.match(r'^[O0o.|\-_=*#~]+$', clean_text):
+                            continue
+
+                        # 2. 🛑 LỌC CON SỐ CÔ ĐỘC / CHỈ SỐ VẬT PHẨM GAME (ví dụ: 64, 32, 16 trên ô đồ Minecraft)
+                        # Nếu ô chữ chỉ gồm thuần túy 1-3 chữ số đứng một mình (không có từ đi kèm như "DAY 50", "Tập 1")
+                        if clean_text.isdigit() and len(clean_text) <= 3:
+                            continue
+
+                        # 2. 🎯 BỘ LỌC NGÔN NGỮ NGHIÊM NGẶT (STRICT LANGUAGE FILTER)
+                        cjk_chars = re.findall(r'[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u30ff\uac00-\ud7af]', clean_text)
+                        
+                        if selected_lang in ['vi', 'en']:
+                            # Nếu chọn Tiếng Việt hoặc Tiếng Anh: loại bỏ BẤT KỲ ô nào chứa chữ Trung/Nhật/Hàn (kể cả có lẫn chữ Latin)
+                            if len(cjk_chars) > 0:
+                                continue
+
+                        elif selected_lang == 'ch':
+                            # Nếu chọn Tiếng Trung: chỉ lấy các ô có chứa chữ Trung Quốc
+                            if len(cjk_chars) == 0:
+                                continue
+
+                        elif selected_lang == 'korean':
+                            # Nếu chọn Tiếng Hàn: chỉ lấy các ô có chứa chữ Hàn Hangul
+                            if not re.search(r'[\uac00-\ud7af]', clean_text):
+                                continue
+
+                        elif selected_lang == 'japan':
+                            # Nếu chọn Tiếng Nhật: chỉ lấy các ô có chứa Kana/Kanji
+                            if len(cjk_chars) == 0:
+                                continue
+
+                        xs = [pt[0] for pt in dt_box]
+                        ys = [pt[1] for pt in dt_box]
+                        xmin, xmax = int(min(xs)), int(max(xs))
+                        ymin, ymax = int(min(ys)), int(max(ys))
+                        
+                        # Mở rộng lề 3px cho sạch nét
+                        xmin = max(0, xmin - 3)
+                        xmax = min(w, xmax + 3)
+                        ymin = max(0, ymin - 3)
+                        ymax = min(h, ymax + 3)
+
+                        detected_rects.append((ymin, ymax, xmin, xmax))
+            except Exception as e:
+                print(f"[AutoDetectText] OCR Error: {e}")
+
+            self.auto_detect_result_signal.emit(detected_rects)
+
+        threading.Thread(target=_bg_detect, daemon=True).start()
+
+    @Slot(object)
+    def _apply_auto_detected_rects(self, detected_rects):
+        if not detected_rects:
+            InfoBar.warning(
+                title="Không tìm thấy phụ đề",
+                content="Không phát hiện dòng chữ nào trên khung hình hiện tại.",
+                parent=self,
+                duration=3000
+            )
+            return
+
+        # Chuyển đổi sang tọa độ hiển thị của widget
+        widget_rects = self.video_display_component.video_coordinates_to_preview_coordinates(detected_rects)
+        self.video_display_component.selection_rects = widget_rects
+        self.video_display_component.selected_indices = set(range(len(widget_rects)))
+        
+        # Cập nhật hiển thị lên giao diện
+        if hasattr(self, 'current_frame') and self.current_frame is not None:
+            self.update_preview(self.current_frame)
+            
+        # Lưu vào options của task hiện tại
+        current_idx = self.task_list_component.get_current_task_index()
+        if current_idx >= 0:
+            self.task_list_component.update_task_option(current_idx, TaskOptions.SUB_AREAS, detected_rects)
+
+        InfoBar.success(
+            title="Nhận diện thành công",
+            content=f"Đã tự động khoanh vùng {len(detected_rects)} vị trí chữ trên khung hình!",
+            parent=self,
+            duration=4000
+        )
 
     def ab_sections_changed(self, ab_sections):
         get_current_task_index = self.task_list_component.get_current_task_index()
@@ -415,24 +734,36 @@ class HomeInterface(QWidget):
             running_process = self.running_process
             if running_process:
                 ProcessManager.instance().terminate_by_process(running_process)
-            # 更新任务状态为待处理
+            # Dọn dẹp file tạm chưa hoàn chỉnh nếu bị dừng giữa chừng
             if self.current_processing_task_index >= 0:
                 self.task_list_component.update_task_status(self.current_processing_task_index, TaskStatus.PENDING)
+                task_item = self.task_list_component.get_task(self.current_processing_task_index)
+                if task_item and getattr(task_item, 'output_path', None) and os.path.exists(task_item.output_path):
+                    try:
+                        os.remove(task_item.output_path)
+                    except Exception:
+                        pass
         finally:
             self.running_process = None
             self.run_button.setVisible(True)
             self.stop_button.setVisible(False)
+            if hasattr(self, 'video_display_component'):
+                self.video_display_component.set_controls_enabled(True)
 
     @Slot(bool)
     def _toggle_buttons(self, show_run):
-        """线程安全地切换按钮可见性"""
+        """Chuyển đổi trạng thái hiển thị của các nút bấm"""
         self.run_button.setVisible(show_run)
         self.stop_button.setVisible(not show_run)
-        self.pause_resume_button.setVisible(not show_run)
+        if hasattr(self, 'pause_resume_button'):
+            self.pause_resume_button.setVisible(not show_run)
+        if hasattr(self, 'video_display_component'):
+            self.video_display_component.set_controls_enabled(show_run)
         if show_run:
             self.is_queue_paused = False
-            self.pause_resume_button.setText(tr['Setting'].get('PauseQueue', "Tạm dừng hàng đợi"))
-            self.pause_resume_button.setIcon(FluentIcon.PAUSE)
+            if hasattr(self, 'pause_resume_button'):
+                self.pause_resume_button.setText(tr['Setting'].get('PauseQueue', "Tạm dừng hàng đợi"))
+                self.pause_resume_button.setIcon(FluentIcon.PAUSE)
 
     def run_button_clicked(self):
         if not self.task_list_component.get_pending_tasks():
@@ -482,6 +813,18 @@ class HomeInterface(QWidget):
                                 self.task_status_signal.emit(self.current_processing_task_index, TaskStatus.FAILED)
                                 continue
 
+                            # Kiểm tra chế độ Tự động nhận diện chữ theo từng frame (ON / OFF)
+                            is_auto_frame_mode = getattr(config, 'autoDetectTextFrameByFrame', None) and config.autoDetectTextFrameByFrame.value
+                            if is_auto_frame_mode:
+                                self.append_log_signal.emit(["[Chế độ Tự động ON] AI sẽ tự động phát hiện OCR và xóa phụ đề trên từng khung hình khi render."])
+                            else:
+                                self.append_log_signal.emit(["[Chế độ Thủ công OFF] Xóa phụ đề theo các ô khoanh vùng cố định do người dùng tùy chỉnh."])
+
+                            # Kiểm tra chế độ Xóa phụ đề di chuyển (Moving Subtitle Tracking)
+                            is_moving_sub = getattr(config, 'movingSubtitleTracking', None) and config.movingSubtitleTracking.value
+                            if is_moving_sub:
+                                self.append_log_signal.emit(["[Xóa phụ đề di chuyển ON] AI đang bám đuổi và tự động cập nhật vị trí phụ đề động trên từng khung hình."])
+
                             # 获取字幕区域坐标，未选择则使用全屏
                             subtitle_areas = self.task_list_component.get_task_option(self.current_processing_task_index, TaskOptions.SUB_AREAS, [])
                             if not subtitle_areas or len(subtitle_areas) <= 0:
@@ -511,8 +854,8 @@ class HomeInterface(QWidget):
                                 options[key] = value
                             # Xác định output path trước để UI có thể track được
                             if not task_item.output_path:
-                                from pathlib import Path
-                                vd_name = Path(task_item.path).stem
+                                import pathlib
+                                vd_name = pathlib.Path(task_item.path).stem
                                 ext = os.path.splitext(task_item.path)[-1]
                                 if is_image_file(task_item.path):
                                     pic_dir = os.path.join(os.path.dirname(task_item.path), 'no_sub')
@@ -530,7 +873,7 @@ class HomeInterface(QWidget):
                             # 更新任务状态为已完成
                             task_obj = self.task_list_component.get_task(self.current_processing_task_index)
                             if process.exitcode == 0 and task_obj and task_obj.status == TaskStatus.PROCESSING:
-                                self.progress_signal.emit(100, True)
+                                self.progress_signal.emit(100, True, 0)
                                 task_obj.output_path = output_path
                                 self.task_status_signal.emit(self.current_processing_task_index, TaskStatus.COMPLETED)
                                 
@@ -538,9 +881,11 @@ class HomeInterface(QWidget):
                                 custom_dir = getattr(config, 'srtSaveDirectory', None)
                                 save_dir = custom_dir.value if (custom_dir and custom_dir.value and os.path.isdir(custom_dir.value)) else None
                                 if save_dir:
-                                    expected_srt = os.path.join(save_dir, Path(output_path).with_suffix('.srt').name)
+                                    import pathlib
+                                    expected_srt = os.path.join(save_dir, pathlib.Path(output_path).with_suffix('.srt').name)
                                 else:
-                                    expected_srt = str(Path(output_path).with_suffix('.srt'))
+                                    import pathlib
+                                    expected_srt = str(pathlib.Path(output_path).with_suffix('.srt'))
                                 
                                 if os.path.exists(expected_srt):
                                     self.last_exported_srt_path = expected_srt
@@ -599,9 +944,10 @@ class HomeInterface(QWidget):
             for key in options:
                 setattr(sr, key, options[key])
             sr.add_progress_listener(lambda progress, isFinished, frame_no=0: SubtitleRemoverRemoteCall.remote_call_update_progress(queue, progress, isFinished, frame_no))
-            sr.append_output = lambda *args: SubtitleRemoverRemoteCall.remote_call_append_log(queue, args)
+            sr.append_output = lambda *args: SubtitleRemoverRemoteCall.remote_call_append_log(queue, list(args))
             sr.manage_process = lambda pid: SubtitleRemoverRemoteCall.remote_call_manage_process(queue, pid)
-            sr.update_preview_with_comp = lambda *args: SubtitleRemoverRemoteCall.remote_call_update_preview_with_comp(queue, args)
+            sr.update_preview_with_comp = lambda *args: SubtitleRemoverRemoteCall.remote_call_update_preview_with_comp(queue, list(args))
+
             sr.run()
         except Exception as e:
             traceback.print_exc()
@@ -654,6 +1000,8 @@ class HomeInterface(QWidget):
         self.run_button.setVisible(True)
         self.stop_button.setVisible(False)
         self.se = None
+        if hasattr(self, 'video_display_component'):
+            self.video_display_component.set_controls_enabled(True)
         # 重置视频滑块
         self.video_slider.setValue(1)
         # 重置当前处理任务索引
@@ -746,86 +1094,23 @@ class HomeInterface(QWidget):
             self.video_slider.setValue(current_frame)
             self.video_slider.blockSignals(False)
 
-        if self.current_processing_task_index >= 0:
-            subtitle_areas = self.task_list_component.get_task_option(self.current_processing_task_index, TaskOptions.SUB_AREAS, [])
-            if len(subtitle_areas) > 0:
-                sub_areas_video = self.video_display_component.preview_coordinates_to_video_coordinates(subtitle_areas)
-                if frame_ori is frame_comp:
-                    frame_ori = frame_ori.copy()
-                for rect in sub_areas_video:
-                    ymin, ymax, xmin, xmax = rect
-                    cv2.rectangle(frame_ori, (xmin, ymin), (xmax, ymax), (0, 255, 0), 2)
-        # Ghép hai frame nằm ngang
-        preview_frame = cv2.hconcat([frame_ori, frame_comp])
-        # Cập nhật tham số video với kích thước frame ghep đôi (độ rộng gấp đôi)
-        double_width = frame_ori.shape[1] * 2
-        orig_height = frame_ori.shape[0]
-        self.video_display_component.set_video_parameters(
-            double_width, orig_height,
-            self.scaled_width if hasattr(self, 'scaled_width') else None,
-            self.scaled_height if hasattr(self, 'scaled_height') else None,
-            0, 0,
-            self.fps if self.fps is not None else 30,
-        )
-        # Căn chỉnh kích thước và hiển thị
-        resized_frame = self._img_resize(preview_frame)
+        # Hiển thị trực tiếp frame kết quả đã xóa sub (giữ nguyên tỷ lệ video gốc)
+        resized_frame = self._img_resize(frame_comp)
         self.video_display_component.update_video_display(resized_frame, draw_selection=False)
         self.video_display_component.set_dragger_enabled(False)
         self.video_display_component.update_time_display()
 
-    def start_fast_srt_extraction(self):
-        """Kích hoạt trích xuất phụ đề nhanh (OCR & Whisper AI) mà không cần xóa video."""
-        if not hasattr(self, 'video_path') or not self.video_path or not os.path.exists(self.video_path):
-            InfoBar.warning(
-                title="Cảnh báo",
-                content=tr['SubtitleExtractorGUI']['OpenVideoFirst'],
-                parent=self,
-                duration=3000
-            )
-            return
+    def _on_mask_preview_pressed(self):
+        """Giữ nút preview để xem ảnh Gốc"""
+        if hasattr(self, '_preview_original_frame') and self._preview_original_frame is not None:
+            resized_orig = self._img_resize(self._preview_original_frame)
+            self.video_display_component.update_video_display(resized_orig, draw_selection=True)
 
-        if hasattr(self, '_fast_srt_thread') and self._fast_srt_thread and self._fast_srt_thread.isRunning():
-            InfoBar.info("Thông báo", "Đang trong quá trình trích xuất phụ đề...", parent=self, duration=3000)
-            return
-
-        selections = self.video_display_component.selection_rects if hasattr(self, 'video_display_component') else []
-        custom_dir = getattr(config, 'srtSaveDirectory', None)
-        save_dir = custom_dir.value if (custom_dir and custom_dir.value and os.path.isdir(custom_dir.value)) else ""
-
-        if hasattr(self, 'setting_interface') and hasattr(self.setting_interface, 'extract_srt_card'):
-            self.setting_interface.extract_srt_card.button.setEnabled(False)
-            self.setting_interface.extract_srt_card.button.setText("Đang trích xuất...")
-
-        InfoBar.info("Đang xử lý", "Đang trích xuất phụ đề độc lập từ video...", parent=self, duration=3000)
-
-        self._fast_srt_thread = FastSrtExtractThread(self.video_path, selections, save_dir, parent=self)
-        self._fast_srt_thread.finished_signal.connect(self._on_fast_srt_finished)
-        self._fast_srt_thread.finished.connect(self._fast_srt_thread.deleteLater)
-        self._fast_srt_thread.start()
-
-    def _on_fast_srt_finished(self, out_srt_path: str, success: bool, message: str):
-        if hasattr(self, 'setting_interface') and hasattr(self.setting_interface, 'extract_srt_card'):
-            self.setting_interface.extract_srt_card.button.setEnabled(True)
-            self.setting_interface.extract_srt_card.button.setText("Trích xuất SRT")
-
-        if success and out_srt_path:
-            self.last_exported_srt_path = out_srt_path
-            if hasattr(self, 'setting_interface') and hasattr(self.setting_interface, 'jump_to_translate_card'):
-                self.setting_interface.jump_to_translate_card.button.setEnabled(True)
-
-            InfoBar.success(
-                title="Trích xuất hoàn tất",
-                content=f"{message}\nFile đã lưu tại: {os.path.basename(out_srt_path)}. Nhấn 'Dịch SRT' để chuyển sang tab dịch!",
-                parent=self,
-                duration=4500
-            )
-        else:
-            InfoBar.error(
-                title="Thất bại",
-                content=message,
-                parent=self,
-                duration=3500
-            )
+    def _on_mask_preview_released(self):
+        """Nhả nút preview để xem ảnh Đã Xóa AI"""
+        if hasattr(self, '_preview_inpainted_frame') and self._preview_inpainted_frame is not None:
+            resized_inpaint = self._img_resize(self._preview_inpainted_frame)
+            self.video_display_component.update_video_display(resized_inpaint, draw_selection=False)
 
     @Slot(object)
     def on_task_error(self, e):
@@ -856,6 +1141,11 @@ class HomeInterface(QWidget):
             self.frame_height = int(self.video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             self.frame_width = int(self.video_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             self.fps = self.video_cap.get(cv2.CAP_PROP_FPS)
+
+        if hasattr(self, '_frame_cache'):
+            self._frame_cache.clear()
+            if frame is not None:
+                self._frame_cache[1] = frame.copy()
 
         self.update_preview(frame)
         self.video_slider.setMaximum(self.frame_count)
@@ -1000,23 +1290,23 @@ class HomeInterface(QWidget):
         """Xử lý sự kiện xem trước kết quả xóa bằng thuật toán đã chọn"""
         if not hasattr(self, 'current_frame') or self.current_frame is None:
             InfoBar.warning(
-                title=tr['TaskList']['Warning'],
-                content=tr['SubtitleExtractorGUI']['OpenVideoFirst'],
+                title="Chưa mở video",
+                content="Vui lòng tải tệp video hoặc hình ảnh trước khi thực hiện xem trước.",
                 parent=self,
                 duration=3000
             )
             return
 
-        # 1. Lấy tọa độ các vùng chọn trong video space
+        # 1. Kiểm tra chặt chẽ: Phải có ít nhất 1 vùng khoanh chữ mới cho phép Xem Trước
         selections = self.video_display_component.preview_coordinates_to_video_coordinates(
             self.video_display_component.selection_rects
         )
-        if not selections:
+        if not selections or len(selections) == 0:
             InfoBar.warning(
-                title=tr['TaskList']['Warning'],
-                content=tr['SubtitleExtractorGUI']['PleaseSelectSubtitleArea'],
+                title="Chưa khoanh vùng xóa",
+                content="Vui lòng khoanh vùng chữ cần xóa hoặc bấm nút 'Quét AI 1 frame' trước khi bấm Xem Trước.",
                 parent=self,
-                duration=3000
+                duration=3500
             )
             return
 
@@ -1210,15 +1500,18 @@ class HomeInterface(QWidget):
             self.append_output(tr['SubtitleExtractorGUI']['UpdatingDisplayLog'].format(result_frame.shape))
             
             if error_info is None:
-                # Hiển thị ảnh đã xóa phụ đề
-                resized_preview = self._img_resize(result_frame)
+                # Hiển thị trực tiếp 100% kết quả AI đã xóa sạch phụ đề trên toàn bộ khung hình
+                inpainted_draw = result_frame.copy()
+
+                resized_preview = self._img_resize(inpainted_draw)
                 self.video_display_component.update_video_display(resized_preview, draw_selection=False)
                 self.video_display_component.video_display.repaint()
                 self.append_output(tr['SubtitleExtractorGUI']['PreviewSuccessLog'])
+                
                 InfoBar.success(
-                    title=tr['SubtitleExtractorGUI']['PreviewSuccessTitle'],
-                    content=tr['SubtitleExtractorGUI']['PreviewSuccessContent'],
-                    duration=4000,
+                    title="Xem trước hoàn tất",
+                    content="Đã hiển thị kết quả AI xóa phụ đề trên toàn bộ khung hình. Kéo thanh thời gian để trở lại xem bình thường.",
+                    duration=5000,
                     parent=self
                 )
             else:

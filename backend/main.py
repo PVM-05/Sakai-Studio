@@ -96,8 +96,9 @@ class SubtitleRemover:
         self.mask_size = (int(self.video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT)), int(self.video_cap.get(cv2.CAP_PROP_FRAME_WIDTH)))
         self.frame_height = int(self.video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.frame_width = int(self.video_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        # 创建视频临时对象，windows下delete=True会有permission denied的报错
+        # 初始化临时文件，windows下delete=True会引起permission denied报错
         self.video_temp_file = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False)
+        self.video_temp_file.close() # Đóng ngay để giải phóng lock trên Windows, cho phép FFmpeg ghi vào
         # 创建视频写对象（使用 FFmpeg libx264 编码，比 mp4v 质量更好、文件更小）
         try:
             self.video_writer = FFmpegVideoWriter(get_readable_path(self.video_temp_file.name), self.fps, self.size)
@@ -371,12 +372,21 @@ class SubtitleRemover:
         sttn_video_inpaint(input_mask=mask, input_sub_remover=self, tbar=tbar)
 
     def video_inpaint(self, tbar, model):
-        sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
         if getattr(self, 'watermark_tracking', None):
+            sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
             sub_list = self.watermark_tracking
             sub_list = {int(k): v for k, v in sub_list.items()}
+        elif getattr(config, 'movingSubtitleTracking', None) and config.movingSubtitleTracking.value and len(self.sub_areas) > 0:
+            from backend.tools.object_tracker import ObjectTracker
+            sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
+            tracker = ObjectTracker(self.video_path, self.sub_areas)
+            sub_list = tracker.find_subtitle_frame_no(sub_remover=self)
+            if not sub_list:
+                sub_list = sub_detector.find_subtitle_frame_no(sub_remover=self)
         else:
+            sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
             sub_list = sub_detector.find_subtitle_frame_no(sub_remover=self)
+            
             
         if len(sub_list) == 0:
             self.append_output("Không tìm thấy phụ đề nào trong video. Tiến hành sao chép trực tiếp video gốc...")
@@ -554,7 +564,7 @@ class SubtitleRemover:
         self.append_output(tr['Main']['SubtitleDetectionModel'].format(f"{detect_mode_name}{providers_str}"))
 
     def merge_audio_to_video(self):
-        use_shell = True if os.name == "nt" else False
+        use_shell = False # Không dùng shell=True để tránh lỗi đường dẫn chứa khoảng trắng
         if not os.path.exists(self.video_temp_file.name):
             return
 
@@ -568,6 +578,7 @@ class SubtitleRemover:
             "-map", "1:a:0",
             "-c:v", "copy",
             "-c:a", "copy",
+            "-movflags", "+faststart",
             "-loglevel", "error",
             self.video_out_path
         ]
@@ -588,6 +599,7 @@ class SubtitleRemover:
                 "-map", "1:a:0",
                 "-c:v", "copy",
                 "-c:a", "aac",
+                "-movflags", "+faststart",
                 "-loglevel", "error",
                 self.video_out_path
             ]
@@ -623,11 +635,8 @@ class SubtitleRemover:
             except Exception as e:
                 self.append_output(f"⚠️ Lỗi ghép phụ đề mới: {e}")
 
-        # Giải phóng tệp tạm
-        try:
-            self.video_temp_file.close()
-        except Exception:
-            pass
+        # Giải phóng tệp tạm (đã được close ở trên)
+        pass
 
     def process_subtitle_translation(self, continuous_frame_no_list):
         """

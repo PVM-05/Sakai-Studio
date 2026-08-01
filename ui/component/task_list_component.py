@@ -1,4 +1,5 @@
 import os
+import json
 from pathlib import Path
 from enum import Enum, unique
 from dataclasses import dataclass
@@ -165,6 +166,7 @@ class TaskListComponent(QWidget):
         
         # 滚动到最新添加的行
         self.table.scrollToBottom()
+        self.save_session()
         return True
         
     def update_task_progress(self, index, progress):
@@ -213,6 +215,7 @@ class TaskListComponent(QWidget):
                 
             # 选中当前行
             self.table.selectRow(index)
+            self.save_session()
     
     def get_pending_tasks(self):
         """获取所有待处理的任务
@@ -357,6 +360,7 @@ class TaskListComponent(QWidget):
                 
             # 发出任务删除信号
             self.task_deleted.emit(row)
+            self.save_session()
     
     def on_task_clicked(self, index):
         """任务被点击时的处理
@@ -434,6 +438,7 @@ class TaskListComponent(QWidget):
         """
         if 0 <= index < len(self.tasks):
             self.tasks[index].options[task_option.value] = value
+            self.save_session()
 
     def get_task_option(self, index, task_option: TaskOptions, default=None):
         """获取任务选项
@@ -494,6 +499,7 @@ class TaskListComponent(QWidget):
         self.tasks[row], self.tasks[row-1] = self.tasks[row-1], self.tasks[row]
         self.refresh_table()
         self.table.selectRow(row-1)
+        self.save_session()
 
     def move_task_down(self, row):
         """Đẩy nhiệm vụ xuống dưới trong hàng đợi"""
@@ -517,3 +523,101 @@ class TaskListComponent(QWidget):
             tr['TaskList']['Status']
         ])
         self.refresh_table()
+
+    def get_session_file(self):
+        config_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "config"))
+        os.makedirs(config_dir, exist_ok=True)
+        return os.path.join(config_dir, "tasks_session.json")
+
+    def save_session(self):
+        """Lưu trạng thái danh sách hàng đợi vào cache JSON"""
+        try:
+            session_file = self.get_session_file()
+            task_data = []
+            for t in self.tasks:
+                opts = {}
+                for k, v in t.options.items():
+                    opts[str(k)] = v
+                
+                task_data.append({
+                    "path": t.path,
+                    "name": t.name,
+                    "progress": t.progress,
+                    "status": t.status.name,
+                    "options": opts,
+                    "output_path": t._output_path
+                })
+            
+            with open(session_file, "w", encoding="utf-8") as f:
+                json.dump(task_data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[TaskListComponent] Save session failed: {e}")
+
+    def has_saved_session(self):
+        """Kiểm tra có session chưa hoàn thành không"""
+        session_file = self.get_session_file()
+        if not os.path.exists(session_file):
+            return False
+        try:
+            with open(session_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for item in data:
+                if os.path.exists(item.get("path", "")):
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def load_session(self):
+        """Khôi phục danh sách hàng đợi từ file cache JSON"""
+        session_file = self.get_session_file()
+        if not os.path.exists(session_file):
+            return False
+        try:
+            with open(session_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not data:
+                return False
+
+            self.tasks.clear()
+            self.table.setRowCount(0)
+
+            for item in data:
+                path = item.get("path")
+                if not path or not os.path.exists(path):
+                    continue
+
+                status_str = item.get("status", "PENDING")
+                try:
+                    status = TaskStatus[status_str]
+                except Exception:
+                    status = TaskStatus.PENDING
+
+                opts = item.get("options", {})
+
+                task = Task(
+                    path=path,
+                    name=item.get("name", os.path.basename(path)),
+                    progress=item.get("progress", 0),
+                    status=status,
+                    options=opts,
+                    _output_path=item.get("output_path")
+                )
+                self.tasks.append(task)
+
+            self.refresh_table()
+            if self.tasks:
+                self.select_task(0)
+                return True
+        except Exception as e:
+            print(f"[TaskListComponent] Load session failed: {e}")
+        return False
+
+    def clear_session(self):
+        """Xóa bớt file session cache"""
+        session_file = self.get_session_file()
+        if os.path.exists(session_file):
+            try:
+                os.remove(session_file)
+            except Exception:
+                pass

@@ -49,10 +49,15 @@ test/*.jpg
 test/*.wav
 test/*.mp3
 
-# User-specific config (auto-generated at runtime)
+# User-specific config & runtime sessions (auto-generated at runtime)
 config/folder_memory.json
 config/translation_api_config.json
 config/ytdlp_settings.json
+config/auto_pipeline_config.json
+config/tasks_session.json
+
+# Scratch & temporary test directories
+scratch/
 
 # Environment
 .env

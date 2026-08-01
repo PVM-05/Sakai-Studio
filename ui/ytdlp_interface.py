@@ -61,6 +61,28 @@ def save_settings(settings):
         print("Error saving yt-dlp settings:", e)
 
 
+import re
+import urllib.parse
+
+def normalize_url(url):
+    """Normalize and clean social media URLs (Douyin, TikTok, YouTube, etc.) for yt-dlp."""
+    if not url:
+        return url
+    url = url.strip()
+    # Extract HTTP/HTTPS link if text contains extra share text
+    match = re.search(r'https?://[^\s]+', url)
+    if match:
+        url = match.group(0)
+    # Douyin Modal / User / Search URL normalizer
+    if 'douyin.com' in url.lower():
+        parsed = urllib.parse.urlparse(url)
+        query = urllib.parse.parse_qs(parsed.query)
+        modal_id = query.get('modal_id', [None])[0]
+        if modal_id:
+            return f"https://www.douyin.com/video/{modal_id}"
+    return url
+
+
 def translate_ytdlp_error(err):
     """Translate raw technical yt-dlp tracebacks into user-friendly Vietnamese guidance."""
     err_str = str(err)
@@ -68,6 +90,8 @@ def translate_ytdlp_error(err):
     
     if '403' in err_lower or 'forbidden' in err_lower or 'caller does not have permission' in err_lower:
         return "Bị trang web/YouTube từ chối truy cập (HTTP 403 Forbidden). Vui lòng sử dụng file cookies.txt để xác thực tài khoản."
+    elif 'fresh cookies' in err_lower or ('douyin' in err_lower and 'cookies' in err_lower):
+        return "Douyin bảo mật cao yêu cầu cookies. Vui lòng chọn file cookies.txt của bạn (được xuất từ trình duyệt sau khi mở Douyin)."
     elif 'private' in err_lower or 'sign in' in err_lower or 'age' in err_lower or 'login' in err_lower:
         return "Video riêng tư hoặc bị giới hạn độ tuổi. Vui lòng chọn file cookies.txt của bạn để tiếp tục."
     elif '404' in err_lower or 'not found' in err_lower:
@@ -192,6 +216,9 @@ class YtdlpAnalysisWorker(QThread):
                     'deno': {},
                     'node': {},
                     'quickjs': {}
+                },
+                'extractor_args': {
+                    'tiktok': ['api_hostname=api16-normal-c-useast1a.tiktokv.com']
                 }
             }
             if self.cookiefile and os.path.exists(self.cookiefile):
@@ -213,7 +240,7 @@ class YtdlpWorker(QThread):
     error_sig = Signal(str)            # Error message
     finished_sig = Signal(str)         # Path of the downloaded file
 
-    def __init__(self, url, save_dir, format_opt, selected_format_id=None, selected_format_type=None, cookiefile=None, preferred_container=None, preferred_audio_format=None, concurrent_fragments=4):
+    def __init__(self, url, save_dir, format_opt, selected_format_id=None, selected_format_type=None, cookiefile=None, preferred_container=None, preferred_audio_format=None, concurrent_fragments=4, custom_filename=None):
         super().__init__()
         self.url = url
         self.save_dir = save_dir
@@ -224,6 +251,7 @@ class YtdlpWorker(QThread):
         self.preferred_container = preferred_container or 'mp4'
         self.preferred_audio_format = preferred_audio_format or 'mp3'
         self.concurrent_fragments = concurrent_fragments or 4
+        self.custom_filename = custom_filename
         self._is_cancelled = False
 
     def run(self):
@@ -277,8 +305,14 @@ class YtdlpWorker(QThread):
                 if msg.strip():
                     self.sig.emit(f"ERROR: {msg}")
 
+        if self.custom_filename and self.custom_filename.strip():
+            safe_name = re.sub(r'[\\/*?:"<>|]', '_', self.custom_filename.strip())
+            out_pattern = f"{safe_name}.%(ext)s"
+        else:
+            out_pattern = '%(title)s.%(ext)s'
+
         ydl_opts = {
-            'outtmpl': os.path.join(self.save_dir, '%(title)s.%(ext)s'),
+            'outtmpl': os.path.join(self.save_dir, out_pattern),
             'progress_hooks': [progress_hook],
             'logger': YtdlpLogger(self.log_sig),
             'noprogress': True,
@@ -289,6 +323,9 @@ class YtdlpWorker(QThread):
                 'deno': {},
                 'node': {},
                 'quickjs': {}
+            },
+            'extractor_args': {
+                'tiktok': ['api_hostname=api16-normal-c-useast1a.tiktokv.com']
             }
         }
 
@@ -490,9 +527,26 @@ class YtdlpInterface(ScrollArea):
         self.download_thumb_btn.clicked.connect(self.download_thumbnail_file)
         self.download_thumb_btn.setFixedSize(160, 26)
         
+        self.filename_layout = QHBoxLayout()
+        self.filename_layout.setSpacing(6)
+        self.filename_label = BodyLabel(self.meta_card)
+        fn_font = self.filename_label.font()
+        fn_font.setPointSize(9)
+        fn_font.setBold(True)
+        self.filename_label.setFont(fn_font)
+        
+        self.filename_input = LineEdit(self.meta_card)
+        self.filename_input.setClearButtonEnabled(True)
+        self.filename_input.setFixedHeight(30)
+        self.filename_input.setPlaceholderText("Nhập tên file tuỳ chỉnh (để trống nếu giữ tiêu đề gốc)...")
+        
+        self.filename_layout.addWidget(self.filename_label)
+        self.filename_layout.addWidget(self.filename_input)
+        
         self.meta_text_layout.addWidget(self.meta_title)
         self.meta_text_layout.addWidget(self.meta_author)
         self.meta_text_layout.addWidget(self.meta_duration)
+        self.meta_text_layout.addLayout(self.filename_layout)
         self.meta_text_layout.addWidget(self.download_thumb_btn)
         self.meta_text_layout.addStretch()
         
@@ -615,7 +669,7 @@ class YtdlpInterface(ScrollArea):
         self.threads_sub_layout.setContentsMargins(0, 0, 0, 0)
         self.threads_label = BodyLabel(self.threads_container)
         self.threads_combo = ComboBox(self.threads_container)
-        self.threads_combo.addItems(['1 luồng (Mặc định)', '4 luồng (Tăng tốc)', '8 luồng (Siêu tốc)', '16 luồng (Cực nhanh)'])
+        self.threads_combo.addItems(['1 luồng', '4 luồng', '8 luồng', '16 luồng'])
         saved_threads = str(self.settings.get('concurrent_fragments', 4))
         for idx in range(self.threads_combo.count()):
             if saved_threads in self.threads_combo.itemText(idx):
@@ -803,6 +857,7 @@ class YtdlpInterface(ScrollArea):
         self.open_folder_btn.setText(tr['Ytdlp']['BtnOpenFolder'])
         self.open_remover_btn.setText(tr['Ytdlp']['BtnOpenRemover'])
         self.download_thumb_btn.setText(tr['Ytdlp']['BtnDownloadThumb'])
+        self.filename_label.setText(tr['Ytdlp']['OutputFilename'])
         
         self.queue_title.setText(tr['Ytdlp']['QueueCardTitle'])
         self.start_queue_btn.setText(tr['Ytdlp']['BtnStartQueue'])
@@ -919,6 +974,7 @@ class YtdlpInterface(ScrollArea):
         clipboard = QtWidgets.QApplication.clipboard()
         text = clipboard.text().strip()
         if text:
+            text = normalize_url(text)
             self.url_input.setText(text)
 
     def check_clipboard_and_paste(self):
@@ -926,8 +982,9 @@ class YtdlpInterface(ScrollArea):
         clipboard = QtWidgets.QApplication.clipboard()
         text = clipboard.text().strip()
         if text:
+            text = normalize_url(text)
             is_valid = False
-            for d in ['youtube.com', 'youtu.be', 'tiktok.com', 'facebook.com', 'instagram.com', 'bilibili.com', 'twitch.tv']:
+            for d in ['youtube.com', 'youtu.be', 'tiktok.com', 'facebook.com', 'instagram.com', 'bilibili.com', 'douyin.com', 'twitch.tv']:
                 if d in text.lower():
                     is_valid = True
                     break
@@ -1015,7 +1072,11 @@ class YtdlpInterface(ScrollArea):
         self.open_remover_btn.hide()
 
     def start_analysis(self):
-        url = self.url_input.text().strip()
+        raw_url = self.url_input.text().strip()
+        url = normalize_url(raw_url)
+        if url != raw_url:
+            self.url_input.setText(url)
+            
         if not url:
             InfoBar.warning(
                 title=tr['Ytdlp']['Title'],
@@ -1069,8 +1130,13 @@ class YtdlpInterface(ScrollArea):
         
         # Populate Metadata details
         self.meta_card.show()
-        self.meta_title.setText(info.get('title', 'Unknown Title'))
+        raw_title = info.get('title', 'Unknown Title')
+        self.meta_title.setText(raw_title)
         self.meta_author.setText(info.get('uploader') or info.get('channel', 'Unknown Channel'))
+        
+        # Auto-fill output filename input with sanitized title
+        safe_title = re.sub(r'[\\/*?:"<>|]', '_', raw_title)
+        self.filename_input.setText(safe_title)
         
         # Check if it is a playlist
         is_playlist_type = info.get('_type') == 'playlist' or 'entries' in info
@@ -1411,7 +1477,9 @@ class YtdlpInterface(ScrollArea):
             'save_dir': save_dir,
             'preferred_container': pref_container,
             'preferred_audio_format': pref_audio,
+            'preferred_audio_format': pref_audio,
             'concurrent_fragments': self.get_selected_threads(),
+            'custom_filename': self.filename_input.text().strip() if hasattr(self, 'filename_input') else None,
             'status': tr['Ytdlp']['StatusQueuePending'],
             'progress': 0.0,
             'estimated_bytes': est_bytes,
@@ -1542,7 +1610,8 @@ class YtdlpInterface(ScrollArea):
             cookiefile=item['cookie_file'],
             preferred_container=item['preferred_container'],
             preferred_audio_format=item.get('preferred_audio_format', 'mp3'),
-            concurrent_fragments=item.get('concurrent_fragments', 4)
+            concurrent_fragments=item.get('concurrent_fragments', 4),
+            custom_filename=item.get('custom_filename')
         )
         self.worker.progress_sig.connect(self.on_queue_progress)
         self.worker.speed_sig.connect(self.on_speed)
@@ -1798,8 +1867,9 @@ class YtdlpInterface(ScrollArea):
         self.paste_btn.setEnabled(False)
         self.format_combo.setEnabled(False)
 
+        custom_fn = self.filename_input.text().strip() if hasattr(self, 'filename_input') else None
         self.worker = YtdlpWorker(
-            url, save_dir, format_opt, selected_format_id, selected_format_type, cookies_file, pref_container, pref_audio, self.get_selected_threads()
+            url, save_dir, format_opt, selected_format_id, selected_format_type, cookies_file, pref_container, pref_audio, self.get_selected_threads(), custom_fn
         )
         self.worker.progress_sig.connect(self.on_progress)
         self.worker.speed_sig.connect(self.on_speed)

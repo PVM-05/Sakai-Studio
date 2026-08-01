@@ -85,7 +85,7 @@ PROVIDERS_INFO = {
         "is_local": False,
     },
     "GGUF Model": {
-        "label": "GGUF Model (Local Offline)",
+        "label": "GGUF Model",
         "base_url": "local_gguf",
         "models": ["Tự động quét file .gguf trong models/"],
         "key_prefix": [],
@@ -93,7 +93,7 @@ PROVIDERS_INFO = {
         "is_gguf": True,
     },
     "MarianMT": {
-        "label": "MarianMT (Local GPU NMT)",
+        "label": "MarianMT",
         "base_url": "local",
         "models": ["Tự động chọn theo Ngôn Ngữ Nguồn (Anh/Trung -> Việt)"],
         "key_prefix": [],
@@ -197,7 +197,7 @@ class TranslationInterface(QWidget):
 
         header_title = TitleLabel("Dịch Phụ Đề & Trích Xuất Video", self)
         header_desc = CaptionLabel(
-            "Công cụ chuyên biệt dịch phụ đề SRT/VTT/ASS & Trích xuất phụ đề từ Video (OCR). Hỗ trợ dịch tự động bằng các mô hình AI.", self
+            "Công cụ chuyên biệt dịch phụ đề SRT/VTT/ASS & Trích xuất phụ đề từ Video. Hỗ trợ dịch tự động bằng các mô hình AI.", self
         )
         title_layout.addWidget(header_title)
         title_layout.addWidget(header_desc)
@@ -212,7 +212,7 @@ class TranslationInterface(QWidget):
         control_layout.setSpacing(12)
 
         # Row 0: Select File & Video OCR
-        self.file_button = PushButton("Chọn tệp Video / Phụ đề", self)
+        self.file_button = PushButton("Chọn tệp Phụ đề", self)
         self.file_button.setIcon(FluentIcon.FOLDER)
         control_layout.addWidget(self.file_button, 0, 0)
 
@@ -303,6 +303,12 @@ class TranslationInterface(QWidget):
         self.prompt_edit = LineEdit(self)
         self.prompt_edit.setPlaceholderText("Ví dụ: Dịch phụ đề chuẩn ngữ cảnh video, tự nhiên và mượt mà.")
         api_layout.addWidget(self.prompt_edit, 2, 1, 1, 3)
+
+        # Save Settings Button
+        self.btn_save_config = PrimaryPushButton("Lưu Cài Đặt", self)
+        self.btn_save_config.setIcon(FluentIcon.SAVE)
+        self.btn_save_config.clicked.connect(lambda: self._save_api_config(show_toast=True))
+        api_layout.addWidget(self.btn_save_config, 3, 1, 1, 3)
 
         self.api_config_card.setVisible(False)
         main_layout.addWidget(self.api_config_card)
@@ -457,7 +463,7 @@ class TranslationInterface(QWidget):
 
         detected = self._detect_provider_from_key(key)
         if not detected:
-            InfoBar.error("Lỗi API Key", "API Key không đúng định dạng nhận diện (Google Gemini, OpenAI, Claude...)", parent=self, duration=3500)
+            InfoBar.error("Lỗi API Key", "API Key không đúng định dạng nhận diện", parent=self, duration=3500)
             self.model_combo.clear()
             self.model_combo.setPlaceholderText("API Key không đúng định dạng...")
             self.model_combo.setEnabled(False)
@@ -912,21 +918,52 @@ class TranslationInterface(QWidget):
             Path(filepath).write_text(content, encoding="utf-8")
             InfoBar.success("Đã lưu", f"Đã xuất tệp phụ đề tại: {os.path.basename(filepath)}", parent=self, duration=3000)
 
-    def _save_api_config(self):
+    def _save_api_config(self, show_toast=False):
         try:
             CONFIG_API_FILE.parent.mkdir(parents=True, exist_ok=True)
+            engine_idx = self.engine_combo.currentIndex()
+            provider_idx = self.provider_combo.currentIndex()
+            provider_keys = list(PROVIDERS_INFO.keys())
+            provider_name = provider_keys[provider_idx] if 0 <= provider_idx < len(provider_keys) else ""
+
+            if engine_idx == 0:
+                engine_type = "google"
+            elif provider_name == "GGUF Model":
+                engine_type = "gguf"
+            elif provider_name == "MarianMT":
+                engine_type = "marian"
+            else:
+                engine_type = "llm"
+
+            model_name = self.model_combo.currentText().strip()
             data = {
                 "src_lang_index": self.src_lang_combo.currentIndex(),
                 "tgt_lang_index": self.tgt_lang_combo.currentIndex(),
-                "engine_index": self.engine_combo.currentIndex(),
-                "provider_index": self.provider_combo.currentIndex(),
+                "engine_index": engine_idx,
+                "provider_index": provider_idx,
+                "engine_type": engine_type,
+                "provider_name": provider_name,
                 "api_key": self.api_key_edit.text().strip(),
-                "model_name": self.model_combo.currentText().strip(),
+                "model_name": model_name,
                 "custom_prompt": self.prompt_edit.text().strip(),
             }
             CONFIG_API_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+
+            if show_toast:
+                engine_label = f"Local GGUF ({model_name})" if engine_type == "gguf" else (
+                    "Local MarianMT" if engine_type == "marian" else (
+                        f"AI API ({provider_name} - {model_name})" if engine_type == "llm" else "Google Translate"
+                    )
+                )
+                InfoBar.success(
+                    "Đã Lưu & Đồng Bộ Cài Đặt Dịch",
+                    f"Mô hình dịch: {engine_label}. Tab Tự Động đã được đồng bộ!",
+                    parent=self,
+                    duration=3500
+                )
+        except Exception as e:
+            if show_toast:
+                InfoBar.error("Lỗi", f"Không thể lưu cài đặt dịch: {e}", parent=self, duration=3000)
 
     def _load_saved_api_config(self):
         if CONFIG_API_FILE.exists():

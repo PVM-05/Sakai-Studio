@@ -57,10 +57,10 @@ class ToolsInterface(QWidget):
         self.stacked_widget.addWidget(self.homeInterface)
 
         # Thêm các item vào Pivot bar
-        self._add_sub_tab(self.ytdlpInterface.objectName(), "Tải Video", 0)
-        self._add_sub_tab(self.extractorInterface.objectName(), "Trích Xuất Phụ Đề", 1)
-        self._add_sub_tab(self.translationInterface.objectName(), "Dịch Phụ Đề", 2)
-        self._add_sub_tab(self.homeInterface.objectName(), "Xóa Phụ Đề Video", 3)
+        self._add_sub_tab(self.ytdlpInterface.objectName(), "Tải Video", 0, icon=FluentIcon.DOWNLOAD)
+        self._add_sub_tab(self.extractorInterface.objectName(), "Trích Xuất Phụ Đề", 1, icon=FluentIcon.DOCUMENT)
+        self._add_sub_tab(self.translationInterface.objectName(), "Dịch Phụ Đề", 2, icon=FluentIcon.LANGUAGE)
+        self._add_sub_tab(self.homeInterface.objectName(), "Xóa Phụ Đề Video", 3, icon=FluentIcon.ERASE_TOOL)
 
         # Đặt tab mặc định là Trích Xuất Phụ Đề (index 1) hoặc Tải Video (index 0)
         self.pivot.setCurrentItem(self.ytdlpInterface.objectName())
@@ -69,12 +69,13 @@ class ToolsInterface(QWidget):
         main_layout.addWidget(self.pivot, 0, Qt.AlignLeft)
         main_layout.addWidget(self.stacked_widget, 1)
 
-    def _add_sub_tab(self, route_key: str, text: str, index: int):
-        """Thêm 1 tab con vào Pivot bar."""
+    def _add_sub_tab(self, route_key: str, text: str, index: int, icon=None):
+        """Thêm 1 tab con vào Pivot bar với icon chuẩn Fluent."""
         self.pivot.addItem(
             routeKey=route_key,
             text=text,
-            onClick=lambda: self.stacked_widget.setCurrentIndex(index)
+            onClick=lambda: self.stacked_widget.setCurrentIndex(index),
+            icon=icon
         )
 
     def switch_to_sub_tab(self, index: int):

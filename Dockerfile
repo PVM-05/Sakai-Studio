@@ -1,25 +1,48 @@
-FROM python:3.12-slim
+FROM python:3.12
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    VSR_LOCAL_SMOKE=1
+RUN --mount=type=cache,target=/root/.cache,sharing=private \
+    apt update && \
+    apt install -y libgl1-mesa-glx \
+        libegl1 libxkbcommon0 libdbus-1-3 && \
+    true
 
-WORKDIR /app
+ADD . /vsr
+ARG CUDA_VERSION=11.8
+ARG HARDWARD_ACCELERATOR="cuda"
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        ffmpeg \
-        libgl1 \
-        libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,target=/root/.cache,sharing=private \
+    if [ "${HARDWARD_ACCELERATOR}" = "cuda" ] && [ "${CUDA_VERSION}" != "11.8" ]; then \
+        pip install paddlepaddle==3.0 && \
+        pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu$(echo ${CUDA_VERSION} | tr -d '.') && \
+        pip install -r /vsr/requirements.txt; \
+    fi
 
-RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
-    && python -m pip install --no-cache-dir \
-        "numpy>=1.26" \
-        "opencv-python-headless>=4.12.0" \
-        "Pillow>=12.2.0" \
-        "onnxruntime>=1.21.0"
+RUN --mount=type=cache,target=/root/.cache,sharing=private \
+if [ "${HARDWARD_ACCELERATOR}" = "cuda" ] && [ "${CUDA_VERSION}" = "11.8" ]; then \
+    pip install paddlepaddle==3.0 && \
+    pip install torch==2.3.1 torchvision==0.18.1 --index-url https://download.pytorch.org/whl/cu$(echo ${CUDA_VERSION} | tr -d '.') && \
+    pip install -r /vsr/requirements.txt && \
+    pip uninstall -y onnxruntime-gpu && \
+    pip install onnxruntime-gpu==1.20.1 --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-11/pypi/simple/ && \
+    pip install setuptools==80.4.0; \
+fi
 
-COPY . .
+RUN --mount=type=cache,target=/root/.cache,sharing=private \
+    if [ "${HARDWARD_ACCELERATOR}" = "directml" ]; then \
+        pip install paddlepaddle==3.0 && \
+        pip install torch_directml==0.2.5.dev240914 && \
+        pip install -r /vsr/requirements.txt; \
+    fi
 
-CMD ["python", "tools/local_smoke.py"]
+RUN --mount=type=cache,target=/root/.cache,sharing=private \
+    if [ "${HARDWARD_ACCELERATOR}" = "cpu" ]; then \
+        pip install paddlepaddle==3.0 && \
+        pip install -r /vsr/requirements.txt && \
+        sed -i 's/HARDWARD_ACCELERATION_OPTION *= *.*/HARDWARD_ACCELERATION_OPTION = False/g' /vsr/backend/config.py; \
+    fi
+
+ENV LD_LIBRARY_PATH=/usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib/
+ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib/python3.12/site-packages/nvidia/cuda_runtime/lib/
+ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib/python3.12/site-packages/nvidia/cuda_nvrtc/lib/
+WORKDIR /vsr
+CMD ["python", "/vsr/backend/main.py"]

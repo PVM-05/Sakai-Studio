@@ -88,11 +88,15 @@ class FFmpegVideoWriter:
     def __init__(self, output_path, fps, size):
         w, h = size
         
+        # Tạo Keyframe mỗi giây (GOP size) để chống lỗi tua video bị đứng hình
+        gop_size = str(int(fps))
+        
         # Mặc định sử dụng CPU encoding libx264
         codec = 'libx264'
         extra_args = [
             '-c:v', 'libx264',
             '-pix_fmt', 'yuv420p',
+            '-g', gop_size,
             '-crf', '17',
             '-preset', 'ultrafast'
         ]
@@ -100,8 +104,12 @@ class FFmpegVideoWriter:
         # Tự động dò quét GPU hardware encoder (NVENC / AMF / QSV) nếu có phần cứng hỗ trợ
         detected_codec = self.detect_gpu_encoder()
         use_gpu_enc = True
-        if getattr(config, 'gpuVideoEncoding', None) is not None:
-            use_gpu_enc = config.gpuVideoEncoding.value
+        try:
+            from backend.config import config
+            if getattr(config, 'gpuVideoEncoding', None) is not None:
+                use_gpu_enc = config.gpuVideoEncoding.value
+        except Exception:
+            pass
 
         if use_gpu_enc and detected_codec != 'libx264':
             if detected_codec == 'h264_nvenc':
@@ -110,6 +118,7 @@ class FFmpegVideoWriter:
                 extra_args = [
                     '-c:v', 'h264_nvenc',
                     '-pix_fmt', 'yuv420p',
+                    '-g', gop_size,
                     '-cq', '19',
                     '-preset', 'p1'
                 ]
@@ -118,6 +127,7 @@ class FFmpegVideoWriter:
                 extra_args = [
                     '-c:v', 'h264_amf',
                     '-pix_fmt', 'yuv420p',
+                    '-g', gop_size,
                     '-rc', 'cqp',
                     '-qp_i', '19',
                     '-qp_p', '19'
@@ -127,6 +137,7 @@ class FFmpegVideoWriter:
                 extra_args = [
                     '-c:v', 'h264_qsv',
                     '-pix_fmt', 'yuv420p',
+                    '-g', gop_size,
                     '-global_quality', '19'
                 ]
                 

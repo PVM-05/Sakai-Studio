@@ -1,5 +1,6 @@
 {
     "Main": {
+        "AutoDetectTextFrameByFrame": false,
         "AutoHardwareTuning": false,
         "AutoTightenMask": true,
         "BurnTranslatedSubtitles": true,
@@ -14,9 +15,11 @@
         "MmoFlipVideo": true,
         "MmoSpeedShift": true,
         "MmoSubStyle": "tiktok_yellow",
-        "OcrLanguage": "ch",
+        "MovingSubtitleTracking": true,
+        "OcrLanguage": "en",
         "OcrMode": "auto",
         "PoissonBlending": true,
+        "PreserveColorMetadata": true,
         "SaveDirectory": "",
         "SharpenInpaintedArea": true,
         "SrtSaveDirectory": "",
@@ -25,14 +28,16 @@
         "SubtitleAreaPixelToleranceYPixel": 20,
         "SubtitleAreaYAxisDifferencePixel": 20,
         "SubtitleDetectMode": "PP_OCRv5_SERVER",
-        "SubtitleSelectionAreas": "0.747,0.8024,0.1698,0.8368",
+        "SubtitleSelectionAreas": "0.3935,0.5361,0.7078,0.8859;0.4935,0.5315,0.7391,0.8453",
         "SubtitleTimelineBackwardFrameCount": 4,
         "subtitleTimelineForwardFrameCount": 3,
         "SubtitleYXAxisDifferencePixel": 20,
         "TargetLanguage": "vi",
         "TemporalSmoothing": true,
         "TemporalSmoothingRadius": 2,
-        "TranslateSubtitles": true
+        "TrackerAlgorithm": "csrt",
+        "TranslateSubtitles": true,
+        "WhisperFallback": true
     },
     "Window": {
         "Interface": "vi",
