@@ -46,6 +46,7 @@ class HomeInterface(QWidget):
     # Tín hiệu trả kết quả nhận diện chữ AI (background thread -> UI thread)
     auto_detect_result_signal = Signal(object)
     track_motion_finished_signal = Signal(object)
+    srt_exported_signal = Signal(str)
     def __init__(self, parent=None):
         super().__init__(parent=parent)
         self.setObjectName("HomeInterface")
@@ -98,6 +99,7 @@ class HomeInterface(QWidget):
         self.async_seek_signal.connect(self._apply_seek_frame)
         self.auto_detect_result_signal.connect(self._apply_auto_detected_rects)
         self.track_motion_finished_signal.connect(self._on_track_motion_finished)
+        self.srt_exported_signal.connect(self._on_srt_exported)
         self.setAcceptDrops(True)
 
     def __init_widgets(self):
@@ -1102,8 +1104,7 @@ class HomeInterface(QWidget):
                                 
                                 if os.path.exists(expected_srt):
                                     self.last_exported_srt_path = expected_srt
-                                    if hasattr(self, 'setting_interface') and hasattr(self.setting_interface, 'jump_to_translate_card'):
-                                        self.setting_interface.jump_to_translate_card.button.setEnabled(True)
+                                    self.srt_exported_signal.emit(expected_srt)
                             else:
                                 self.task_status_signal.emit(self.current_processing_task_index, TaskStatus.FAILED)
 
@@ -1334,6 +1335,11 @@ class HomeInterface(QWidget):
         if hasattr(self, '_preview_inpainted_frame') and self._preview_inpainted_frame is not None:
             resized_inpaint = self._img_resize(self._preview_inpainted_frame)
             self.video_display_component.update_video_display(resized_inpaint, draw_selection=False)
+
+    @Slot(str)
+    def _on_srt_exported(self, expected_srt: str):
+        if hasattr(self, 'setting_interface') and hasattr(self.setting_interface, 'jump_to_translate_card'):
+            self.setting_interface.jump_to_translate_card.button.setEnabled(True)
 
     @Slot(object)
     def on_task_error(self, e):

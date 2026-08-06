@@ -63,23 +63,32 @@ class LamaInpaint:
                 results[start + i] = batch_results[i][:orig_height, :orig_width]
 
             del img_tensor, mask_tensor, padded_imgs, padded_masks
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
 
         return results
 
-    def __call__(self, input_frames: List[np.ndarray], input_mask: np.ndarray):
+    def __call__(self, input_frames: List[np.ndarray], input_mask):
         """
         :param input_frames: 原视频帧
-        :param input_mask: 字幕区域mask
+        :param input_mask: 字幕区域mask (numpy array hoặc list các mask per-frame)
         """
-        mask = input_mask[:, :, None] if input_mask.ndim == 2 else input_mask
-        H_ori, W_ori = mask.shape[:2]
+        is_mask_list = isinstance(input_mask, (list, tuple))
+        if is_mask_list:
+            first_m = input_mask[0]
+            ref_mask = first_m[:, :, None] if first_m.ndim == 2 else first_m
+            union_mask = np.zeros_like(ref_mask)
+            for m in input_mask:
+                m_3d = m[:, :, None] if m.ndim == 2 else m
+                union_mask = np.maximum(union_mask, m_3d)
+            calc_mask = union_mask
+        else:
+            calc_mask = input_mask[:, :, None] if input_mask.ndim == 2 else input_mask
+
+        H_ori, W_ori = calc_mask.shape[:2]
         H_ori = int(H_ori + 0.5)
         W_ori = int(W_ori + 0.5)
         # 确定去字幕的垂直高度部分
         split_h = int(W_ori * 3 / 16)
-        inpaint_area = get_inpaint_area_by_mask(W_ori, H_ori, split_h, ref_m)
+        inpaint_area = get_inpaint_area_by_mask(W_ori, H_ori, split_h, calc_mask)
         # 高分辨率帧存储列表
         frames_hr = [f.copy() for f in input_frames]
         comps = {}  # 存放补全后帧的字典
@@ -91,8 +100,14 @@ class LamaInpaint:
             cropped_frames = []
             cropped_masks = []
             for j in range(len(frames_hr)):
+                if is_mask_list:
+                    m_j = input_mask[j]
+                    cur_mask = m_j[:, :, None] if m_j.ndim == 2 else m_j
+                else:
+                    cur_mask = calc_mask
+
                 image_crop = frames_hr[j][inpaint_area[k][0]:inpaint_area[k][1], :, :]
-                mask_crop = mask[inpaint_area[k][0]:inpaint_area[k][1], :, :]
+                mask_crop = cur_mask[inpaint_area[k][0]:inpaint_area[k][1], :, :]
                 cropped_frames.append(image_crop)
                 cropped_masks.append(mask_crop)
 
@@ -105,8 +120,14 @@ class LamaInpaint:
         if inpaint_area:
             for j in range(len(frames_hr)):
                 frame = frames_hr[j]
+                if is_mask_list:
+                    m_j = input_mask[j]
+                    cur_mask = m_j[:, :, None] if m_j.ndim == 2 else m_j
+                else:
+                    cur_mask = calc_mask
+
                 for k in range(len(inpaint_area)):
-                    mask_area = mask[inpaint_area[k][0]:inpaint_area[k][1], :, :]
+                    mask_area = cur_mask[inpaint_area[k][0]:inpaint_area[k][1], :, :]
                     comp = comps[k][j]
                     
                     # Xác định phương pháp hòa trộn dựa trên cấu hình
@@ -126,5 +147,3 @@ class LamaInpaint:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         return inpainted_frames
-
-

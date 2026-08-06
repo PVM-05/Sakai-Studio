@@ -166,20 +166,20 @@ class AutoPipelineWorker(QThread):
             # =============================================================
             self.step_signal.emit(1)
             self.progress_signal.emit(5, "Bước 1/3: Đang trích xuất OCR phụ đề...")
-            self.log_signal.emit(f"🔍 BẮT ĐẦU TRÍCH XUẤT OCR: {os.path.basename(self.video_path)}")
+            self.log_signal.emit(f"BẮT ĐẦU TRÍCH XUẤT OCR: {os.path.basename(self.video_path)}")
 
             extracted_blocks = self._extract_ocr_subtitles()
             if self._is_stopped:
                 return
 
-            self.log_signal.emit(f"✅ Đã phát hiện {len(extracted_blocks)} câu phụ đề (Text + Time).")
+            self.log_signal.emit(f"Đã phát hiện {len(extracted_blocks)} câu phụ đề.")
 
             # =============================================================
             # BƯỚC 2: CHẠY SONG SONG (Translation || Subtitle Remove)
             # =============================================================
             self.step_signal.emit(2)
             self.progress_signal.emit(30, "Bước 2/3: Chạy song song Dịch AI & Xóa phụ đề gốc...")
-            self.log_signal.emit("⚡ KHỞI CHẠY 2 NHÁNH SONG SONG: [Dịch phụ đề AI] || [Xóa phụ đề gốc (Inpaint)]")
+            self.log_signal.emit("KHỞI CHẠY 2 NHÁNH SONG SONG: [Dịch phụ đề AI] || [Xóa phụ đề gốc]")
 
             cleaned_video_path = str(Path(self.output_path).parent / f"{Path(self.video_path).stem}_cleaned_temp.mp4")
 
@@ -214,19 +214,19 @@ class AutoPipelineWorker(QThread):
                             target_lang=self.target_lang,
                             progress_callback=lambda p, msg: self.log_signal.emit(f"  └─► [Nhánh Dịch AI] Tiến độ: {p}% ({msg})")
                         )
-                        self.log_signal.emit("  └─► [Nhánh Dịch AI] ✅ Hoàn tất dịch phụ đề sang ngôn ngữ mới!")
+                        self.log_signal.emit("  └─► [Nhánh Dịch AI] Hoàn tất dịch phụ đề sang ngôn ngữ mới!")
                 except Exception as ex:
                     translate_error[0] = ex
-                    self.log_signal.emit(f"  └─► [Nhánh Dịch AI] ❌ Lỗi: {ex}")
+                    self.log_signal.emit(f"  └─► [Nhánh Dịch AI] Lỗi: {ex}")
 
             def task_subtitle_removal():
                 try:
                     self.log_signal.emit(f"  └─► [Nhánh Xóa Sub] Đang khởi chạy mô hình inpaint ({self.inpaint_mode})...")
                     self._run_subtitle_remover(cleaned_video_path)
-                    self.log_signal.emit("  └─► [Nhánh Xóa Sub] ✅ Hoàn tất xóa phụ đề gốc khỏi video!")
+                    self.log_signal.emit("  └─► [Nhánh Xóa Phụ Đề] Hoàn tất xóa phụ đề gốc khỏi video!")
                 except Exception as ex:
                     remover_error[0] = ex
-                    self.log_signal.emit(f"  └─► [Nhánh Xóa Sub] ❌ Lỗi: {ex}")
+                    self.log_signal.emit(f"  └─► [Nhánh Xóa Phụ Đề] Lỗi: {ex}")
 
             t_trans = threading.Thread(target=task_translation, daemon=True)
             t_rem = threading.Thread(target=task_subtitle_removal, daemon=True)
@@ -241,26 +241,26 @@ class AutoPipelineWorker(QThread):
                 time.sleep(0.5)
 
             if translate_error[0]:
-                self.log_signal.emit(f"⚠️ Cảnh báo dịch thuật: {translate_error[0]}")
+                self.log_signal.emit(f"Cảnh báo dịch thuật: {translate_error[0]}")
             if remover_error[0]:
                 raise remover_error[0]
 
             # Pause for user review if requested
             if self.pause_for_review and extracted_blocks:
-                self.log_signal.emit("⏸️ Luồng Tự Động tạm dừng để người dùng duyệt & chỉnh sửa phụ đề...")
+                self.log_signal.emit("Luồng Tự Động tạm dừng để người dùng duyệt và chỉnh sửa phụ đề...")
                 evt = threading.Event()
                 self.review_requested_signal.emit(extracted_blocks, evt)
                 evt.wait()
                 if self._is_stopped:
                     return
-                self.log_signal.emit("▶️ Đã hoàn thành duyệt phụ đề. Tiếp tục render video!")
+                self.log_signal.emit("Đã hoàn thành duyệt phụ đề. Tiếp tục render video!")
 
             # =============================================================
             # BƯỚC 3: MERGE (Cleaned Video + Translated Subtitle -> Output)
             # =============================================================
             self.step_signal.emit(3)
             self.progress_signal.emit(85, "Bước 3/3: Đang ghép phụ đề mới và render Output Video...")
-            self.log_signal.emit("🧩 BẮT ĐẦU MERGE: Ghép phụ đề mới vào Video...")
+            self.log_signal.emit("BẮT ĐẦU QUÁ TRÌNH GHÉP: Ghép phụ đề mới vào Video...")
 
             ass_path = str(Path(self.output_path).parent / f"{Path(self.video_path).stem}_translated_temp.ass")
             sub_items = []
@@ -297,13 +297,13 @@ class AutoPipelineWorker(QThread):
                         pass
 
             self.progress_signal.emit(100, "Hoàn thành toàn bộ luồng Tự Động MMO!")
-            self.log_signal.emit(f"🎉 ĐÃ XUẤT OUTPUT VIDEO THÀNH CÔNG TẠI: {self.output_path}")
+            self.log_signal.emit(f"ĐÃ XUẤT VIDEO THÀNH CÔNG TẠI: {self.output_path}")
             self.finished_signal.emit(True, self.output_path, "Đã hoàn thành xuất video tự động thành công!")
 
         except Exception as e:
             import traceback
             err_msg = traceback.format_exc()
-            self.log_signal.emit(f"❌ LỖI LUỒNG TỰ ĐỘNG: {e}\n{err_msg}")
+            self.log_signal.emit(f"LỖI LUỒNG TỰ ĐỘNG: {e}\n{err_msg}")
             self.finished_signal.emit(False, "", str(e))
 
     def _extract_ocr_subtitles(self) -> list[SubtitleBlock]:
@@ -319,7 +319,7 @@ class AutoPipelineWorker(QThread):
         segments = engine.extract_subtitles(
             video_path=self.video_path,
             sub_areas=self.sub_areas,
-            progress_callback=lambda pct, msg: self.log_signal.emit(f"🔍 [OCR] {msg}"),
+            progress_callback=lambda pct, msg: self.log_signal.emit(f"[Nhận Diện OCR] {msg}"),
         )
         # Convert SubtitleSegment to SubtitleBlock for compatibility
         from backend.translator import SubtitleBlock
@@ -543,7 +543,7 @@ class AutoPipelineInterface(QWidget):
 
         # Visual Parallel Step Indicator Badges
         self.step_label_1 = CaptionLabel("▶ Bước 1: OCR Detection (Trích xuất Text + Time)", self)
-        self.step_label_2 = CaptionLabel("▶ Bước 2: [Song song] Dịch AI & Xóa phụ đề gốc (Inpaint)", self)
+        self.step_label_2 = CaptionLabel("▶ Bước 2: Dịch AI & Xóa phụ đề gốc song song", self)
         self.step_label_3 = CaptionLabel("▶ Bước 3: Merge phụ đề mới & Xuất Video", self)
 
         for lbl in [self.step_label_1, self.step_label_2, self.step_label_3]:
@@ -644,7 +644,7 @@ class AutoPipelineInterface(QWidget):
                         self.lbl_summary_translate.setText("OCR: Auto ➔ Dịch Local MarianMT |  Offline Engine")
                     else:
                         has_key = bool(data.get("api_key", "").strip())
-                        key_str = "🔑 Key hợp lệ" if has_key else "⚠️ Chưa nạp Key"
+                        key_str = "Key hợp lệ" if has_key else "Chưa nạp Key"
                         self.lbl_summary_translate.setText(f"OCR: Auto ➔ Dịch AI: {provider_name} ({model_name}) | {key_str}")
             except Exception:
                 self.lbl_summary_translate.setText("OCR: Auto ➔ Dịch AI: Google Translate")

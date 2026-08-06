@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
 Tab Công Cụ — Hub chứa 4 công cụ con chuyên sâu với sub-navigation dạng Pivot.
-1. 📥 Tải Video (yt-dlp)
-2. 📄 Trích Xuất Phụ Đề (OCR / Whisper)
-3. 🌐 Dịch & Sửa Phụ Đề (AI / Google)
-4. 🎬 Xóa Phụ Đề Video (Inpaint STTN/Lama/Propainter)
+1. Tải Video
+2. Trích Xuất Phụ Đề
+3. Dịch & Sửa Phụ Đề
+4. Xóa Phụ Đề Video
 """
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QStackedWidget

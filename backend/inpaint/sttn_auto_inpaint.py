@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from backend.config import config
 from backend.inpaint.sttn.auto_sttn import InpaintGenerator
 from backend.inpaint.utils.sttn_utils import Stack, ToTorchFormatTensor
-from backend.tools.inpaint_tools import get_inpaint_area_by_mask, is_frame_number_in_ab_sections
+from backend.tools.inpaint_tools import get_inpaint_area_by_mask, is_frame_number_in_ab_sections, blend_inpaint
 from backend.tools.video_io import FramePrefetcher
 from backend.tools.hardware_accelerator import HardwareAccelerator
 
@@ -44,17 +44,26 @@ class STTNInpaint:
         self.neighbor_stride = config.sttnNeighborStride.value
         self.ref_length = config.sttnReferenceLength.value
 
-    def __call__(self, input_mask: np.ndarray, input_frames: List[np.ndarray] = None, input_sub_remover=None, tbar=None):
-        # input_mask is a float32 soft feathered mask from create_mask
-        mask = input_mask
-        if mask.ndim == 2:
-            mask = mask[:, :, None]
-        H_ori, W_ori = mask.shape[:2]
+    def __call__(self, input_mask, input_frames: List[np.ndarray] = None, input_sub_remover=None, tbar=None):
+        # input_mask có thể là float32 numpy array hoặc list chứa mask của từng frame
+        is_mask_list = isinstance(input_mask, (list, tuple))
+        if is_mask_list:
+            first_m = input_mask[0]
+            ref_mask = first_m[:, :, None] if first_m.ndim == 2 else first_m
+            union_mask = np.zeros_like(ref_mask)
+            for m in input_mask:
+                m_3d = m[:, :, None] if m.ndim == 2 else m
+                union_mask = np.maximum(union_mask, m_3d)
+            calc_mask = union_mask
+        else:
+            calc_mask = input_mask[:, :, None] if input_mask.ndim == 2 else input_mask
+
+        H_ori, W_ori = calc_mask.shape[:2]
         H_ori = int(H_ori + 0.5)
         W_ori = int(W_ori + 0.5)
         # 确定去字幕的垂直高度部分
         split_h = int(W_ori * 3 / 16)
-        inpaint_area = get_inpaint_area_by_mask(W_ori, H_ori, split_h, mask)
+        inpaint_area = get_inpaint_area_by_mask(W_ori, H_ori, split_h, calc_mask)
         # 初始化帧存储变量
         # 高分辨率帧存储列表（浅拷贝 + 逐帧 copy，避免 deepcopy 开销）
         frames_hr = [f.copy() for f in input_frames]
@@ -83,14 +92,27 @@ class STTNInpaint:
         if inpaint_area:
             for j in range(len(frames_hr)):
                 frame = frames_hr[j]  # 取出原始帧
-                # 对于模式中的每一个段落
+                if is_mask_list:
+                    m_j = input_mask[j]
+                    cur_mask = m_j[:, :, None] if m_j.ndim == 2 else m_j
+                else:
+                    cur_mask = calc_mask
+
                 for k in range(len(inpaint_area)):
-                    comp = cv2.resize(comps[k][j], (W_ori, split_h))  # 将补全帧缩放回原大小
-                    comp = cv2.cvtColor(comp.astype(np.uint8), cv2.COLOR_BGR2RGB)  # 转换颜色空间
-                    # 获取遮罩区域并进行图像合成
-                    mask_area = mask[inpaint_area[k][0]:inpaint_area[k][1], :]  # 取出遮罩区域
-                    # 实现遮罩区域内的图像融合
-                    frame[inpaint_area[k][0]:inpaint_area[k][1], :, :] = mask_area * comp + (1 - mask_area) * frame[inpaint_area[k][0]:inpaint_area[k][1], :, :]
+                    actual_h = inpaint_area[k][1] - inpaint_area[k][0]
+                    comp = cv2.resize(comps[k][j], (W_ori, actual_h))  # 将补全帧缩放回原大小
+                    comp = comp.astype(np.uint8)
+                    # 获取遮罩区域并进行图像合成 (Feather Blending)
+                    mask_area = cur_mask[inpaint_area[k][0]:inpaint_area[k][1], :]
+                    
+                    use_poisson = False
+                    if hasattr(config, 'poissonBlending'):
+                        use_poisson = config.poissonBlending.value
+                    method = 'poisson' if use_poisson else 'feather'
+                    
+                    original_crop = frame[inpaint_area[k][0]:inpaint_area[k][1], :, :]
+                    blended = blend_inpaint(original_crop, comp, mask_area, method=method, feather_pixels=8)
+                    frame[inpaint_area[k][0]:inpaint_area[k][1], :, :] = blended
                 # 将最终帧添加到列表
                 inpainted_frames.append(frame)
                 # print(f'processing frame, {len(frames_hr) - j} left')
@@ -160,12 +182,13 @@ class STTNInpaint:
                     # 遍历邻近帧
                     for i in range(len(neighbor_ids)):
                         idx = neighbor_ids[i]
-                        img = pred_img[i].astype(np.uint8)
+                        # Chuyển kết quả STTN (RGB) về BGR để khớp với khung hình OpenCV (tránh lỗi nền xanh)
+                        img = cv2.cvtColor(pred_img[i].astype(np.uint8), cv2.COLOR_RGB2BGR)
                         if comp_frames[idx] is None:
-                            comp_frames[idx] = img
+                            comp_frames[idx] = img.astype(np.float32)
                         else:
-                            comp_frames[idx] = comp_frames[idx].astype(np.float32) * 0.5 + img.astype(np.float32) * 0.5
-        # 返回处理完成的帧序列
+                            comp_frames[idx] = comp_frames[idx] * 0.5 + img.astype(np.float32) * 0.5
+        comp_frames = [f.astype(np.uint8) if f is not None else None for f in comp_frames]
         return comp_frames
 
 
@@ -221,7 +244,36 @@ class STTNAutoInpaint:
             # 计算分割高度，用于确定修复区域的大小
             split_h = int(frame_info['W_ori'] * 3 / 16)
 
-            if input_mask is None:
+            # ===== Xử lý mask: Hỗ trợ cả mask tĩnh (ndarray) và mask động per-frame (dict) =====
+            is_per_frame_mask = isinstance(input_mask, dict)
+            
+            if is_per_frame_mask:
+                if not input_mask:
+                    # Dict rỗng: không có đối tượng nào, ghi video gốc không thay đổi
+                    prefetcher = FramePrefetcher(reader)
+                    while True:
+                        success, image = prefetcher.read()
+                        if not success:
+                            break
+                        writer.write(image)
+                        if input_sub_remover is not None and tbar is not None:
+                            input_sub_remover.update_progress(tbar, increment=1)
+                    prefetcher.release()
+                    return
+                # Tạo union mask từ tất cả per-frame masks để tính inpaint_area chung
+                union_mask = None
+                for fno, fmask in input_mask.items():
+                    m = fmask
+                    if m.ndim == 2:
+                        m = m[:, :, None]
+                    if union_mask is None:
+                        union_mask = m.copy().astype(np.float32)
+                    else:
+                        union_mask = np.maximum(union_mask, m.astype(np.float32))
+                mask = union_mask
+                # Tạo zero mask để dùng cho các frame không có tracked object
+                zero_mask = np.zeros_like(mask)
+            elif input_mask is None:
                 # 读取掩码
                 mask = self.sttn_inpaint.read_mask(self.mask_path)
             else:
@@ -248,11 +300,12 @@ class STTNAutoInpaint:
             for i in range(rec_time):
                 start_f = i * effective_clip_gap  # 起始帧位置
                 end_f = min((i + 1) * effective_clip_gap, frame_info['len'])  # 结束帧位置
-                tqdm.write(f'Processing: {start_f + 1} - {end_f} / Total: {frame_info['len']}')
+                tqdm.write(f'Processing: {start_f + 1} - {end_f} / Total: {frame_info["len"]}')
                 
                 frames_hr = []  # 高分辨率帧列表
                 frames = {}  # 帧字典，用于存储裁剪后的图像
                 comps = {}  # 组合字典，用于存储修复后的图像
+                frame_indices = []  # Lưu lại chỉ số frame thực tế (1-indexed) cho mỗi frame đọc được
                 
                 # 初始化帧字典
                 for k in range(len(inpaint_area)):
@@ -267,6 +320,7 @@ class STTNAutoInpaint:
                         break
                     
                     frames_hr.append(image)
+                    frame_indices.append(j + 1)  # ObjectTracker dùng 1-indexed
                     valid_frames_count += 1
                     
                     if is_frame_number_in_ab_sections(j, ab_sections):
@@ -309,16 +363,32 @@ class STTNAutoInpaint:
                             
                         frame = frames_hr[j]
                         
+                        # Chọn mask phù hợp cho frame hiện tại
+                        if is_per_frame_mask:
+                            cur_frame_no = frame_indices[j] if j < len(frame_indices) else -1
+                            cur_mask = input_mask.get(cur_frame_no, zero_mask)
+                            if cur_mask.ndim == 2:
+                                cur_mask = cur_mask[:, :, None]
+                        else:
+                            cur_mask = mask
+                        
                         # 只有被处理过的帧才应用修复结果
                         if j in processed_frames_map:
                             comp_idx = processed_frames_map[j]
                             for k in range(len(inpaint_area)):
                                 if comp_idx < len(comps[k]):  # 确保索引有效
-                                    # 将修复的图像重新扩展到原始分辨率，并融合到原始帧
-                                    comp = cv2.resize(comps[k][comp_idx], (frame_info['W_ori'], split_h))
-                                    comp = cv2.cvtColor(comp.astype(np.uint8), cv2.COLOR_BGR2RGB)
-                                    mask_area = mask[inpaint_area[k][0]:inpaint_area[k][1], :]
-                                    frame[inpaint_area[k][0]:inpaint_area[k][1], :, :] = mask_area * comp + (1 - mask_area) * frame[inpaint_area[k][0]:inpaint_area[k][1], :, :]
+                                    actual_h = inpaint_area[k][1] - inpaint_area[k][0]
+                                    comp = cv2.resize(comps[k][comp_idx], (frame_info['W_ori'], actual_h))
+                                    mask_area = cur_mask[inpaint_area[k][0]:inpaint_area[k][1], :]
+                                    
+                                    use_poisson = False
+                                    if hasattr(config, 'poissonBlending'):
+                                        use_poisson = config.poissonBlending.value
+                                    method = 'poisson' if use_poisson else 'feather'
+                                    
+                                    original_crop = frame[inpaint_area[k][0]:inpaint_area[k][1], :, :]
+                                    blended = blend_inpaint(original_crop, comp, mask_area, method=method, feather_pixels=8)
+                                    frame[inpaint_area[k][0]:inpaint_area[k][1], :, :] = blended
                         
                         writer.write(frame)
                         

@@ -35,13 +35,25 @@ class STTNDetInpaint:
         self.neighbor_stride = config.sttnNeighborStride.value
         self.ref_length = config.sttnReferenceLength.value
 
-    def __call__(self, input_frames: List[np.ndarray], input_mask: np.ndarray):
+    def __call__(self, input_frames: List[np.ndarray], input_mask):
         """
         :param input_frames: 原视频帧
-        :param mask: 字幕区域mask
+        :param input_mask: 字幕区域mask (numpy array hoặc list các mask per-frame)
         """
-        mask = input_mask[:, :, None] if input_mask.ndim == 2 else input_mask
-        H_ori, W_ori = mask.shape[:2]
+        is_mask_list = isinstance(input_mask, (list, tuple))
+        if is_mask_list:
+            first_m = input_mask[0]
+            ref_mask = first_m[:, :, None] if first_m.ndim == 2 else first_m
+            union_mask = np.zeros_like(ref_mask)
+            for m in input_mask:
+                m_3d = m[:, :, None] if m.ndim == 2 else m
+                union_mask = np.maximum(union_mask, m_3d)
+            calc_mask = union_mask
+        else:
+            ref_mask = input_mask[:, :, None] if input_mask.ndim == 2 else input_mask
+            calc_mask = ref_mask
+
+        H_ori, W_ori = calc_mask.shape[:2]
         H_ori = int(H_ori + 0.5)
         W_ori = int(W_ori + 0.5)
         # 确定去字幕的垂直高度部分
@@ -49,49 +61,55 @@ class STTNDetInpaint:
             split_h = int(H_ori * 5 / 9)
         else:
             split_h = int(W_ori * 5 / 18)
-        inpaint_area = get_inpaint_area_by_mask(W_ori, H_ori, split_h, mask)
-        # 初始化帧存储变量
+        inpaint_area = get_inpaint_area_by_mask(W_ori, H_ori, split_h, calc_mask)
+
         # 高分辨率帧存储列表（浅拷贝 + 逐帧 copy，避免 deepcopy 开销）
         frames_hr = [f.copy() for f in input_frames]
         frames_scaled = {}  # 存放缩放后帧的字典
         masks_scaled = {}  # 存放缩放后遮罩的字典
         comps = {}  # 存放补全后帧的字典
-        # 存储最终的视频帧
         inpainted_frames = []
         for k in range(len(inpaint_area)):
-            frames_scaled[k] = []  # 为每个去除部分初始化一个列表
-            masks_scaled[k] = []  # 为每个去除部分初始化一个列表
+            frames_scaled[k] = []
+            masks_scaled[k] = []
 
         # 读取并缩放帧
         for j in range(len(frames_hr)):
             image = frames_hr[j]
-            cur_mask = mask
+            if is_mask_list:
+                m_j = input_mask[j]
+                cur_mask = m_j[:, :, None] if m_j.ndim == 2 else m_j
+            else:
+                cur_mask = calc_mask
+
             # 对每个去除部分进行切割和缩放
             for k in range(len(inpaint_area)):
-                image_crop = image[inpaint_area[k][0]:inpaint_area[k][1], :, :]  # 切割
-                mask_crop = cur_mask[inpaint_area[k][0]:inpaint_area[k][1], :, :]  # 切割
-                image_resize = cv2.resize(image_crop, (self.model_input_width, self.model_input_height))  # 缩放
-                mask_resize = cv2.resize(mask_crop, (self.model_input_width, self.model_input_height))  # 缩放
-                frames_scaled[k].append(image_resize)  # 将缩放后的帧添加到对应列表
-                masks_scaled[k].append(mask_resize)  # 将缩放后的遮罩添加到对应列表
+                image_crop = image[inpaint_area[k][0]:inpaint_area[k][1], :, :]
+                mask_crop = cur_mask[inpaint_area[k][0]:inpaint_area[k][1], :, :]
+                image_resize = cv2.resize(image_crop, (self.model_input_width, self.model_input_height))
+                mask_resize = cv2.resize(mask_crop, (self.model_input_width, self.model_input_height))
+                frames_scaled[k].append(image_resize)
+                masks_scaled[k].append(mask_resize)
 
         # 处理每一个去除部分
         for k in range(len(inpaint_area)):
-            # 调用inpaint函数进行处理
             comps[k] = self.inpaint(frames_scaled[k], masks_scaled[k])
 
         # 如果存在去除部分
         if inpaint_area:
             for j in range(len(frames_hr)):
-                frame = frames_hr[j]  # 取出原始帧
-                # 对于模式中的每一个段落
+                frame = frames_hr[j]
+                if is_mask_list:
+                    m_j = input_mask[j]
+                    cur_mask = m_j[:, :, None] if m_j.ndim == 2 else m_j
+                else:
+                    cur_mask = calc_mask
+
                 for k in range(len(inpaint_area)):
-                    comp = cv2.resize(comps[k][j], (W_ori, split_h))  # 将补全帧缩放回原大小
-                    comp = cv2.cvtColor(comp.astype(np.uint8), cv2.COLOR_BGR2RGB)  # 转换颜色空间
-                    # 获取遮罩区域并进行图像合成
-                    mask_area = mask[inpaint_area[k][0]:inpaint_area[k][1], :]  # 取出遮罩区域
+                    actual_h = inpaint_area[k][1] - inpaint_area[k][0]
+                    comp = cv2.resize(comps[k][j], (W_ori, actual_h))
+                    mask_area = cur_mask[inpaint_area[k][0]:inpaint_area[k][1], :]
                     
-                    # Xác định phương pháp hòa trộn dựa trên cấu hình
                     use_poisson = False
                     if hasattr(config, 'poissonBlending'):
                         use_poisson = config.poissonBlending.value
@@ -100,7 +118,6 @@ class STTNDetInpaint:
                     original_crop = frame[inpaint_area[k][0]:inpaint_area[k][1], :, :]
                     blended = blend_inpaint(original_crop, comp, mask_area, method=method, feather_pixels=8)
                     frame[inpaint_area[k][0]:inpaint_area[k][1], :, :] = blended
-                # 将最终帧添加到列表
                 inpainted_frames.append(frame)
                 # print(f'processing frame, {len(frames_hr) - j} left')
         else:
@@ -174,12 +191,14 @@ class STTNDetInpaint:
                 # 遍历邻近帧
                 for i in range(len(neighbor_ids)):
                     idx = neighbor_ids[i]
-                    # Tận dụng soft mask để trộn ảnh mượt biên
-                    img = pred_img[i].astype(np.float32) * soft_masks[idx] + frames[idx].astype(np.float32) * (1.0 - soft_masks[idx])
-                    img = img.astype(np.uint8)
+                    # Chuyển pred_img từ RGB sang BGR để tránh lỗi đổi kênh màu
+                    pred_bgr = cv2.cvtColor(pred_img[i].astype(np.uint8), cv2.COLOR_RGB2BGR)
+                    # Chỉ lưu trữ kết quả thuần của STTN. Việc hòa trộn biên (blend) được dời sang 
+                    # thực hiện ở __call__ trên ảnh gốc (độ phân giải cao) để tăng độ nét và giảm hao phí CPU.
+                    img = pred_bgr.astype(np.float32)
                     if comp_frames[idx] is None:
                         comp_frames[idx] = img
                     else:
-                        comp_frames[idx] = comp_frames[idx].astype(np.float32) * 0.5 + img.astype(np.float32) * 0.5
-        # 返回处理完成的帧序列
+                        comp_frames[idx] = comp_frames[idx] * 0.5 + img * 0.5
+        comp_frames = [f.astype(np.uint8) if f is not None else None for f in comp_frames]
         return comp_frames

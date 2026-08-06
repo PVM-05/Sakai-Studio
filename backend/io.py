@@ -886,6 +886,21 @@ def _open_capture(path: str, hw_accel: str = "off", *,
             return cv2.VideoCapture(path)
     if hw_accel in (None, "", "off"):
         return cv2.VideoCapture(path)
+        
+    # Check for VP9 to avoid Static surface pool size exceeded issue
+    # in OpenCV's FFmpeg HW accel wrapper
+    try:
+        temp_cap = cv2.VideoCapture(path)
+        if temp_cap.isOpened():
+            fourcc = int(temp_cap.get(cv2.CAP_PROP_FOURCC))
+            codec = "".join([chr((fourcc >> 8 * i) & 0xFF) if (fourcc >> 8 * i) & 0xFF != 0 else "" for i in range(4)]).lower()
+            temp_cap.release()
+            if codec in ("vp90", "vp09", "vp9"):
+                logger.warning(f"Video codec {codec} (VP9) detected. HW-accelerated decode in OpenCV is known to cause 'Static surface pool size exceeded' errors. Falling back to software decode.")
+                return cv2.VideoCapture(path)
+    except Exception as e:
+        logger.debug(f"Failed to check fourcc: {e}")
+
     accel_map = {
         "any": getattr(cv2, "VIDEO_ACCELERATION_ANY", 1),
         "auto": getattr(cv2, "VIDEO_ACCELERATION_ANY", 1),

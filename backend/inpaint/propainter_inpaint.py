@@ -16,7 +16,8 @@ from backend.inpaint.video.model.recurrent_flow_completion import RecurrentFlowC
 from backend.inpaint.video.model.propainter import InpaintGenerator
 from backend.inpaint.video.core.utils import to_tensors
 from backend.inpaint.video.model.misc import get_device
-from backend.tools.inpaint_tools import get_inpaint_area_by_mask
+from backend.tools.inpaint_tools import get_inpaint_area_by_mask, blend_inpaint
+from backend.tools.model_config import ModelConfig
 
 import warnings
 
@@ -238,13 +239,11 @@ class PropainterInpaint:
                         flows_f, flows_b = self.fix_raft(frames[:, f - 1:end_f], iters=self.raft_iter)
                     gt_flows_f_list.append(flows_f)
                     gt_flows_b_list.append(flows_b)
-                    torch.cuda.empty_cache()
                 gt_flows_f = torch.cat(gt_flows_f_list, dim=1)
                 gt_flows_b = torch.cat(gt_flows_b_list, dim=1)
                 gt_flows_bi = (gt_flows_f, gt_flows_b)
             else:
                 gt_flows_bi = self.fix_raft(frames, iters=self.raft_iter)
-                torch.cuda.empty_cache()
 
             if self.use_half:
                 frames, flow_masks, masks_dilated = frames.half(), flow_masks.half(), masks_dilated.half()
@@ -270,7 +269,6 @@ class PropainterInpaint:
 
                     pred_flows_f.append(pred_flows_bi_sub[0][:, pad_len_s:e_f - s_f - pad_len_e])
                     pred_flows_b.append(pred_flows_bi_sub[1][:, pad_len_s:e_f - s_f - pad_len_e])
-                    torch.cuda.empty_cache()
 
                 pred_flows_f = torch.cat(pred_flows_f, dim=1)
                 pred_flows_b = torch.cat(pred_flows_b, dim=1)
@@ -278,7 +276,6 @@ class PropainterInpaint:
             else:
                 pred_flows_bi, _ = self.fix_flow_complete.forward_bidirect_flow(gt_flows_bi, flow_masks)
                 pred_flows_bi = self.fix_flow_complete.combine_flow(gt_flows_bi, pred_flows_bi, flow_masks)
-                torch.cuda.empty_cache()
 
             # ---- image propagation ----
             masked_frames = frames * (1 - masks_dilated)
@@ -303,7 +300,6 @@ class PropainterInpaint:
                     updated_masks_sub = updated_local_masks_sub.view(b, t, 1, h, w)
                     updated_frames.append(updated_frames_sub[:, pad_len_s:e_f - s_f - pad_len_e])
                     updated_masks.append(updated_masks_sub[:, pad_len_s:e_f - s_f - pad_len_e])
-                    torch.cuda.empty_cache()
 
                 updated_frames = torch.cat(updated_frames, dim=1)
                 updated_masks = torch.cat(updated_masks, dim=1)
@@ -313,7 +309,6 @@ class PropainterInpaint:
                                                                        'nearest')
                 updated_frames = frames * (1 - masks_dilated) + prop_imgs.view(b, t, 3, h, w) * masks_dilated
                 updated_masks = updated_local_masks.view(b, t, 1, h, w)
-                torch.cuda.empty_cache()
 
         ori_frames = frames_inp
         comp_frames = [None] * video_length
@@ -348,16 +343,17 @@ class PropainterInpaint:
                     0, 2, 3, 1).numpy().astype(np.uint8)
                 for i in range(len(neighbor_ids)):
                     idx = neighbor_ids[i]
-                    img = np.array(pred_img[i]).astype(np.uint8) * binary_masks[i] \
-                          + ori_frames[idx] * (1 - binary_masks[i])
+                    img = np.array(pred_img[i]).astype(np.float32) * binary_masks[i] \
+                          + ori_frames[idx].astype(np.float32) * (1 - binary_masks[i])
                     if comp_frames[idx] is None:
                         comp_frames[idx] = img
                     else:
-                        comp_frames[idx] = comp_frames[idx].astype(np.float32) * 0.5 + img.astype(np.float32) * 0.5
-                    comp_frames[idx] = comp_frames[idx].astype(np.uint8)
+                        comp_frames[idx] = comp_frames[idx] * 0.5 + img * 0.5
+
+        if torch.cuda.is_available():
             torch.cuda.empty_cache()
         # save videos frame
-        comp_frames = [cv2.cvtColor(i, cv2.COLOR_RGB2BGR) for i in comp_frames]
+        comp_frames = [cv2.cvtColor(i.astype(np.uint8), cv2.COLOR_RGB2BGR) for i in comp_frames]
         return comp_frames
 
     def __call__(self, input_frames: List[np.ndarray], input_mask: np.ndarray):
@@ -365,7 +361,7 @@ class PropainterInpaint:
         :param input_frames: 原视频帧
         :param input_mask: 字幕区域mask
         """
-        mask = input_mask[:, :, None]
+        mask = input_mask[:, :, None] if input_mask.ndim == 2 else input_mask
         H_ori, W_ori = mask.shape[:2]
         H_ori = int(H_ori + 0.5)
         W_ori = int(W_ori + 0.5)
@@ -408,8 +404,17 @@ class PropainterInpaint:
                 # 对于模式中的每一个段落
                 for k in range(len(inpaint_area)):
                     comp = comps[k][j]  # 获取补全后的帧
-                    # 实现遮罩区域内的图像融合
-                    frame[inpaint_area[k][0]:inpaint_area[k][1], inpaint_area[k][2]:inpaint_area[k][3], :] = comp
+                    # 实现遮罩区域内的图像融合 (Feather Blending)
+                    original_crop = frame[inpaint_area[k][0]:inpaint_area[k][1], inpaint_area[k][2]:inpaint_area[k][3], :]
+                    mask_area = mask[inpaint_area[k][0]:inpaint_area[k][1], inpaint_area[k][2]:inpaint_area[k][3], :]
+                    
+                    use_poisson = False
+                    if hasattr(config, 'poissonBlending'):
+                        use_poisson = config.poissonBlending.value
+                    method = 'poisson' if use_poisson else 'feather'
+                    
+                    blended = blend_inpaint(original_crop, comp, mask_area, method=method, feather_pixels=8)
+                    frame[inpaint_area[k][0]:inpaint_area[k][1], inpaint_area[k][2]:inpaint_area[k][3], :] = blended
                 # 将最终帧添加到列表
                 inpainted_frames.append(frame)
                 # print(f'processing frame, {len(frames_hr) - j} left')

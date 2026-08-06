@@ -9,7 +9,8 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QMenu, QAbstractItemView, QT
 from PySide6.QtCore import Qt, Signal, QModelIndex, QUrl
 from qfluentwidgets import TableWidget, BodyLabel, FluentIcon, InfoBar, InfoBarPosition
 from PySide6.QtGui import QAction, QColor, QBrush
-from showinfm import show_in_file_manager
+import platform
+import subprocess
 
 from backend.config import config, tr
 from backend.tools.common_tools import is_image_file
@@ -128,10 +129,10 @@ class TaskListComponent(QWidget):
         if self.tasks:
             current_idx = self.get_current_task_index()
             ref_task = self.tasks[current_idx] if current_idx >= 0 else self.tasks[-1]
-            if TaskOptions.SUB_AREAS in ref_task.options:
-                default_options[TaskOptions.SUB_AREAS] = list(ref_task.options[TaskOptions.SUB_AREAS])
-            if TaskOptions.AB_SECTIONS in ref_task.options:
-                default_options[TaskOptions.AB_SECTIONS] = list(ref_task.options[TaskOptions.AB_SECTIONS])
+            if TaskOptions.SUB_AREAS.value in ref_task.options:
+                default_options[TaskOptions.SUB_AREAS.value] = list(ref_task.options[TaskOptions.SUB_AREAS.value])
+            if TaskOptions.AB_SECTIONS.value in ref_task.options:
+                default_options[TaskOptions.AB_SECTIONS.value] = list(ref_task.options[TaskOptions.AB_SECTIONS.value])
 
         # 添加到任务列表
         task = Task(
@@ -297,7 +298,7 @@ class TaskListComponent(QWidget):
             apply_areas_to_all_action = QAction("Áp dụng vùng xóa sub cho tất cả nhiệm vụ", self)
             def apply_areas_to_all():
                 current_task = self.tasks[index.row()]
-                sub_areas = current_task.options.get(TaskOptions.SUB_AREAS, [])
+                sub_areas = current_task.options.get(TaskOptions.SUB_AREAS.value, [])
                 if not sub_areas:
                     InfoBar.warning(
                         title="Cảnh báo",
@@ -308,7 +309,7 @@ class TaskListComponent(QWidget):
                     return
                 for i, t in enumerate(self.tasks):
                     if i != index.row() and t.status == TaskStatus.PENDING:
-                        t.options[TaskOptions.SUB_AREAS] = list(sub_areas)
+                        t.options[TaskOptions.SUB_AREAS.value] = list(sub_areas)
                 InfoBar.success(
                     title="Thành công",
                     content="Đã áp dụng vùng phụ đề cho tất cả các nhiệm vụ đang chờ.",
@@ -318,16 +319,16 @@ class TaskListComponent(QWidget):
             apply_areas_to_all_action.triggered.connect(apply_areas_to_all)
             menu.addAction(apply_areas_to_all_action)
 
-            # Đẩy lên (Move Up)
-            move_up_action = QAction("Đẩy lên (Move Up)", self)
+            # Di chuyển lên
+            move_up_action = QAction(tr['TaskList']['MoveUp'], self)
             row = index.row()
             can_move_up = row > 0 and self.tasks[row].status in (TaskStatus.PENDING, TaskStatus.FAILED) and self.tasks[row-1].status in (TaskStatus.PENDING, TaskStatus.FAILED)
             move_up_action.setEnabled(can_move_up)
             move_up_action.triggered.connect(lambda: self.move_task_up(index.row()))
             menu.addAction(move_up_action)
             
-            # Đẩy xuống (Move Down)
-            move_down_action = QAction("Đẩy xuống (Move Down)", self)
+            # Di chuyển xuống
+            move_down_action = QAction(tr['TaskList']['MoveDown'], self)
             can_move_down = row < len(self.tasks) - 1 and self.tasks[row].status in (TaskStatus.PENDING, TaskStatus.FAILED) and self.tasks[row+1].status in (TaskStatus.PENDING, TaskStatus.FAILED)
             move_down_action.setEnabled(can_move_down)
             move_down_action.triggered.connect(lambda: self.move_task_down(index.row()))
@@ -420,7 +421,13 @@ class TaskListComponent(QWidget):
             )
             return
             
-        show_in_file_manager(os.path.abspath(path))
+        path = os.path.abspath(path)
+        if platform.system() == "Windows":
+            subprocess.run(['explorer', '/select,', os.path.normpath(path)])
+        elif platform.system() == "Darwin":
+            subprocess.run(['open', '-R', path])
+        else:
+            subprocess.run(['xdg-open', os.path.dirname(path)])
 
     def get_root_parent(self):
         parent = self
@@ -428,7 +435,7 @@ class TaskListComponent(QWidget):
             parent = parent.parent()
         return parent
 
-    def update_task_option(self, index, task_option: TaskOptions, value):
+    def update_task_option(self, index, task_option, value):
         """更新任务选项
 
         Args:
@@ -437,10 +444,11 @@ class TaskListComponent(QWidget):
             value: 选项值
         """
         if 0 <= index < len(self.tasks):
-            self.tasks[index].options[task_option.value] = value
+            key = task_option.value if isinstance(task_option, Enum) else task_option
+            self.tasks[index].options[key] = value
             self.save_session()
 
-    def get_task_option(self, index, task_option: TaskOptions, default=None):
+    def get_task_option(self, index, task_option, default=None):
         """获取任务选项
         Args:
             index: 任务索引
@@ -450,7 +458,8 @@ class TaskListComponent(QWidget):
             选项值
         """
         if 0 <= index < len(self.tasks):
-            return self.tasks[index].options.get(task_option.value, default)
+            key = task_option.value if isinstance(task_option, Enum) else task_option
+            return self.tasks[index].options.get(key, default)
 
     def refresh_table(self):
         """Vẽ lại bảng hàng đợi sau khi sắp xếp lại hoặc tráo đổi vị trí"""
@@ -554,15 +563,18 @@ class TaskListComponent(QWidget):
             print(f"[TaskListComponent] Save session failed: {e}")
 
     def has_saved_session(self):
-        """Kiểm tra có session chưa hoàn thành không"""
+        """Kiểm tra có session chưa hoàn thành không (chỉ trả về True nếu có task PENDING hoặc PROCESSING)"""
         session_file = self.get_session_file()
         if not os.path.exists(session_file):
             return False
         try:
             with open(session_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            if not data:
+                return False
             for item in data:
-                if os.path.exists(item.get("path", "")):
+                status_str = item.get("status", "PENDING")
+                if status_str in ["PENDING", "PROCESSING"] and os.path.exists(item.get("path", "")):
                     return True
         except Exception:
             pass

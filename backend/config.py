@@ -782,7 +782,7 @@ class Config(QConfig):
     sharpenInpaintedArea = ConfigItem("Main", "SharpenInpaintedArea", True, BoolValidator())
     autoTightenMask = ConfigItem("Main", "AutoTightenMask", True, BoolValidator())
     autoDetectTextFrameByFrame = ConfigItem("Main", "AutoDetectTextFrameByFrame", False, BoolValidator())
-    movingSubtitleTracking = ConfigItem("Main", "MovingSubtitleTracking", True, BoolValidator())
+    movingSubtitleTracking = ConfigItem("Main", "MovingSubtitleTracking", False, BoolValidator())
     maskDilation = RangeConfigItem("Main", "MaskDilation", 8, RangeValidator(0, 50))
     maskFeather = RangeConfigItem("Main", "MaskFeather", 8, RangeValidator(0, 30))
     temporalSmoothingRadius = RangeConfigItem("Main", "TemporalSmoothingRadius", 2, RangeValidator(1, 10))

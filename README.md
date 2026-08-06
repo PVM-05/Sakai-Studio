@@ -1,72 +1,33 @@
-# Sakai Studio - Video Subtitle Remover
+# Tài liệu hướng dẫn Sakai Studio
 
-**Sakai Studio - Video Subtitle Remover** là công cụ chuyên nghiệp, tự động phát hiện và xóa sạch phụ đề, logo hoặc hình mờ (watermark) khỏi video bằng các mô hình AI tiên tiến (LaMa, STTN, ProPainter) kết hợp tối ưu phần cứng.
+Sakai Studio là hệ thống phần mềm chuyên dụng xử lý phụ đề và video. Hệ thống được tích hợp các công cụ phân tích, xử lý và xuất video tự động theo yêu cầu.
 
----
+## Tính năng chính
 
-## 🚀 Các Tính năng Nổi bật & Cải tiến
+Hệ thống bao gồm bốn phân hệ chức năng độc lập:
 
-### 1. Công nghệ Xóa chữ Siêu sạch (Stroke-level Masking)
-*   **Mặt nạ Nét chữ Thích ứng:** Tự động giãn nở mặt nạ thông minh theo độ dày nét chữ thay vì bôi đen cả vùng hộp. Giúp xóa chữ sạch nhất, loại bỏ hoàn toàn bóng mờ (ghosting) và giữ nguyên vẹn chi tiết nền xung quanh.
+1. Xóa phụ đề video: Quét vùng chữ và phục hồi nền video tự động. Tích hợp khả năng bỏ qua khung hình trống giúp tối ưu hóa thời gian xử lý.
+2. Trích xuất phụ đề: Nhận diện chữ trong hình ảnh và chuyển đổi giọng nói thành tệp phụ đề văn bản.
+3. Dịch phụ đề: Chuyển ngữ và biên dịch nội dung tệp phụ đề tự động.
+4. Tải video: Tải video và âm thanh từ các nguồn trực tuyến với chất lượng cao.
 
-### 2. Tối ưu hóa Tốc độ Vượt trội (Skip Frame & Cropped OCR)
-*   **Cropped OCR:** Chỉ quét chữ trên vùng phụ đề được chọn thay vì quét toàn bộ khung hình Full HD/4K, tăng tốc độ nhận diện lên gấp nhiều lần.
-*   **Bỏ qua Khung hình Trống:** Tự động lọc các vùng nền tĩnh/dải đen. Nếu không có chữ, hệ thống tự động bỏ qua mô hình inpaint và chép trực tiếp khung hình gốc. Tốc độ xử lý video tăng từ **2 - 5 lần** (200% - 500%).
+## Tối ưu hóa hệ thống
 
-### 3. Tăng tốc Xuất Video bằng GPU (FFmpeg Hardware Encoding)
-*   Tự động dò tìm và tận dụng chip mã hóa phần cứng trên card đồ họa (**NVIDIA NVENC, AMD AMF, Intel QSV**) để ghi và xuất video thành phẩm.
-*   Tốc độ xuất video nhanh gấp **5 - 10 lần** so với sử dụng CPU mã hóa thông thường.
+Hệ thống hỗ trợ tự động nhận diện và phân bổ tài nguyên phần cứng. Quá trình xử lý video được tăng tốc thông qua các dòng vi xử lý đồ họa chuyên dụng, đảm bảo tính ổn định và tốc độ tối đa. Chức năng tự động quản lý bộ nhớ đệm giúp ngăn chặn tình trạng tràn bộ nhớ đối với các máy trạm có cấu hình hạn chế.
 
-### 4. Bộ lọc Làm nét Vùng xóa (Sharpen Inpainted Area)
-*   Áp dụng bộ lọc **Unsharp Mask (USM)** thông minh cục bộ trên vùng phụ đề đã xóa để bù đắp các chi tiết mờ nhẹ, giúp vùng vẽ lại có độ nét tiệp hoàn toàn vào chất lượng chung của video gốc.
+## Hướng dẫn cài đặt
 
-### 5. Quản lý Bộ nhớ đệm & Tự động Tinh chỉnh GPU
-*   **Model Caching:** Cache model trên VRAM/RAM giúp thời gian nạp model từ video thứ hai giảm xuống còn **0 giây**.
-*   **Auto Hardware Tuning:** Tự động tính toán dung lượng VRAM hiện tại để điều chỉnh hàng đợi frame (`MaxLoadNum`), ngăn chặn hoàn toàn lỗi tràn bộ nhớ đồ họa (Out of Memory) trên các dòng máy cấu hình yếu.
+Để khởi chạy hệ thống, máy trạm cần đáp ứng các điều kiện sau:
+- Hệ điều hành Windows 10 hoặc Windows 11 phiên bản 64 bit.
+- Trình thông dịch Python từ phiên bản 3.8 đến 3.11.
 
----
+Các bước thiết lập mã nguồn:
 
-## 🛠️ Hướng dẫn Cài đặt & Sử dụng
+1. Tải mã nguồn về máy trạm lưu trữ cục bộ.
+2. Thiết lập môi trường ảo để quản lý các gói phụ thuộc độc lập.
+3. Cài đặt các thư viện cần thiết thông qua tệp yêu cầu cấu hình.
+4. Khởi động tệp tin giao diện chính của phần mềm để bắt đầu sử dụng.
 
-### Yêu cầu Hệ thống
-*   Hệ điều hành: Windows 10/11 64-bit.
-*   Python 3.8 - 3.11.
-*   GPU NVIDIA có hỗ trợ CUDA (Khuyên dùng để đạt tốc độ tốt nhất).
+## Hướng dẫn sử dụng
 
-### Các bước cài đặt
-1. **Tải mã nguồn:**
-   ```bash
-   git clone https://github.com/PVM-05/Sakai-Studio.git
-   cd Sakai-Studio
-   ```
-
-2. **Tạo môi trường ảo (Khuyên dùng):**
-   ```bash
-   python -m venv venv
-   venv\Scripts\activate
-   ```
-
-3. **Cài đặt các thư viện cần thiết:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Khởi chạy ứng dụng:**
-   ```bash
-   python gui.py
-   ```
-
----
-
-## ⚙️ Hướng dẫn Sử dụng nhanh trên Giao diện
-1. Kéo thả trực tiếp video hoặc danh sách video cần xử lý vào cửa sổ chính (Hỗ trợ kéo thả hàng loạt).
-2. Vẽ hoặc khoanh vùng phụ đề cần xóa trên khung xem trước.
-3. Nếu xử lý hàng loạt, click chuột phải vào danh sách nhiệm vụ và chọn **"Áp dụng vùng xóa sub cho tất cả nhiệm vụ"**.
-4. Truy cập **Cài đặt nâng cao** để gạt bật **Tự động tối ưu hóa GPU** và **Tăng tốc xuất video bằng GPU**.
-5. Nhấn **Bắt đầu (Start)** để chạy tiến trình.
-
----
-
-## 📄 Giấy phép & Bản quyền
-Dự án được phát triển và tối ưu hóa dựa trên mã nguồn mở. 
-Mọi thông tin phản hồi hoặc báo lỗi vui lòng gửi trực tiếp lên [Sakai Studio Issues](https://github.com/PVM-05/Sakai-Studio/issues).
+Hệ thống giao diện được thiết kế đơn giản, phân chia theo từng thẻ độc lập. Mỗi thẻ chỉ đảm nhận một chức năng duy nhất. Người vận hành chỉ cần tải dữ liệu đầu vào vào thẻ tương ứng, tinh chỉnh thông số kỹ thuật nếu cần thiết, và bắt đầu quá trình xử lý. Khi một tính năng tự động được bật, các công cụ điều chỉnh thủ công liên quan sẽ tự động vô hiệu hóa để tránh xung đột.

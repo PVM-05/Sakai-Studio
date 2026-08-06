@@ -47,8 +47,10 @@ class SubtitleDetect:
             from rapidocr import RapidOCR
             import onnxruntime as ort
             
-            # Tự động phát hiện xem CUDA có sẵn trong ONNX Runtime hay không
-            use_cuda = "CUDAExecutionProvider" in ort.get_available_providers()
+            # Kiểm tra các Execution Provider hiện có
+            available_providers = ort.get_available_providers()
+            use_cuda = "CUDAExecutionProvider" in available_providers
+            use_tensorrt = "TensorrtExecutionProvider" in available_providers
             
             # Cấu hình tối ưu: chỉ chạy det (phát hiện chữ), bỏ qua cls và rec để chạy nhanh nhất có thể
             params = {
@@ -56,7 +58,13 @@ class SubtitleDetect:
                 "Global.use_cls": False,
                 "Global.use_rec": False,
             }
-            if use_cuda:
+            if use_tensorrt:
+                params["EngineConfig.onnxruntime.use_tensorrt"] = True
+                # Fallback về CUDA nếu TensorRT có node không hỗ trợ
+                params["EngineConfig.onnxruntime.use_cuda"] = True
+                params["EngineConfig.onnxruntime.cuda_ep_cfg.device_id"] = 0
+                print("[SubtitleDetect] RapidOCR khoi tao voi tang toc TensorRT GPU")
+            elif use_cuda:
                 params["EngineConfig.onnxruntime.use_cuda"] = True
                 params["EngineConfig.onnxruntime.cuda_ep_cfg.device_id"] = 0
                 print("[SubtitleDetect] RapidOCR khoi tao voi tang toc CUDA GPU")
@@ -124,6 +132,54 @@ class SubtitleDetect:
             ))
         return coordinate_list
 
+    def _merge_close_boxes(self, boxes, x_thresh=50, y_thresh=15):
+        """
+        Gộp các bounding box nằm gần nhau (đặc biệt là trên cùng một dòng ngang).
+        Giải quyết triệt để lỗi các ký tự đặc biệt như 'npc._.arc' bị xé lẻ thành nhiều hộp.
+        boxes: danh sách (xmin, xmax, ymin, ymax)
+        """
+        if not boxes:
+            return []
+            
+        # Sắp xếp các box theo trục Y trước, sau đó trục X
+        boxes = sorted(boxes, key=lambda b: (b[2], b[0]))
+        
+        merged = []
+        for box in boxes:
+            xmin, xmax, ymin, ymax = box
+            merged_with_existing = False
+            
+            for i, mbox in enumerate(merged):
+                m_xmin, m_xmax, m_ymin, m_ymax = mbox
+                
+                # Kiểm tra xem có cùng trên một dòng không (Y overlap hoặc khoảng cách Y nhỏ)
+                y_overlap = max(0, min(ymax, m_ymax) - max(ymin, m_ymin))
+                is_same_line = y_overlap > 0 or abs(ymin - m_ymin) <= y_thresh
+                
+                # Khoảng cách giữa 2 hộp theo trục X
+                x_distance = max(0, max(xmin, m_xmin) - min(xmax, m_xmax)) 
+                if xmax < m_xmin:
+                    x_distance = m_xmin - xmax
+                elif xmin > m_xmax:
+                    x_distance = xmin - m_xmax
+                else:
+                    x_distance = 0
+                    
+                if is_same_line and x_distance <= x_thresh:
+                    # Gộp box
+                    new_xmin = min(xmin, m_xmin)
+                    new_xmax = max(xmax, m_xmax)
+                    new_ymin = min(ymin, m_ymin)
+                    new_ymax = max(ymax, m_ymax)
+                    merged[i] = (new_xmin, new_xmax, new_ymin, new_ymax)
+                    merged_with_existing = True
+                    break
+                    
+            if not merged_with_existing:
+                merged.append(box)
+                
+        return merged
+
     def detect_subtitle(self, img):
         sub_areas = self.sub_areas
         has_areas = sub_areas is not None and len(sub_areas) > 0
@@ -171,6 +227,9 @@ class SubtitleDetect:
             for xmin, xmax, ymin, ymax in coordinate_list:
                 shifted_list.append((xmin + xmin_crop, xmax + xmin_crop, ymin + ymin_crop, ymax + ymin_crop))
             coordinate_list = shifted_list
+            
+        # Gộp các mảnh vỡ OCR lại thành một khối liền mạch
+        coordinate_list = self._merge_close_boxes(coordinate_list)
 
         # --- Filter by subtitle area ---
         temp_list = []
@@ -305,12 +364,16 @@ class SubtitleDetect:
                 # 新增一个列表来存放匹配过的标准区间
                 new_unify_values = []
 
-                for idx, region in enumerate(current_regions):
-                    last_standard_region = unify_value_map[last_key][idx] if idx < len(unify_value_map[last_key]) else None
+                for region in current_regions:
+                    matched_std = None
+                    last_list = unify_value_map.get(last_key, [])
+                    for cand in last_list:
+                        if self.are_similar(region, cand):
+                            matched_std = cand
+                            break
 
-                    # 如果当前的区间与前一个键的对应区间相似，我们统一它们
-                    if last_standard_region and self.are_similar(region, last_standard_region):
-                        new_unify_values.append(last_standard_region)
+                    if matched_std:
+                        new_unify_values.append(matched_std)
                     else:
                         new_unify_values.append(region)
 
@@ -330,7 +393,11 @@ class SubtitleDetect:
         """
         获取字幕出现的起始帧号与结束帧号
         """
+        if not subtitle_frame_no_box_dict:
+            return []
         numbers = sorted(list(subtitle_frame_no_box_dict.keys()))
+        if not numbers:
+            return []
         ranges = []
         start = numbers[0]  # 初始区间开始值
 
@@ -347,7 +414,11 @@ class SubtitleDetect:
 
     @staticmethod
     def find_continuous_ranges_with_same_mask(subtitle_frame_no_box_dict):
+        if not subtitle_frame_no_box_dict:
+            return []
         numbers = sorted(list(subtitle_frame_no_box_dict.keys()))
+        if not numbers:
+            return []
         ranges = []
         start = numbers[0]  # 初始区间开始值
         for i in range(1, len(numbers)):

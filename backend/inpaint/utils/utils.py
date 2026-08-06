@@ -64,7 +64,7 @@ def get_clicked_point(img_path):
     keep_looping = True
 
     def mouse_callback(event, x, y, flags, param):
-        nonlocal last_point, keep_looping, img
+        nonlocal last_point, keep_looping
 
         if event == cv2.EVENT_LBUTTONDOWN:
             if last_point:

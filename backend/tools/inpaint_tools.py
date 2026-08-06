@@ -159,6 +159,8 @@ def get_inpaint_area_by_mask(W, H, h, mask, multiple=1):
     # 使用连通组件分析找出mask中的所有孤岛
     # 首先确保mask是二值图像
     binary_mask = (mask > 0).astype(np.uint8) * 255
+    if binary_mask.ndim == 3:
+        binary_mask = binary_mask.squeeze(-1)
     
     # 查找连通组件
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_mask, connectivity=8)
@@ -438,9 +440,15 @@ def blend_inpaint(original_crop: np.ndarray, inpainted_crop: np.ndarray, mask_cr
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
         bin_mask = cv2.dilate(bin_mask, kernel)
         
-        # Tâm của vùng crop là điểm đích để nhân bản
-        h, w = original_crop.shape[:2]
-        center = (w // 2, h // 2)
+        # Lấy bounding box của mask để tính toán tâm chính xác
+        x, y, w_mask, h_mask = cv2.boundingRect(bin_mask)
+        if w_mask == 0 or h_mask == 0:
+            return original_crop.copy()
+            
+        # Tâm của vùng cần clone phải là tâm của bounding box mask, 
+        # nếu dùng (w//2, h//2) OpenCV sẽ tự động dịch chuyển sai lệch vị trí
+        center = (x + w_mask // 2, y + h_mask // 2)
+        
         try:
             # Cờ cv2.NORMAL_CLONE giúp thay thế hoàn toàn gradient chữ bằng gradient của vùng inpaint
             blended = cv2.seamlessClone(

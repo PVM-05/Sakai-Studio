@@ -744,8 +744,16 @@ def probe_language(frame: np.ndarray,
                 "EngineConfig.onnxruntime.cuda_ep_cfg.device_id": 0,
             }
         try:
+            try:
+                from rapidocr_onnxruntime import RapidOCR
+            except ImportError:
+                from rapidocr import RapidOCR
             ocr = RapidOCR(params=params)
         except Exception:
+            try:
+                from rapidocr_onnxruntime import RapidOCR
+            except ImportError:
+                from rapidocr import RapidOCR
             ocr = RapidOCR()
         output = ocr(crop)
         results = output[0] if isinstance(output, tuple) and output else output

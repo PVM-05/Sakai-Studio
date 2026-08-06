@@ -89,23 +89,23 @@ def translate_ytdlp_error(err):
     err_lower = err_str.lower()
     
     if '403' in err_lower or 'forbidden' in err_lower or 'caller does not have permission' in err_lower:
-        return "Bị trang web/YouTube từ chối truy cập (HTTP 403 Forbidden). Vui lòng sử dụng file cookies.txt để xác thực tài khoản."
+        return "Bị trang web từ chối truy cập do lỗi quyền hạn (mã lỗi 403). Vui lòng sử dụng tệp cookies.txt để xác thực tài khoản."
     elif 'fresh cookies' in err_lower or ('douyin' in err_lower and 'cookies' in err_lower):
-        return "Douyin bảo mật cao yêu cầu cookies. Vui lòng chọn file cookies.txt của bạn (được xuất từ trình duyệt sau khi mở Douyin)."
+        return "Nguồn video yêu cầu xác thực bảo mật. Vui lòng chọn tệp cookies.txt của bạn để tiếp tục."
     elif 'private' in err_lower or 'sign in' in err_lower or 'age' in err_lower or 'login' in err_lower:
-        return "Video riêng tư hoặc bị giới hạn độ tuổi. Vui lòng chọn file cookies.txt của bạn để tiếp tục."
+        return "Video riêng tư hoặc bị giới hạn độ tuổi. Vui lòng chọn tệp cookies.txt của bạn để tiếp tục."
     elif '404' in err_lower or 'not found' in err_lower:
-        return "Không tìm thấy video (HTTP 404). Đường dẫn bị sai hoặc video đã bị xoá khỏi hệ thống."
+        return "Không tìm thấy video (mã lỗi 404). Đường dẫn bị sai hoặc video đã bị xoá khỏi hệ thống."
     elif 'incomplete yt initial data' in err_lower or 'giving up after' in err_lower:
-        return "Lỗi phản hồi cấu trúc dữ liệu từ YouTube. Vui lòng nhấn Phân tích lại hoặc thêm file cookies.txt."
+        return "Lỗi phản hồi cấu trúc dữ liệu từ máy chủ. Vui lòng nhấn Phân tích lại hoặc thêm tệp cookies.txt."
     elif 'unsupported url' in err_lower or 'is not a valid url' in err_lower:
-        return "Đường dẫn link không hợp lệ hoặc trang web này chưa được hỗ trợ."
+        return "Đường dẫn liên kết không hợp lệ hoặc trang web này chưa được hỗ trợ."
     elif 'no video formats found' in err_lower:
         return "Không tìm thấy luồng video/âm thanh sẵn có trên trang này."
     elif 'disk' in err_lower or 'space' in err_lower or 'full' in err_lower:
         return "Dung lượng ổ đĩa lưu trữ đã đầy. Vui lòng dọn dẹp hoặc chọn thư mục lưu khác."
     elif 'network' in err_lower or 'connection' in err_lower or 'timed out' in err_lower or 'unreachable' in err_lower:
-        return "Lỗi kết nối mạng (Timeout/Network Error). Vui lòng kiểm tra lại kết nối internet của bạn."
+        return "Lỗi kết nối mạng hoặc hết thời gian phản hồi. Vui lòng kiểm tra lại kết nối internet của bạn."
     else:
         lines = [line.strip() for line in err_str.strip().split('\n') if line.strip()]
         last_line = lines[-1] if lines else err_str
@@ -305,14 +305,29 @@ class YtdlpWorker(QThread):
                 if msg.strip():
                     self.sig.emit(f"ERROR: {msg}")
 
+        def get_unique_filename(save_dir, custom_name):
+            safe_name = re.sub(r'[\\/*?:"<>|]', '_', custom_name.strip())
+            candidate = safe_name
+            counter = 1
+            while True:
+                exists = any(os.path.exists(os.path.join(save_dir, candidate + ext)) for ext in ['', '.mp4', '.mkv', '.webm', '.avi', '.mp3', '.m4a', '.wav', '.flac', '.part', '.ytdl'])
+                if not exists:
+                    break
+                candidate = f"{safe_name} ({counter})"
+                counter += 1
+            return candidate
+
         if self.custom_filename and self.custom_filename.strip():
-            safe_name = re.sub(r'[\\/*?:"<>|]', '_', self.custom_filename.strip())
-            out_pattern = f"{safe_name}.%(ext)s"
+            final_name = get_unique_filename(self.save_dir, self.custom_filename.strip())
+            if final_name != self.custom_filename.strip():
+                self.log_sig.emit(f"⚠️ Tệp '{self.custom_filename.strip()}' đã tồn tại trong thư mục lưu. Đã tự động đổi tên thành: '{final_name}'")
+            out_pattern = f"{final_name}.%(ext)s"
         else:
             out_pattern = '%(title)s.%(ext)s'
 
         ydl_opts = {
             'outtmpl': os.path.join(self.save_dir, out_pattern),
+            'overwrites': True,
             'progress_hooks': [progress_hook],
             'logger': YtdlpLogger(self.log_sig),
             'noprogress': True,
@@ -1231,7 +1246,7 @@ class YtdlpInterface(ScrollArea):
                     'id': 'playlist_video',
                     'type': 'Video + Audio',
                     'raw_type': 'Video + Audio',
-                    'quality': 'Tải toàn bộ Playlist (Video)',
+                    'quality': 'Tải toàn bộ danh sách phát',
                     'ext': 'mp4',
                     'size': 'Tùy chọn',
                     'codec': 'Auto'

@@ -154,11 +154,20 @@ class FFmpegVideoWriter:
             '-loglevel', 'error',
             output_path
         ]
+        startupinfo = None
+        creationflags = 0
+        if os.name == 'nt':
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            creationflags = 0x08000000 # CREATE_NO_WINDOW
+
         self._process = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            startupinfo=startupinfo,
+            creationflags=creationflags
         )
 
     def write(self, frame):

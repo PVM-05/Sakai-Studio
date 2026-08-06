@@ -16,16 +16,16 @@ from qfluentwidgets import (ScrollArea, ExpandLayout, FluentIcon,
                            HyperlinkCard, PrimaryPushSettingCard, PushSettingCard,
                            ComboBoxSettingCard, SettingCard, MessageBox, Pivot,
                            SearchLineEdit)
-from backend.config import config, tr, VERSION, PROJECT_HOME_URL, PROJECT_ISSUES_URL, PROJECT_RELEASES_URL
+from backend.config import config, tr, VERSION, PROJECT_HOME_URL, PROJECT_ISSUES_URL, PROJECT_RELEASES_URL, HARDWARD_ACCELERATION_OPTION
 from backend.tools.folder_memory import FolderMemoryDialog
 from backend.tools.version_service import VersionService
 from backend.tools.concurrent import TaskExecutor
 
 class AdvancedSettingInterface(QWidget):
     """Giao diện Cài Đặt Nâng Cao chia sub-tab chuyên biệt với thanh tìm kiếm & các cải tiến trải nghiệm:
-    1. 🌐 Hệ Thống && Giao Diện
-    2. 🎬 Chỉnh Sửa Video && Xóa Phụ Đề
-    3. 📄 Tính Năng SRT && OCR
+    1. Hệ Thống && Giao Diện
+    2. Chỉnh Sửa Video && Xóa Phụ Đề
+    3. Tính Năng SRT && OCR
     """
     
     def __init__(self, parent=None):
@@ -133,7 +133,7 @@ class AdvancedSettingInterface(QWidget):
         self.preset_fast_card = PushSettingCard(
             text="Kích Hoạt",
             icon=FluentIcon.SPEED_HIGH,
-            title="⚡ Chế Độ Siêu Tốc (Fastest)",
+            title="Chế Độ Siêu Tốc",
             content="Tối ưu tốc độ xử lý nhanh nhất, tắt các bộ lọc làm mượt tiêu tốn thời gian",
             parent=self.preset_group
         )
@@ -143,7 +143,7 @@ class AdvancedSettingInterface(QWidget):
         self.preset_ultra_card = PushSettingCard(
             text="Kích Hoạt",
             icon=FluentIcon.BRUSH,
-            title="Chế Độ Chất Lượng Tối Đa (Ultra Quality)",
+            title="Chế Độ Chất Lượng Tối Đa",
             content="Bật đầy đủ Poisson Blending, Temporal Smoothing, Sharpen, Whisper AI & Bảo tồn màu sắc HDR",
             parent=self.preset_group
         )
@@ -153,7 +153,7 @@ class AdvancedSettingInterface(QWidget):
         self.preset_balanced_card = PushSettingCard(
             text="Kích Hoạt",
             icon=FluentIcon.SETTING,
-            title="⚖️ Chế Độ Cân Bằng (Balanced Default)",
+            title="Chế Độ Cân Bằng",
             content="Khôi phục về cấu hình cân bằng tối ưu giữa tốc độ và chất lượng ban đầu",
             parent=self.preset_group
         )
@@ -269,7 +269,7 @@ class AdvancedSettingInterface(QWidget):
         self.gpu_benchmark_card = PushSettingCard(
             text="Chạy Đo",
             icon=FluentIcon.SPEED_HIGH,
-            title="⚡ Đánh giá hiệu năng GPU (GPU Speed Benchmark)",
+            title="Đánh giá hiệu năng đồ họa",
             content="Kiểm tra tốc độ xử lý tính toán thực tế của Card màn hình và tính toán số FPS ước tính",
             parent=self.video_hardware_group
         )
@@ -298,8 +298,8 @@ class AdvancedSettingInterface(QWidget):
         self.preserve_color_card = SwitchSettingCard(
             configItem=config.preserveColorMetadata,
             icon=FluentIcon.PALETTE if hasattr(FluentIcon, 'PALETTE') else FluentIcon.BRUSH,
-            title="Bảo tồn chuẩn màu video gốc (HDR / Color Metadata)",
-            content="Giữ nguyên metadata dải màu sắc HDR và Color Profile của video gốc khi xuất",
+            title="Bảo tồn chuẩn màu sắc video gốc",
+            content="Giữ nguyên thông số màu sắc HDR và hồ sơ màu của video gốc khi xuất",
             parent=self.video_hardware_group
         )
         self.preserve_color_card.setToolTip("Giúp video sau khi xóa phụ đề giữ được màu sắc gốc, tránh hiện tượng bị nhạt màu hay sai profile màu trên thiết bị HDR.")
@@ -309,12 +309,12 @@ class AdvancedSettingInterface(QWidget):
         self.tracker_algorithm_combo = ComboBoxSettingCard(
             configItem=config.trackerAlgorithm,
             icon=FluentIcon.FINGERPRINT if hasattr(FluentIcon, 'FINGERPRINT') else FluentIcon.SEARCH,
-            title="Thuật toán Theo dõi Đối tượng (Object Tracking)",
-            content="Quyết định mức độ chính xác khi bám đuổi logo di chuyển (CSRT/KCF/MIL)",
+            title="Thuật toán Theo dõi Đối tượng",
+            content="Quyết định mức độ chính xác và thuật toán khi bám đuổi logo di chuyển",
             parent=self.subtitle_removal_group,
-            texts=["CSRT (Độ chính xác cao, Tốc độ chậm)", "KCF (Cân bằng, Tốc độ cực nhanh)", "MIL (Độ ổn định cao)"]
+            texts=["CSRT - Độ chính xác cao, Tốc độ chậm", "KCF - Cân bằng, Tốc độ cực nhanh", "MIL - Độ ổn định cao"]
         )
-        self.tracker_algorithm_combo.setToolTip("Chọn thuật toán Tracker cho tính năng Xóa Phụ Đề Di Chuyển. CSRT cho độ chính xác cao nhất với video chất lượng cao.")
+        self.tracker_algorithm_combo.setToolTip("Chọn thuật toán bám đuổi cho tính năng Xóa phụ đề di chuyển. Thuật toán CSRT mang lại độ chính xác cao nhất.")
 
 
         self.auto_tighten_card = SwitchSettingCard(
@@ -325,7 +325,7 @@ class AdvancedSettingInterface(QWidget):
             parent=self.subtitle_removal_group
         )
         self.auto_tighten_card.setToolTip("Khi bật tự động, hệ thống sẽ tự động ôm khít 100% nét chữ sau khi nhận diện. Tắt đi để tùy chỉnh thủ công.")
-        self.auto_tighten_card.switchButton.checkedChanged.connect(self.on_auto_tighten_changed)
+        config.autoTightenMask.valueChanged.connect(self.on_auto_tighten_changed)
 
         self.hardware_acceleration = SwitchSettingCard(
             configItem=config.hardwareAcceleration,
@@ -335,6 +335,9 @@ class AdvancedSettingInterface(QWidget):
             parent=self.subtitle_removal_group
         )
         self.hardware_acceleration.setToolTip("Bật hoặc Tắt tăng tốc đồ họa phần cứng GPU.")
+        if not HARDWARD_ACCELERATION_OPTION:
+            self.hardware_acceleration.setEnabled(False)
+            self.hardware_acceleration.setChecked(False)
 
         self.poisson_blending = SwitchSettingCard(
             configItem=config.poissonBlending,
@@ -348,7 +351,7 @@ class AdvancedSettingInterface(QWidget):
         self.temporal_smoothing = SwitchSettingCard(
             configItem=config.temporalSmoothing,
             icon=FluentIcon.MOVIE, 
-            title="Temporal Smoothing",
+            title="Lọc mượt thời gian",
             content="Khử nhấp nháy, rung hạt nền bằng bộ lọc thích ứng chuyển động",
             parent=self.subtitle_removal_group
         )
@@ -466,7 +469,7 @@ class AdvancedSettingInterface(QWidget):
         self.whisper_fallback_card = SwitchSettingCard(
             configItem=config.whisperFallback,
             icon=FluentIcon.MICROPHONE if hasattr(FluentIcon, 'MICROPHONE') else FluentIcon.MUSIC,
-            title="Bổ trợ nhận diện giọng nói Whisper AI (Speech Fallback)",
+            title="Bổ trợ nhận diện giọng nói Whisper AI",
             content="Sử dụng Whisper AI nhận diện tiếng nói để bổ sung cho các đoạn phụ đề mờ/nhiễu mà OCR bỏ sót",
             parent=self.srt_feature_group
         )
@@ -484,7 +487,7 @@ class AdvancedSettingInterface(QWidget):
         self.burn_translated_subtitles_card = SwitchSettingCard(
             configItem=config.burnTranslatedSubtitles,
             icon=FluentIcon.EDIT,
-            title="Chèn phụ đề đã dịch vào video (Burn Subtitles)",
+            title="Chèn phụ đề đã dịch vào video",
             content="In đè phụ đề đã dịch trực tiếp lên video thành phẩm sau khi xóa phụ đề cũ",
             parent=self.srt_feature_group
         )
@@ -637,13 +640,14 @@ class AdvancedSettingInterface(QWidget):
     def apply_preset(self, preset_name: str):
         """Áp dụng cấu hình nhanh 1-click theo nhu cầu"""
         if preset_name == "fast":
+            config.set(config.autoTightenMask, False)
             config.set(config.poissonBlending, False)
             config.set(config.temporalSmoothing, False)
             config.set(config.sharpenInpaintedArea, False)
             config.set(config.hardwareAcceleration, True)
             config.set(config.gpuVideoEncoding, True)
             config.set(config.autoHardwareTuning, True)
-            msg = "⚡ Đã kích hoạt Chế Độ Siêu Tốc (Fastest Speed)! Các bộ lọc làm mượt nâng cao được tạm tắt để tối đa hóa tốc độ xuất video."
+            msg = "Đã kích hoạt Chế Độ Siêu Tốc! Các bộ lọc làm mượt nâng cao được tạm tắt để tối đa hóa tốc độ xuất video."
         elif preset_name == "ultra":
             config.set(config.poissonBlending, True)
             config.set(config.temporalSmoothing, True)
@@ -655,7 +659,7 @@ class AdvancedSettingInterface(QWidget):
                 config.set(config.whisperFallback, True)
             if hasattr(config, 'preserveColorMetadata'):
                 config.set(config.preserveColorMetadata, True)
-            msg = "💎 Đã kích hoạt Chế Độ Chất Lượng Tối Đa (Ultra Quality)! Bật đầy đủ Poisson Blending, khử nhấp nháy, Whisper AI và bảo tồn màu sắc HDR."
+            msg = "Đã kích hoạt Chế Độ Chất Lượng Tối Đa! Bật đầy đủ Poisson Blending, khử nhấp nháy, Whisper AI và bảo tồn màu sắc HDR."
         elif preset_name == "balanced":
             config.set(config.autoTightenMask, True)
             config.set(config.hardwareAcceleration, True)
@@ -664,7 +668,7 @@ class AdvancedSettingInterface(QWidget):
             config.set(config.sharpenInpaintedArea, True)
             config.set(config.autoHardwareTuning, True)
             config.set(config.gpuVideoEncoding, True)
-            msg = "⚖️ Đã khôi phục về Chế Độ Cân Bằng (Balanced Default)."
+            msg = "Đã khôi phục về Chế Độ Cân Bằng."
         else:
             return
 
@@ -675,7 +679,7 @@ class AdvancedSettingInterface(QWidget):
         """Chạy đo hiệu năng GPU thực tế"""
         import torch
         if not torch.cuda.is_available():
-            self.show_message_box("Thông tin GPU", "Hệ thống hiện tại đang ở chế độ CPU Only. GPU Benchmark yêu cầu Card đồ họa NVIDIA CUDA.")
+            self.show_message_box("Thông tin GPU", "Hệ thống hiện tại đang ở chế độ chỉ dùng CPU. Tính năng đo hiệu năng yêu cầu Card đồ họa NVIDIA CUDA.")
             return
         try:
             device = torch.device("cuda:0")
@@ -691,7 +695,7 @@ class AdvancedSettingInterface(QWidget):
             elapsed = time.perf_counter() - start_t
             
             fps_est = int(180 / elapsed) if elapsed > 0 else 60
-            msg = (f"🏎️ Kết Quả Đo Hiệu Năng GPU Benchmark:\n\n"
+            msg = (f"Kết Quả Đo Hiệu Năng GPU:\n\n"
                    f"- Card màn hình: {gpu_name}\n"
                    f"- Tổng dung lượng VRAM: {total_vram:.2f} GB\n"
                    f"- Thời gian thực thi 60 phép tính ma trận: {elapsed*1000:.1f} ms\n"

@@ -267,14 +267,34 @@ class VideoOcrEngine:
     # =========================================================================
 
     def _load_ocr_engine(self):
-        """Load RapidOCR engine với fallback."""
+        """Load RapidOCR engine với TensorRT/CUDA acceleration."""
         try:
-            from rapidocr_onnxruntime import RapidOCR
-            return RapidOCR()
+            import onnxruntime as ort
+            available_providers = ort.get_available_providers()
+            use_cuda = "CUDAExecutionProvider" in available_providers
+            use_tensorrt = "TensorrtExecutionProvider" in available_providers
+            
+            # Khác với subtitle_detect (chỉ detect), Main OCR cần full tính năng (det, cls, rec)
+            params = {}
+            if use_tensorrt:
+                params["EngineConfig.onnxruntime.use_tensorrt"] = True
+                params["EngineConfig.onnxruntime.use_cuda"] = True
+                params["EngineConfig.onnxruntime.cuda_ep_cfg.device_id"] = 0
+                logger.info("Main OCR khởi tạo với tăng tốc TensorRT")
+            elif use_cuda:
+                params["EngineConfig.onnxruntime.use_cuda"] = True
+                params["EngineConfig.onnxruntime.cuda_ep_cfg.device_id"] = 0
+                logger.info("Main OCR khởi tạo với tăng tốc CUDA")
+        except ImportError:
+            params = {}
+            
+        try:
+            from rapidocr import RapidOCR
+            return RapidOCR(params=params) if params else RapidOCR()
         except ImportError:
             try:
-                from rapidocr import RapidOCR
-                return RapidOCR()
+                from rapidocr_onnxruntime import RapidOCR
+                return RapidOCR(**params) if params else RapidOCR()
             except ImportError:
                 logger.warning("RapidOCR không khả dụng. OCR sẽ bị bỏ qua.")
                 return None
@@ -389,7 +409,25 @@ class VideoOcrEngine:
         """Tính độ tương đồng giữa 2 chuỗi text."""
         if not s1 or not s2:
             return 0.0
-        return SequenceMatcher(None, s1, s2).ratio()
+        if s1 == s2:
+            return 1.0
+            
+        # 1. Sử dụng Levenshtein distance nếu có sẵn, ngược lại dùng SequenceMatcher
+        try:
+            import Levenshtein
+            dist = Levenshtein.distance(s1, s2)
+            max_len = max(len(s1), len(s2))
+            ratio = 1.0 - (dist / max_len) if max_len > 0 else 0.0
+        except ImportError:
+            ratio = SequenceMatcher(None, s1, s2).ratio()
+            
+        # 2. Tăng điểm (boost) nếu một chuỗi nằm hoàn toàn trong chuỗi kia
+        # Hữu ích khi OCR bị sót 1-2 từ ở đầu/cuối khung hình.
+        if len(s1) > 3 and len(s2) > 3:
+            if s1 in s2 or s2 in s1:
+                ratio = max(ratio, 0.85)
+                
+        return ratio
 
     # =========================================================================
     # PRIVATE: Whisper AI Fallback

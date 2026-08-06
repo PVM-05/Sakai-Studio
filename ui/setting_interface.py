@@ -1,7 +1,7 @@
 import os
 import json
 from pathlib import Path
-from PySide6 import QtWidgets
+from PySide6 import QtWidgets, QtCore
 from qfluentwidgets import (FluentWindow, PushButton, Slider, ProgressBar, PlainTextEdit,
                           setTheme, Theme, FluentIcon, CardWidget, SettingCardGroup,
                           ComboBoxSettingCard, SwitchSettingCard, RangeSettingCard,
@@ -96,26 +96,26 @@ class SettingInterface(QtWidgets.QVBoxLayout):
             parent=parent
         )
         self.auto_detect_switch.setToolTip(
-            "Chế độ Tự động (ON): Khi chạy video, AI sẽ tự động phát hiện và xóa phụ đề trên từng khung hình.\n"
-            "Chế độ Thủ công (OFF): Xóa theo các ô chữ cố định (bạn vẫn có thể dùng nút 'Quét AI 1 frame' bên dưới để tự động khoanh vùng thử)."
+            "Chế độ Tự động: Khi chạy video, AI sẽ tự động phát hiện và xóa phụ đề trên từng khung hình.\n"
+            "Chế độ Thủ công: Xóa theo các ô chữ cố định (bạn vẫn có thể dùng nút 'Quét AI 1 frame' bên dưới để tự động khoanh vùng thử)."
         )
         self.addWidget(self.auto_detect_switch)
 
-        # 4.5.2. Công tắc Xóa phụ đề di chuyển (Moving Subtitle Tracking)
+        # 4.5.2. Nút bấm Xóa phụ đề di chuyển (Interactive Tracking)
         run_icon = FluentIcon.RUN if hasattr(FluentIcon, 'RUN') else FluentIcon.VIDEO
-        self.moving_subtitle_switch = SwitchSettingCard(
+        self.moving_subtitle_card = PrimaryPushSettingCard(
+            text="Nhận Diện",
             icon=run_icon,
             title="Xóa phụ đề di chuyển",
             content="Bám đuổi và xóa phụ đề động, cuộn chữ hoặc logo di chuyển theo thời gian",
-            configItem=config.movingSubtitleTracking,
             parent=parent
         )
-        self.moving_subtitle_switch.setToolTip(
-            "Bật tính năng Bám đuổi phụ đề động:\n"
-            "- Khi video có phụ đề chạy chữ (scrolling subtitle), karaoke nhấp nháy, hoặc logo di chuyển.\n"
-            "- AI sẽ tự động tính toán vị trí di chuyển của phụ đề qua từng khung hình để bám sát và xóa sạch 100%."
+        self.moving_subtitle_card.setToolTip(
+            "Tính năng Bám đuổi phụ đề động:\n"
+            "- Khoanh vùng logo ở khung hình 1 rồi bấm 'Nhận Diện'.\n"
+            "- AI sẽ tự động bám sát vị trí di chuyển qua từng khung hình."
         )
-        self.addWidget(self.moving_subtitle_switch)
+        self.addWidget(self.moving_subtitle_card)
 
         # 4.6. Bộ công cụ cọ vẽ & Xem trước Red Mask
         from PySide6.QtCore import Qt
@@ -143,7 +143,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
         # Nút Red Mask
         red_icon = FluentIcon.VIEW if hasattr(FluentIcon, 'VIEW') else FluentIcon.SEARCH
         self.red_mask_btn = TransparentToolButton(red_icon, self.mask_tools_card)
-        self.red_mask_btn.setToolTip("Bật / Tắt xem trước Lớp Phủ Đỏ (Red Mask)")
+        self.red_mask_btn.setToolTip("Bật / Tắt xem trước Lớp Phủ Đỏ")
         self.red_mask_btn.setCursor(Qt.PointingHandCursor)
 
         # Nút Xóa cọ
@@ -161,15 +161,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
 
 
 
-        # 5. GPU / VRAM Info Card
-        self.gpu_info_card = SettingCard(
-            icon=FluentIcon.INFO,
-            title="Thiết bị: Đang quét...",
-            content="Đang tối ưu hóa cấu hình hiệu năng...",
-            parent=parent
-        )
-        self.gpu_info_card.setToolTip("Hiển thị thông tin tên GPU đồ họa, dung lượng VRAM thực tế và hạn mức số khung hình được phân bổ tối đa cho việc xử lý đồng thời.")
-        self.addWidget(self.gpu_info_card)
+
 
         # 7. Thẻ Mở Cài Đặt Nâng Cao
         self.open_advanced_card = PushSettingCard(
@@ -182,11 +174,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
         self.open_advanced_card.clicked.connect(self._on_open_advanced_settings)
         self.addWidget(self.open_advanced_card)
 
-        # Listen to config changes to dynamically update GPU / VRAM card info
-        config.autoHardwareTuning.valueChanged.connect(self.update_gpu_info)
-        config.propainterMaxLoadNum.valueChanged.connect(self.update_gpu_info)
-        config.sttnMaxLoadNum.valueChanged.connect(self.update_gpu_info)
-        self.update_gpu_info()
+
 
         # Listen to Auto-Tighten changes to disable Mask Type if ON
         if hasattr(config, 'autoTightenMask'):
@@ -303,7 +291,8 @@ class SettingInterface(QtWidgets.QVBoxLayout):
         # Cảnh báo VRAM nếu chạy Tracking + ProPainter trên máy yếu
         is_moving_tracking = getattr(config, 'movingSubtitleTracking', None) and config.movingSubtitleTracking.value
         inpaint_mode = getattr(config, 'inpaintMode', None) and config.inpaintMode.value
-        if torch.cuda.is_available() and is_moving_tracking and inpaint_mode == "propainter":
+        mode_val = getattr(inpaint_mode, 'value', inpaint_mode)
+        if torch.cuda.is_available() and is_moving_tracking and mode_val == "propainter":
             try:
                 device_idx = torch.cuda.current_device()
                 total_vram = torch.cuda.get_device_properties(device_idx).total_memory / (1024 ** 3)
@@ -311,7 +300,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
                     from qfluentwidgets import InfoBar, InfoBarPosition
                     InfoBar.warning(
                         title="Cảnh báo VRAM",
-                        content="Bạn đang bật tính năng Xóa phụ đề di chuyển cùng với ProPainter. Máy bạn có VRAM dưới 6GB, có thể gây tràn bộ nhớ (OOM). Vui lòng cân nhắc tắt tính năng hoặc giảm MaxLoadNum.",
+                        content="Bạn đang bật tính năng Xóa phụ đề di chuyển cùng với ProPainter. Máy bạn có VRAM dưới 6GB, có thể gây tràn bộ nhớ. Vui lòng cân nhắc tắt tính năng hoặc giảm MaxLoadNum.",
                         orient=QtCore.Qt.Horizontal,
                         isClosable=True,
                         position=InfoBarPosition.TOP,
@@ -354,6 +343,19 @@ class SettingInterface(QtWidgets.QVBoxLayout):
         self.mask_type_combo.comboBox.setCurrentIndex(current_mask_idx)
         self.mask_type_combo.comboBox.blockSignals(False)
         self.mask_type_combo.setToolTip(tr["Setting"].get("MaskTypeTooltip", "Mask type tooltip"))
+        
+        # Cập nhật combo OCR Language
+        if hasattr(self, 'ocr_language_combo'):
+            self.ocr_language_combo.setTitle(tr["Setting"].get("OcrLanguageTitle", "Ngôn ngữ phụ đề OCR"))
+            self.ocr_language_combo.setContent(tr["Setting"].get("OcrLanguageDesc", "Tự động phát hiện hoặc chọn ngôn ngữ để AI quét OCR nhận diện chính xác nhất"))
+            self.ocr_language_combo.setToolTip(tr["Setting"].get("OcrLanguageTooltip", "Chọn ngôn ngữ OCR"))
+            if hasattr(self.ocr_language_combo, 'comboBox') and hasattr(config, 'ocrLanguage'):
+                self.ocr_language_combo.comboBox.blockSignals(True)
+                current_ocr_idx = self.ocr_language_combo.comboBox.currentIndex()
+                self.ocr_language_combo.comboBox.clear()
+                self.ocr_language_combo.comboBox.addItems([list(tr['OcrLanguage'].values())[i] for i, _ in enumerate(config.ocrLanguage.validator.options)])
+                self.ocr_language_combo.comboBox.setCurrentIndex(current_ocr_idx)
+                self.ocr_language_combo.comboBox.blockSignals(False)
         
         self.gpu_info_card.setToolTip(tr["Setting"].get("GpuInfoTooltip", "GPU information"))
         self.update_gpu_info()

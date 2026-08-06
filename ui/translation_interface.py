@@ -95,7 +95,7 @@ PROVIDERS_INFO = {
     "MarianMT": {
         "label": "MarianMT",
         "base_url": "local",
-        "models": ["Tự động chọn theo Ngôn Ngữ Nguồn (Anh/Trung -> Việt)"],
+        "models": ["Tự động chọn theo ngôn ngữ nguồn sang tiếng Việt"],
         "key_prefix": [],
         "is_local": True,
     },
@@ -762,7 +762,7 @@ class TranslationInterface(QWidget):
         p_info = PROVIDERS_INFO.get(p_key, {})
         is_local = p_info.get("is_local", False)
 
-        if p_key in ("MarianMT", "Local NMT GPU (Offline)"):
+        if p_key in ("MarianMT", "Local NMT GPU Ngoại tuyến"):
             engine_type = "local_nmt"
         elif p_key == "GGUF Model":
             engine_type = "gguf"
