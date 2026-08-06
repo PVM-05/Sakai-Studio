@@ -65,6 +65,28 @@ Hệ thống được chia thành bốn phân hệ độc lập, mỗi phân h�
    python gui.py
    ```
 
+### Hướng dẫn cài đặt nâng cao cho hệ thống trí tuệ nhân tạo
+
+**1. Cài đặt khung làm việc học máy với bộ xử lý đồ họa:**
+Để tận dụng tối đa sức mạnh phần cứng, người dùng cần cài đặt các phiên bản tương thích với kiến trúc tính toán song song của thẻ đồ họa thay vì cài đặt bản tiêu chuẩn.
+- Đối với thẻ đồ họa kiến trúc thông dụng (từ dòng 20 đến dòng 40):
+  ```cmd
+  pip install torch>=2.10.0 torchvision>=0.25.0 --index-url https://download.pytorch.org/whl/cu128
+  pip install paddlepaddle-gpu==3.0.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu118/
+  pip install onnxruntime-gpu>=1.21.0
+  ```
+- Đối với thẻ đồ họa kiến trúc thế hệ mới (dòng 50 trở lên):
+  ```cmd
+  pip install torch>=2.10.0 torchvision>=0.25.0 --index-url https://download.pytorch.org/whl/cu128
+  pip install paddlepaddle-gpu==3.0.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
+  pip install onnxruntime-gpu>=1.21.0
+  ```
+
+**2. Quản lý mô hình phân tích dung lượng lớn:**
+Các tệp mô hình học máy và ngôn ngữ lớn thường không được đính kèm cùng mã nguồn do giới hạn dung lượng. Người dùng cần tự tải và thiết lập như sau:
+- **Mô hình xóa chữ:** Tải tệp mô hình định dạng ONNX (mô hình tái tạo hình ảnh cục bộ) và đặt trực tiếp vào thư mục lưu trữ mô hình của hệ thống (thư mục này tự động hình thành sau lần khởi chạy đầu tiên).
+- **Mô hình ngôn ngữ tự nhiên:** Để sử dụng các tính năng ngôn ngữ ngoại tuyến chuyên sâu, hãy tải các tệp định dạng đóng gói chuẩn (như định dạng GGUF) về lưu trữ trên máy tính cục bộ. Sau đó, sao chép đường dẫn tuyệt đối của tệp và dán vào phần đường dẫn trong thẻ Cài đặt nâng cao để hệ thống kích hoạt.
+
 ## Hướng dẫn vận hành hệ thống
 
 Giao diện của hệ thống được thiết kế theo dạng thẻ, mỗi thẻ độc lập và quản lý một tính năng duy nhất. Trình tự vận hành cơ bản như sau:
