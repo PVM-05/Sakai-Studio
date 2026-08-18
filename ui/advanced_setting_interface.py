@@ -456,7 +456,7 @@ class AdvancedSettingInterface(QWidget):
         # ==========================================
         # TAB 3: TÍNH NĂNG SRT && NHẬN DIỆN PHỤ ĐỀ
         # ==========================================
-        self.srt_feature_group = SettingCardGroup("Quản Lý && Dịch File Phụ Đề SRT", self.srtScrollWidget.widget())
+        self.srt_feature_group = SettingCardGroup("Bước 4: Trích xuất và Dịch thuật Phụ đề (Tùy chọn)", self.srtScrollWidget.widget())
 
         self.export_srt_card = SwitchSettingCard(
             configItem=config.exportSrt,
@@ -524,7 +524,7 @@ class AdvancedSettingInterface(QWidget):
         self.burn_translated_subtitles_card.setToolTip("Hệ thống sẽ render trực tiếp dòng chữ phụ đề đã dịch mới lên video.")
 
         # Subtitle OCR detection parameters group
-        self.subtitle_detection_group = SettingCardGroup(tr["Setting"]["SubtitleDetectionSetting"], self.srtScrollWidget.widget())
+        self.subtitle_detection_group = SettingCardGroup("Thông số kỹ thuật nhận diện chữ (Nâng cao)", self.srtScrollWidget.widget())
 
         self.subtitle_yx_axis_difference_pixel = RangeSettingCard(
             configItem=config.subtitleYXAxisDifferencePixel,
