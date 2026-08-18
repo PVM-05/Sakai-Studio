@@ -26,7 +26,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
             except: return 0
             
         def create_label(text):
-            label = BodyLabel(text)
+            label = BodyLabel(text, parent)
             label.setMinimumHeight(26)
             return label
 
