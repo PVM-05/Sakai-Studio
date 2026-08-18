@@ -18,7 +18,7 @@ from ui.component.video_display_component import VideoDisplayComponent
 from ui.component.task_list_component import TaskListComponent, TaskStatus, TaskOptions
 from ui.icon.my_fluent_icon import MyFluentIcon
 from backend.config import config, tr
-from backend.tools.constant import InpaintMode
+from backend.tools.constant import InpaintMode, SubtitleDetectMode
 from backend.tools.subtitle_remover_remote_call import SubtitleRemoverRemoteCall
 from backend.tools.process_manager import ProcessManager
 from backend.tools.common_tools import get_readable_path, is_image_file, read_image
@@ -135,12 +135,13 @@ class HomeInterface(QWidget):
         # 连接滚动条值变化信号
         self.output_text.verticalScrollBar().valueChanged.connect(self.on_scroll_change)
         
-        output_container = CardWidget(self)
-        output_layout = QVBoxLayout()
-        output_layout.setContentsMargins(0, 0, 0, 0)
-        output_layout.addWidget(self.output_text)
-        output_container.setLayout(output_layout)
-        left_layout.addWidget(output_container)
+        # Hộp chứa log đã được gỡ bỏ theo yêu cầu
+        # output_container = CardWidget(self)
+        # output_layout = QVBoxLayout()
+        # output_layout.setContentsMargins(0, 0, 0, 0)
+        # output_layout.addWidget(self.output_text)
+        # output_container.setLayout(output_layout)
+        # left_layout.addWidget(output_container)
 
         main_layout.addLayout(left_layout, 2)
 
@@ -152,7 +153,13 @@ class HomeInterface(QWidget):
         settings_container = CardWidget(self)
         self.setting_interface = SettingInterface(settings_container)
         settings_container.setLayout(self.setting_interface)
-        right_layout.addWidget(settings_container)
+        
+        # Bọc SettingInterface vào ScrollArea để tránh vỡ UI khi màn hình nhỏ
+        scroll_area = ScrollArea(self)
+        scroll_area.setWidget(settings_container)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet("QScrollArea { background-color: transparent; border: none; }")
+        right_layout.addWidget(scroll_area)
         
         # Kết nối các công cụ từ SettingInterface (bên phải) sang VideoDisplayComponent
         if hasattr(self.setting_interface, 'auto_detect_frame_btn'):
@@ -464,7 +471,7 @@ class HomeInterface(QWidget):
                 self.task_list_component.update_task_option(get_current_task_index, 'tracked_sub_list', {})
             config.set(config.movingSubtitleTracking, False)
             if hasattr(self.setting_interface, 'moving_subtitle_card'):
-                self.setting_interface.moving_subtitle_card.button.setText("Nhận Diện Logo")
+                self.setting_interface.moving_subtitle_card.setText("Nhận Diện Logo")
             
             # Trả lại box rỗng hoặc cũ
             self.update_preview(self.current_frame)
@@ -506,8 +513,8 @@ class HomeInterface(QWidget):
             return
 
         if hasattr(self.setting_interface, 'moving_subtitle_card'):
-            self.setting_interface.moving_subtitle_card.button.setEnabled(False)
-            self.setting_interface.moving_subtitle_card.button.setText("Đang theo dõi...")
+            self.setting_interface.moving_subtitle_card.setEnabled(False)
+            self.setting_interface.moving_subtitle_card.setText("Đang theo dõi...")
 
         InfoBar.info(
             title="Đang nhận diện chuyển động logo",
@@ -541,8 +548,8 @@ class HomeInterface(QWidget):
             if hasattr(self.video_display_component, 'set_tracked_dict'):
                 self.video_display_component.set_tracked_dict(tracked_dict)
             if hasattr(self.setting_interface, 'moving_subtitle_card'):
-                self.setting_interface.moving_subtitle_card.button.setEnabled(True)
-                self.setting_interface.moving_subtitle_card.button.setText("Đã Nhận Diện (Hủy)")
+                self.setting_interface.moving_subtitle_card.setEnabled(True)
+                self.setting_interface.moving_subtitle_card.setText("Đã Nhận Diện (Hủy)")
 
             self._tracked_sub_list = tracked_dict
             config.set(config.movingSubtitleTracking, True)
@@ -561,8 +568,8 @@ class HomeInterface(QWidget):
             self._is_tracked = False
             config.set(config.movingSubtitleTracking, False)
             if hasattr(self.setting_interface, 'moving_subtitle_card'):
-                self.setting_interface.moving_subtitle_card.button.setEnabled(True)
-                self.setting_interface.moving_subtitle_card.button.setText("Nhận Diện Logo")
+                self.setting_interface.moving_subtitle_card.setEnabled(True)
+                self.setting_interface.moving_subtitle_card.setText("Nhận Diện Logo")
             
             InfoBar.error(
                 title="Không nhận diện được chuyển động",
@@ -680,14 +687,46 @@ class HomeInterface(QWidget):
                     frame = self.current_frame.copy()
                 
                 h, w = frame.shape[:2]
-                from rapidocr_onnxruntime import RapidOCR
                 import re
+                
+                result = None
+                # Thử dùng RapidOCR trước (nếu người dùng không ép dùng SERVER mode)
+                mode = config.subtitleDetectMode.value
+                if mode != SubtitleDetectMode.PP_OCRv5_SERVER:
+                    try:
+                        from rapidocr_onnxruntime import RapidOCR
+                        engine = RapidOCR()
+                        result, _ = engine(frame)
+                    except Exception as e:
+                        print(f"[AutoDetectText] RapidOCR failed: {e}. Falling back to PaddleOCR.")
+                        result = None
+                
+                # Nếu RapidOCR lỗi hoặc người dùng chọn SERVER mode -> Dùng PaddleOCR
+                if result is None:
+                    try:
+                        from paddleocr import PaddleOCR
+                        from backend.tools.model_config import ModelConfig
+                        model_config = ModelConfig()
+                        paddle_engine = PaddleOCR(
+                            det_model_dir=model_config.DET_MODEL_DIR,
+                            rec_model_dir=model_config.REC_MODEL_DIR,
+                            use_angle_cls=False,
+                            lang="ch",
+                            use_gpu=False,
+                            show_log=False
+                        )
+                        paddle_result = paddle_engine.ocr(frame, cls=False)
+                        
+                        # Chuyển đổi định dạng PaddleOCR sang dạng (dt_box, text, score) giống RapidOCR
+                        result = []
+                        if paddle_result and paddle_result[0]:
+                            for line in paddle_result[0]:
+                                box, (text, score) = line
+                                result.append((box, text, score))
+                    except Exception as e:
+                        print(f"[AutoDetectText] PaddleOCR failed: {e}")
+                        result = []
 
-                if selected_lang and selected_lang != 'auto':
-                    engine = RapidOCR()
-                else:
-                    engine = RapidOCR()
-                result, _ = engine(frame)
                 if result:
                     for dt_box, text, score in result:
                         clean_text = text.strip() if text else ""
@@ -830,13 +869,13 @@ class HomeInterface(QWidget):
             self._tracked_sub_list = {int(k): v for k, v in tracked_list.items()}
             config.set(config.movingSubtitleTracking, True)
             if hasattr(self.setting_interface, 'moving_subtitle_card'):
-                self.setting_interface.moving_subtitle_card.button.setText("Đã Nhận Diện (Hủy)")
+                self.setting_interface.moving_subtitle_card.setText("Đã Nhận Diện (Hủy)")
         else:
             self._is_tracked = False
             self._tracked_sub_list = {}
             config.set(config.movingSubtitleTracking, False)
             if hasattr(self.setting_interface, 'moving_subtitle_card'):
-                self.setting_interface.moving_subtitle_card.button.setText("Nhận Diện Logo")
+                self.setting_interface.moving_subtitle_card.setText("Nhận Diện Logo")
     
     def on_task_deleted(self, index):
         """处理任务被删除事件
@@ -954,6 +993,11 @@ class HomeInterface(QWidget):
             self.pause_resume_button.setVisible(not show_run)
         if hasattr(self, 'video_display_component'):
             self.video_display_component.set_controls_enabled(show_run)
+            
+        # Cải tiến: Khóa/Mở khóa toàn bộ thẻ cấu hình bên dưới khi hệ thống đang chạy
+        if hasattr(self, 'setting_interface'):
+            self.setting_interface.setEnabled(show_run)
+            
         if show_run:
             self.is_queue_paused = False
             if hasattr(self, 'pause_resume_button'):
@@ -1152,7 +1196,7 @@ class HomeInterface(QWidget):
         """
         sr = None
         try:
-            from backend.main import SubtitleRemover
+            from backend.main import GUISubtitleRemover
             from backend.interface.worker_interface import ProcessCallback
 
             class RemoteCallback(ProcessCallback):
@@ -1167,7 +1211,7 @@ class HomeInterface(QWidget):
                 def update_preview(self, *args):
                     SubtitleRemoverRemoteCall.remote_call_update_preview_with_comp(queue, list(args))
 
-            sr = SubtitleRemover(video_path, True, callback=RemoteCallback())
+            sr = GUISubtitleRemover(video_path, True, callback=RemoteCallback())
             sr.video_out_path = output_path
             for key in options:
                 setattr(sr, key, options[key])

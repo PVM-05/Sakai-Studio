@@ -7,7 +7,9 @@ from qfluentwidgets import (FluentWindow, PushButton, Slider, ProgressBar, Plain
                           ComboBoxSettingCard, SwitchSettingCard, RangeSettingCard,
                           PushSettingCard, PrimaryPushSettingCard, OptionsSettingCard,
                           FolderListSettingCard, HyperlinkCard, ColorSettingCard, 
-                          CustomColorSettingCard, SettingCard)
+                          CustomColorSettingCard, SettingCard, ComboBox, SwitchButton, 
+                          BodyLabel, SubtitleLabel, CaptionLabel, TransparentToolButton)
+from PySide6.QtCore import Qt
 from backend.config import config, tr, HARDWARD_ACCELERATION_OPTION
 from backend.tools.constant import InpaintMode, SubtitleDetectMode
 
@@ -15,192 +17,236 @@ class SettingInterface(QtWidgets.QVBoxLayout):
 
     def __init__(self, parent):
         super().__init__()
-        self.setContentsMargins(16, 16, 16, 16)
+        self.setContentsMargins(0, 0, 0, 0)
+        self.setSpacing(12)
         
-        # 1. Xóa phần cấu hình ngôn ngữ ở đây vì đã được chuyển vào cài đặt nâng cao (Hệ thống)
-        # 2. 处理模式设置 (Mô hình AI xóa chữ)
-        self.inpaint_mode_combo = ComboBoxSettingCard(
-            configItem=config.inpaintMode,
-            icon=FluentIcon.GLOBE,
-            title=tr["SubtitleExtractorGUI"]["InpaintMode"],
-            content="",
-            parent=parent,
-            texts=[list(tr['InpaintMode'].values())[i] for i,_ in enumerate(config.inpaintMode.validator.options)],
-        )
-        self.inpaint_mode_combo.setToolTip(
-            "Chọn mô hình trí tuệ nhân tạo để xóa phụ đề:\n"
-            "- LaMa: Mô hình tốt nhất cho ảnh tĩnh, hoạt động rất nhanh.\n"
-            "- STTN: Mô hình video trung cấp, đảm bảo tính liên kết thời gian tốt.\n"
-            "- ProPainter: Mô hình video cao cấp nhất, khử nhấp nháy vượt trội.\n"
-            "- OpenCV: Sử dụng thuật toán xử lý ảnh truyền thống, tốc độ cực nhanh nhưng chất lượng cơ bản."
-        )
-        self.inpaint_mode_combo.comboBox.currentIndexChanged.connect(self._on_inpaint_mode_changed)
-        self.addWidget(self.inpaint_mode_combo)
+        # Helper to safely map config values to combo index
+        def get_idx(val, options):
+            try: return list(options).index(val)
+            except: return 0
+            
+        def create_label(text):
+            label = BodyLabel(text)
+            label.setMinimumHeight(26)
+            return label
 
-        # 3. Mô hình OCR phát hiện phụ đề
-        self.subtitle_detect_model_combo = ComboBoxSettingCard(
-            configItem=config.subtitleDetectMode,
-            icon=FluentIcon.SEARCH,
-            title=tr["SubtitleExtractorGUI"]["SubtitleDetectMode"],
-            content="",
-            parent=parent,
-            texts=[list(tr['SubtitleDetectMode'].values())[i] for i,_ in enumerate(config.subtitleDetectMode.validator.options)],
-        )
-        self.subtitle_detect_model_combo.setToolTip(
-            "Chọn mô hình OCR phát hiện phụ đề:\n"
-            "- Server: Mô hình PP-OCRv5 Server có độ chính xác rất cao, khuyên dùng.\n"
-            "- Mobile: Mô hình PP-OCRv5 Mobile dung lượng nhẹ, tốc độ nhanh hơn nhưng dễ bị sót chữ hơn."
-        )
-        self.addWidget(self.subtitle_detect_model_combo)
+        # ==========================================
+        # Khối 1: Cấu hình Trí tuệ Nhân tạo (AI Config)
+        # ==========================================
+        ai_card = CardWidget(parent)
+        ai_layout = QtWidgets.QVBoxLayout(ai_card)
+        ai_layout.setContentsMargins(16, 16, 16, 16)
+        ai_layout.setSpacing(12)
+        
+        ai_title = SubtitleLabel("Cấu hình Trí tuệ Nhân tạo", parent)
+        ai_layout.addWidget(ai_title)
+        
+        ai_form = QtWidgets.QFormLayout()
+        ai_form.setContentsMargins(0, 0, 0, 0)
+        ai_form.setSpacing(12)
+        ai_layout.addLayout(ai_form)
 
-        # 3.5. Ngôn ngữ phụ đề OCR
-        lang_icon = FluentIcon.LANGUAGE if hasattr(FluentIcon, 'LANGUAGE') else FluentIcon.GLOBE
-        self.ocr_language_combo = ComboBoxSettingCard(
-            configItem=config.ocrLanguage,
-            icon=lang_icon,
-            title="Ngôn ngữ phụ đề OCR",
-            content="Tự động phát hiện hoặc chọn ngôn ngữ để AI quét OCR nhận diện chính xác nhất",
-            parent=parent,
-            texts=["Tự động phát hiện", "Tiếng Việt", "Tiếng Anh", "Tiếng Trung", "Tiếng Nhật", "Tiếng Hàn"]
-        )
-        self.ocr_language_combo.setToolTip(
-            "Chọn ngôn ngữ của phụ đề trong video để mô hình AI tối ưu hóa độ chính xác:\n"
-            "- Tự động phát hiện: Phân tích và tự động nhận diện ngôn ngữ chữ.\n"
-            "- Tiếng Việt / Tiếng Anh / Tiếng Trung / Tiếng Nhật / Tiếng Hàn: Nạp bộ từ điển tối ưu chuyên biệt cho ngôn ngữ đã chọn."
-        )
-        self.addWidget(self.ocr_language_combo)
+        # Inpaint Mode
+        self.inpaint_combo = ComboBox(parent)
+        self.inpaint_combo.addItems([list(tr['InpaintMode'].values())[i] for i,_ in enumerate(config.inpaintMode.validator.options)])
+        self.inpaint_combo.setCurrentIndex(get_idx(config.inpaintMode.value, config.inpaintMode.validator.options))
+        self.inpaint_combo.currentIndexChanged.connect(lambda idx: config.set(config.inpaintMode, list(config.inpaintMode.validator.options)[idx]))
+        config.inpaintMode.valueChanged.connect(lambda val: self.inpaint_combo.setCurrentIndex(get_idx(val, config.inpaintMode.validator.options)))
+        self.inpaint_combo.setToolTip("Chọn mô hình AI xóa chữ (LaMa, STTN, ProPainter, OpenCV)")
+        ai_form.addRow(create_label("Mô hình xóa chữ:"), self.inpaint_combo)
 
-        # 4. 选用的 Mask 类型 (Mask Type)
-        self.mask_type_combo = ComboBoxSettingCard(
-            configItem=config.maskType,
-            icon=FluentIcon.BROOM,
-            title="Kiểu mặt nạ xóa chữ",
-            content="Chọn phương pháp tạo mặt nạ phụ đề để xóa",
-            parent=parent,
-            texts=["Nét chữ", "Hộp chữ nhật"]
-        )
-        self.mask_type_combo.setToolTip(
-            "Chọn phương pháp che phủ dòng chữ:\n"
-            "- Nét chữ: Mặt nạ bám khít theo từng nét vẽ của chữ. Giúp giữ nguyên vẹn tối đa nền gốc xung quanh.\n"
-            "- Hộp chữ nhật: Che phủ toàn bộ hộp chữ nhật chứa chữ. Xóa sạch 100% nhưng vùng cần inpaint lớn hơn, dễ gây mờ nền."
-        )
-        self.addWidget(self.mask_type_combo)
+        # Subtitle Detect Mode
+        self.subtitle_detect_model_combo = ComboBox(parent)
+        self.subtitle_detect_model_combo.addItems([list(tr['SubtitleDetectMode'].values())[i] for i,_ in enumerate(config.subtitleDetectMode.validator.options)])
+        self.subtitle_detect_model_combo.setCurrentIndex(get_idx(config.subtitleDetectMode.value, config.subtitleDetectMode.validator.options))
+        self.subtitle_detect_model_combo.currentIndexChanged.connect(lambda idx: config.set(config.subtitleDetectMode, list(config.subtitleDetectMode.validator.options)[idx]))
+        config.subtitleDetectMode.valueChanged.connect(lambda val: self.subtitle_detect_model_combo.setCurrentIndex(get_idx(val, config.subtitleDetectMode.validator.options)))
+        ai_form.addRow(create_label("Mô hình quét OCR:"), self.subtitle_detect_model_combo)
 
-        # 4.5. Công tắc Tự động nhận diện chữ theo từng frame (ON / OFF)
+        # OCR Language
+        self.ocr_language_combo = ComboBox(parent)
+        self.ocr_language_combo.addItems(["Tự động phát hiện", "Tiếng Việt", "Tiếng Anh", "Tiếng Trung", "Tiếng Nhật", "Tiếng Hàn"])
+        self.ocr_language_combo.setCurrentIndex(get_idx(config.ocrLanguage.value, config.ocrLanguage.validator.options))
+        self.ocr_language_combo.currentIndexChanged.connect(lambda idx: config.set(config.ocrLanguage, list(config.ocrLanguage.validator.options)[idx]))
+        config.ocrLanguage.valueChanged.connect(lambda val: self.ocr_language_combo.setCurrentIndex(get_idx(val, config.ocrLanguage.validator.options)))
+        ai_form.addRow(create_label("Ngôn ngữ chữ:"), self.ocr_language_combo)
+
+        # OCR Speed
+        self.ocr_mode_combo = ComboBox(parent)
+        self.ocr_mode_combo.addItems(["Tự động (Cân bằng)", "Nhanh (Bỏ qua nhiều frame)", "Chính xác (Quét kỹ từng frame)"])
+        self.ocr_mode_combo.setCurrentIndex(get_idx(config.ocrMode.value, config.ocrMode.validator.options))
+        self.ocr_mode_combo.currentIndexChanged.connect(lambda idx: config.set(config.ocrMode, list(config.ocrMode.validator.options)[idx]))
+        config.ocrMode.valueChanged.connect(lambda val: self.ocr_mode_combo.setCurrentIndex(get_idx(val, config.ocrMode.validator.options)))
+        ai_form.addRow(create_label("Tốc độ quét OCR:"), self.ocr_mode_combo)
+
+        # SAM 2
+        self.sam2_switch = SwitchButton(parent)
+        self.sam2_switch.setOnText("Bật")
+        self.sam2_switch.setOffText("Tắt")
+        self.sam2_switch.setChecked(config.sam2Refine.value)
+        self.sam2_switch.checkedChanged.connect(lambda checked: config.set(config.sam2Refine, checked))
+        config.sam2Refine.valueChanged.connect(self.sam2_switch.setChecked)
+        self.sam2_switch.setToolTip("Sử dụng Segment Anything Model 2 để cắt mặt nạ ôm sát viền đối tượng, giảm vùng xóa thừa")
+        ai_form.addRow(create_label("Tinh chỉnh bằng SAM 2:"), self.sam2_switch)
+
+        self.addWidget(ai_card)
+
+        # ==========================================
+        # Khối 2: Tùy chỉnh Mặt nạ (Mask Settings)
+        # ==========================================
+        mask_card = CardWidget(parent)
+        mask_layout = QtWidgets.QVBoxLayout(mask_card)
+        mask_layout.setContentsMargins(16, 16, 16, 16)
+        mask_layout.setSpacing(12)
+        
+        mask_title = SubtitleLabel("Tùy chỉnh Mặt nạ", parent)
+        mask_layout.addWidget(mask_title)
+
+        mask_form = QtWidgets.QFormLayout()
+        mask_form.setContentsMargins(0, 0, 0, 0)
+        mask_form.setSpacing(12)
+        mask_layout.addLayout(mask_form)
+
+        # Mask Type
+        self.mask_type_combo = ComboBox(parent)
+        self.mask_type_combo.addItems(["Nét chữ", "Hộp chữ nhật"])
+        self.mask_type_combo.setCurrentIndex(get_idx(config.maskType.value, config.maskType.validator.options))
+        self.mask_type_combo.currentIndexChanged.connect(lambda idx: config.set(config.maskType, list(config.maskType.validator.options)[idx]))
+        config.maskType.valueChanged.connect(lambda val: self.mask_type_combo.setCurrentIndex(get_idx(val, config.maskType.validator.options)))
+        mask_form.addRow(create_label("Kiểu mặt nạ:"), self.mask_type_combo)
+
+        # Mask Dilation
+        dilation_layout = QtWidgets.QHBoxLayout()
+        self.dilation_slider = Slider(Qt.Horizontal, parent)
+        self.dilation_slider.setRange(0, 50)
+        self.dilation_slider.setValue(config.maskDilation.value)
+        self.dilation_label = CaptionLabel(f"{config.maskDilation.value} px")
+        self.dilation_slider.valueChanged.connect(lambda val: self.dilation_label.setText(f"{val} px"))
+        self.dilation_slider.valueChanged.connect(lambda val: config.set(config.maskDilation, val))
+        config.maskDilation.valueChanged.connect(self.dilation_slider.setValue)
+        dilation_layout.addWidget(self.dilation_slider)
+        dilation_layout.addWidget(self.dilation_label)
+        mask_form.addRow(create_label("Giãn nở:"), dilation_layout)
+
+        # Mask Feather
+        feather_layout = QtWidgets.QHBoxLayout()
+        self.feather_slider = Slider(Qt.Horizontal, parent)
+        self.feather_slider.setRange(0, 30)
+        self.feather_slider.setValue(config.maskFeather.value)
+        self.feather_label = CaptionLabel(f"{config.maskFeather.value} px")
+        self.feather_slider.valueChanged.connect(lambda val: self.feather_label.setText(f"{val} px"))
+        self.feather_slider.valueChanged.connect(lambda val: config.set(config.maskFeather, val))
+        config.maskFeather.valueChanged.connect(self.feather_slider.setValue)
+        feather_layout.addWidget(self.feather_slider)
+        feather_layout.addWidget(self.feather_label)
+        mask_form.addRow(create_label("Làm mềm:"), feather_layout)
+
+        # Mask Fade Padding
+        fade_padding_layout = QtWidgets.QHBoxLayout()
+        self.fade_padding_slider = Slider(Qt.Horizontal, parent)
+        self.fade_padding_slider.setRange(0, 15)
+        self.fade_padding_slider.setValue(config.maskFadePadding.value)
+        self.fade_padding_label = CaptionLabel(f"{config.maskFadePadding.value} frames")
+        self.fade_padding_slider.valueChanged.connect(lambda val: self.fade_padding_label.setText(f"{val} frames"))
+        self.fade_padding_slider.valueChanged.connect(lambda val: config.set(config.maskFadePadding, val))
+        config.maskFadePadding.valueChanged.connect(self.fade_padding_slider.setValue)
+        fade_padding_layout.addWidget(self.fade_padding_slider)
+        fade_padding_layout.addWidget(self.fade_padding_label)
+        mask_form.addRow(create_label("Bù trừ khung hình mờ:"), fade_padding_layout)
+
+        self.addWidget(mask_card)
+
+        # ==========================================
+        # Khối 3: Công cụ & Tương tác (Tools)
+        # ==========================================
+        tools_card = CardWidget(parent)
+        tools_layout = QtWidgets.QVBoxLayout(tools_card)
+        tools_layout.setContentsMargins(16, 16, 16, 16)
+        tools_layout.setSpacing(12)
+        tools_layout.addWidget(SubtitleLabel("Công cụ & Tương tác", parent))
+
+        # Auto Detect Text 1-click
+        auto_layout = QtWidgets.QHBoxLayout()
+        auto_layout.addWidget(BodyLabel("Tự động quét phụ đề theo frame:"))
+        auto_layout.addStretch()
+        self.auto_detect_switch = SwitchButton(parent)
+        self.auto_detect_switch.setOnText("Bật")
+        self.auto_detect_switch.setOffText("Tắt")
+        self.auto_detect_switch.setChecked(config.autoDetectTextFrameByFrame.value)
+        self.auto_detect_switch.checkedChanged.connect(lambda checked: config.set(config.autoDetectTextFrameByFrame, checked))
+        config.autoDetectTextFrameByFrame.valueChanged.connect(self.auto_detect_switch.setChecked)
+        auto_layout.addWidget(self.auto_detect_switch)
+        tools_layout.addLayout(auto_layout)
+
+        # Moving Subtitle Tracking
+        self.moving_subtitle_card = PushButton("Bám đuổi phụ đề di chuyển", parent)
+        self.moving_subtitle_card.setIcon(FluentIcon.RUN if hasattr(FluentIcon, 'RUN') else FluentIcon.VIDEO)
+        self.moving_subtitle_card.setToolTip("Khoanh vùng chữ/logo ở 1 khung hình rồi bấm để bám đuổi")
+        tools_layout.addWidget(self.moving_subtitle_card)
+
+        # Brush & Mask Tools
+        btn_layout = QtWidgets.QHBoxLayout()
+        btn_layout.setSpacing(8)
+        
         robot_icon = FluentIcon.ROBOT if hasattr(FluentIcon, 'ROBOT') else FluentIcon.SEARCH
-        self.auto_detect_switch = SwitchSettingCard(
-            icon=robot_icon,
-            title="Tự động nhận diện chữ",
-            content="Bật: Tự động quét OCR và xóa theo từng frame khi chạy | Tắt: Sử dụng khoanh vùng thủ công",
-            configItem=config.autoDetectTextFrameByFrame,
-            parent=parent
-        )
-        self.auto_detect_switch.setToolTip(
-            "Chế độ Tự động: Khi chạy video, AI sẽ tự động phát hiện và xóa phụ đề trên từng khung hình.\n"
-            "Chế độ Thủ công: Xóa theo các ô chữ cố định (bạn vẫn có thể dùng nút 'Quét AI 1 frame' bên dưới để tự động khoanh vùng thử)."
-        )
-        self.addWidget(self.auto_detect_switch)
-
-        # 4.5.2. Nút bấm Xóa phụ đề di chuyển (Interactive Tracking)
-        run_icon = FluentIcon.RUN if hasattr(FluentIcon, 'RUN') else FluentIcon.VIDEO
-        self.moving_subtitle_card = PrimaryPushSettingCard(
-            text="Nhận Diện",
-            icon=run_icon,
-            title="Xóa phụ đề di chuyển",
-            content="Bám đuổi và xóa phụ đề động, cuộn chữ hoặc logo di chuyển theo thời gian",
-            parent=parent
-        )
-        self.moving_subtitle_card.setToolTip(
-            "Tính năng Bám đuổi phụ đề động:\n"
-            "- Khoanh vùng logo ở khung hình 1 rồi bấm 'Nhận Diện'.\n"
-            "- AI sẽ tự động bám sát vị trí di chuyển qua từng khung hình."
-        )
-        self.addWidget(self.moving_subtitle_card)
-
-        # 4.6. Bộ công cụ cọ vẽ & Xem trước Red Mask
-        from PySide6.QtCore import Qt
-        from qfluentwidgets import TransparentToolButton
-        
         brush_icon = FluentIcon.BRUSH if hasattr(FluentIcon, 'BRUSH') else FluentIcon.EDIT
-        self.mask_tools_card = SettingCard(
-            icon=brush_icon,
-            title="Công cụ vẽ mặt nạ",
-            content="Tùy chỉnh chế độ vẽ, xem trước lớp đỏ và dọn dẹp cọ",
-            parent=parent
-        )
-        self.mask_tools_card.setToolTip("Điều khiển cọ vẽ tự do, khoanh hộp và lớp xem trước Red Mask")
-
-        # Nút Quét AI 1 frame (Hỗ trợ khoanh vùng thủ công)
-        self.auto_detect_frame_btn = TransparentToolButton(robot_icon, self.mask_tools_card)
-        self.auto_detect_frame_btn.setToolTip("Quét AI tự động khoanh vùng chữ trên 1 khung hình hiện tại (dùng để sửa/xóa thủ công)")
-        self.auto_detect_frame_btn.setCursor(Qt.PointingHandCursor)
-
-        # Nút Chế độ vẽ (Khoanh Hộp ↔ Cọ Vẽ)
-        self.brush_mode_btn = TransparentToolButton(brush_icon, self.mask_tools_card)
-        self.brush_mode_btn.setToolTip("Chế độ: Khoanh Hộp (Mặc định)")
-        self.brush_mode_btn.setCursor(Qt.PointingHandCursor)
-
-        # Nút Red Mask
         red_icon = FluentIcon.VIEW if hasattr(FluentIcon, 'VIEW') else FluentIcon.SEARCH
-        self.red_mask_btn = TransparentToolButton(red_icon, self.mask_tools_card)
-        self.red_mask_btn.setToolTip("Bật / Tắt xem trước Lớp Phủ Đỏ")
-        self.red_mask_btn.setCursor(Qt.PointingHandCursor)
-
-        # Nút Xóa cọ
         clear_icon = FluentIcon.DELETE if hasattr(FluentIcon, 'DELETE') else FluentIcon.CLOSE
-        self.clear_brush_btn = TransparentToolButton(clear_icon, self.mask_tools_card)
-        self.clear_brush_btn.setToolTip("Xóa tất cả nét cọ vẽ tự do")
-        self.clear_brush_btn.setCursor(Qt.PointingHandCursor)
 
-        self.mask_tools_card.hBoxLayout.addWidget(self.auto_detect_frame_btn)
-        self.mask_tools_card.hBoxLayout.addWidget(self.brush_mode_btn)
-        self.mask_tools_card.hBoxLayout.addWidget(self.red_mask_btn)
-        self.mask_tools_card.hBoxLayout.addWidget(self.clear_brush_btn)
-        self.mask_tools_card.hBoxLayout.addSpacing(12)
-        self.addWidget(self.mask_tools_card)
+        self.auto_detect_frame_btn = TransparentToolButton(robot_icon, parent)
+        self.auto_detect_frame_btn.setToolTip("Quét OCR 1 khung hình hiện tại")
+        
+        self.brush_mode_btn = TransparentToolButton(brush_icon, parent)
+        self.brush_mode_btn.setToolTip("Chế độ vẽ cọ / Khoanh hộp")
+        
+        self.red_mask_btn = TransparentToolButton(red_icon, parent)
+        self.red_mask_btn.setToolTip("Xem Lớp phủ Đỏ")
+        
+        self.clear_brush_btn = TransparentToolButton(clear_icon, parent)
+        self.clear_brush_btn.setToolTip("Xóa nét cọ")
 
+        btn_layout.addWidget(self.auto_detect_frame_btn)
+        btn_layout.addWidget(self.brush_mode_btn)
+        btn_layout.addWidget(self.red_mask_btn)
+        btn_layout.addWidget(self.clear_brush_btn)
+        btn_layout.addStretch()
+        
+        tools_layout.addLayout(btn_layout)
 
+        self.addWidget(tools_card)
 
-
-
-        # 7. Thẻ Mở Cài Đặt Nâng Cao
+        # ==========================================
+        # Khối 4: Cài đặt nâng cao
+        # ==========================================
         self.open_advanced_card = PushSettingCard(
             text=tr["Setting"].get("OpenAdvancedSetting", "Mở Cài Đặt"),
             icon=FluentIcon.SETTING,
             title="Cài đặt nâng cao",
-            content="Mở toàn bộ tùy chọn cấu hình chi tiết",
+            content="Cấu hình chuyên sâu mô hình",
             parent=parent
         )
         self.open_advanced_card.clicked.connect(self._on_open_advanced_settings)
         self.addWidget(self.open_advanced_card)
 
-
+        self.addStretch(1)
 
         # Listen to Auto-Tighten changes to disable Mask Type if ON
         if hasattr(config, 'autoTightenMask'):
             config.autoTightenMask.valueChanged.connect(self._on_auto_tighten_changed)
             self._on_auto_tighten_changed(config.autoTightenMask.value)
 
-
-
-        # Cho phép các nhãn mô tả tự động xuống dòng
-        from PySide6.QtWidgets import QWidget
-        for child in self.findChildren(QWidget):
-            if hasattr(child, 'contentLabel') and hasattr(child, 'titleLabel'):
-                child.contentLabel.setWordWrap(True)
-                child.titleLabel.setWordWrap(True)
-
-        # 如果硬件加速选项被禁用, 设置硬件加速为False并只读
-        if not HARDWARD_ACCELERATION_OPTION and hasattr(self, 'hardware_acceleration'):
-            self.hardware_acceleration.switchButton.setChecked(False)
-            self.hardware_acceleration.switchButton.setEnabled(False)
-            self.hardware_acceleration.setContent(tr["Setting"]["HardwareAccelerationNO"])
-            config.set(config.hardwareAcceleration, False)
-        # 添加一些空间
-        self.addStretch(1)
-    
     def _on_auto_tighten_changed(self, value):
         self.mask_type_combo.setDisabled(value)
+
+    def _on_open_advanced_settings(self):
+        w = self.parentWidget()
+        while w and not hasattr(w, 'advancedSettingInterface'):
+            w = w.parentWidget()
+        if w and hasattr(w, 'advancedSettingInterface'):
+            w.switchTo(w.advancedSettingInterface)
+
+    def set_inpaint_mode_enabled(self, enabled):
+        self.inpaint_combo.setEnabled(enabled)
 
     def _on_choose_save_directory(self):
 
@@ -230,7 +276,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
 
     def set_inpaint_mode_enabled(self, enabled):
         """启用或禁用 inpaint 模式下拉框"""
-        self.inpaint_mode_combo.comboBox.setEnabled(enabled)
+        self.inpaint_combo.setEnabled(enabled)
 
     def reset_setting(self):
         """重置所有设置为默认值"""
@@ -314,58 +360,53 @@ class SettingInterface(QtWidgets.QVBoxLayout):
         """Cập nhật lại văn bản hiển thị trên các SettingCard khi đổi ngôn ngữ nóng"""
         
         # Cập nhật combo inpaint mode (block signals để tránh kích hoạt thay đổi cấu hình)
-        self.inpaint_mode_combo.comboBox.blockSignals(True)
-        current_inpaint_idx = self.inpaint_mode_combo.comboBox.currentIndex()
-        self.inpaint_mode_combo.setTitle(tr["SubtitleExtractorGUI"]["InpaintMode"])
-        self.inpaint_mode_combo.comboBox.clear()
-        self.inpaint_mode_combo.comboBox.addItems([list(tr['InpaintMode'].values())[i] for i,_ in enumerate(config.inpaintMode.validator.options)])
-        self.inpaint_mode_combo.comboBox.setCurrentIndex(current_inpaint_idx)
-        self.inpaint_mode_combo.comboBox.blockSignals(False)
-        self.inpaint_mode_combo.setToolTip(tr["Setting"].get("InpaintModeTooltip", "Select inpaint model"))
+        self.inpaint_combo.blockSignals(True)
+        current_inpaint_idx = self.inpaint_combo.currentIndex()
+        self.inpaint_combo.clear()
+        self.inpaint_combo.addItems([list(tr['InpaintMode'].values())[i] for i,_ in enumerate(config.inpaintMode.validator.options)])
+        self.inpaint_combo.setCurrentIndex(current_inpaint_idx)
+        self.inpaint_combo.blockSignals(False)
+        self.inpaint_combo.setToolTip(tr["Setting"].get("InpaintModeTooltip", "Select inpaint model"))
         
         # Cập nhật combo subtitle detect mode
-        self.subtitle_detect_model_combo.comboBox.blockSignals(True)
-        current_detect_idx = self.subtitle_detect_model_combo.comboBox.currentIndex()
-        self.subtitle_detect_model_combo.setTitle(tr["SubtitleExtractorGUI"]["SubtitleDetectMode"])
-        self.subtitle_detect_model_combo.comboBox.clear()
-        self.subtitle_detect_model_combo.comboBox.addItems([list(tr['SubtitleDetectMode'].values())[i] for i,_ in enumerate(config.subtitleDetectMode.validator.options)])
-        self.subtitle_detect_model_combo.comboBox.setCurrentIndex(current_detect_idx)
-        self.subtitle_detect_model_combo.comboBox.blockSignals(False)
+        self.subtitle_detect_model_combo.blockSignals(True)
+        current_detect_idx = self.subtitle_detect_model_combo.currentIndex()
+        self.subtitle_detect_model_combo.clear()
+        self.subtitle_detect_model_combo.addItems([list(tr['SubtitleDetectMode'].values())[i] for i,_ in enumerate(config.subtitleDetectMode.validator.options)])
+        self.subtitle_detect_model_combo.setCurrentIndex(current_detect_idx)
+        self.subtitle_detect_model_combo.blockSignals(False)
         self.subtitle_detect_model_combo.setToolTip(tr["Setting"].get("SubtitleDetectModeTooltip", "Select OCR model"))
         
         # Cập nhật combo mask type
-        self.mask_type_combo.comboBox.blockSignals(True)
-        current_mask_idx = self.mask_type_combo.comboBox.currentIndex()
-        self.mask_type_combo.setTitle(tr["Setting"].get("MaskType", "Kiểu mặt nạ xóa chữ"))
-        self.mask_type_combo.setContent(tr["Setting"].get("MaskTypeDesc", "Chọn phương pháp tạo mặt nạ phụ đề để xóa"))
-        self.mask_type_combo.comboBox.clear()
-        self.mask_type_combo.comboBox.addItems([tr['Setting'].get('MaskTypeStroke', 'Nét chữ'), tr['Setting'].get('MaskTypeBox', 'Hộp chữ nhật')])
-        self.mask_type_combo.comboBox.setCurrentIndex(current_mask_idx)
-        self.mask_type_combo.comboBox.blockSignals(False)
+        self.mask_type_combo.blockSignals(True)
+        current_mask_idx = self.mask_type_combo.currentIndex()
+        self.mask_type_combo.clear()
+        self.mask_type_combo.addItems([tr['Setting'].get('MaskTypeStroke', 'Nét chữ'), tr['Setting'].get('MaskTypeBox', 'Hộp chữ nhật')])
+        self.mask_type_combo.setCurrentIndex(current_mask_idx)
+        self.mask_type_combo.blockSignals(False)
         self.mask_type_combo.setToolTip(tr["Setting"].get("MaskTypeTooltip", "Mask type tooltip"))
         
         # Cập nhật combo OCR Language
         if hasattr(self, 'ocr_language_combo'):
-            self.ocr_language_combo.setTitle(tr["Setting"].get("OcrLanguageTitle", "Ngôn ngữ phụ đề OCR"))
-            self.ocr_language_combo.setContent(tr["Setting"].get("OcrLanguageDesc", "Tự động phát hiện hoặc chọn ngôn ngữ để AI quét OCR nhận diện chính xác nhất"))
             self.ocr_language_combo.setToolTip(tr["Setting"].get("OcrLanguageTooltip", "Chọn ngôn ngữ OCR"))
-            if hasattr(self.ocr_language_combo, 'comboBox') and hasattr(config, 'ocrLanguage'):
-                self.ocr_language_combo.comboBox.blockSignals(True)
-                current_ocr_idx = self.ocr_language_combo.comboBox.currentIndex()
-                self.ocr_language_combo.comboBox.clear()
-                self.ocr_language_combo.comboBox.addItems([list(tr['OcrLanguage'].values())[i] for i, _ in enumerate(config.ocrLanguage.validator.options)])
-                self.ocr_language_combo.comboBox.setCurrentIndex(current_ocr_idx)
-                self.ocr_language_combo.comboBox.blockSignals(False)
+            self.ocr_language_combo.blockSignals(True)
+            current_ocr_idx = self.ocr_language_combo.currentIndex()
+            self.ocr_language_combo.clear()
+            self.ocr_language_combo.addItems([list(tr['OcrLanguage'].values())[i] for i, _ in enumerate(config.ocrLanguage.validator.options)])
+            self.ocr_language_combo.setCurrentIndex(current_ocr_idx)
+            self.ocr_language_combo.blockSignals(False)
         
         self.gpu_info_card.setToolTip(tr["Setting"].get("GpuInfoTooltip", "GPU information"))
         self.update_gpu_info()
 
         # Cập nhật lại tự động xuống dòng sau khi đổi ngôn ngữ
-        from PySide6.QtWidgets import QWidget
-        for child in self.findChildren(QWidget):
+        # Cải tiến WordWrap cho nhãn cài đặt và Fix chiều cao ComboBox bị ép trong QFormLayout
+        for child in self.parentWidget().findChildren(QtWidgets.QWidget) if self.parentWidget() else []:
             if hasattr(child, 'contentLabel') and hasattr(child, 'titleLabel'):
                 child.contentLabel.setWordWrap(True)
                 child.titleLabel.setWordWrap(True)
+            if isinstance(child, ComboBox):
+                child.setMinimumHeight(34)
 
     def _on_inpaint_mode_changed(self, idx):
         try:
