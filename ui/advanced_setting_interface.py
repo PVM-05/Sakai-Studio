@@ -128,7 +128,7 @@ class AdvancedSettingInterface(QWidget):
         # ==========================================
         # TAB 1: HỆ THỐNG && GIAO DIỆN
         # ==========================================
-        self.preset_group = SettingCardGroup("Bộ Cấu Hình Mẫu Nhanh (1-Click Presets)", self.systemScrollWidget.widget())
+        self.preset_group = SettingCardGroup("Bộ Cấu Hình Mẫu Nhanh", self.systemScrollWidget.widget())
 
         self.preset_fast_card = PushSettingCard(
             text="Kích Hoạt",
@@ -255,14 +255,26 @@ class AdvancedSettingInterface(QWidget):
         # ==========================================
         # TAB 2: CHỈNH SỬA VIDEO && XÓA PHỤ ĐỀ
         # ==========================================
-        self.video_hardware_group = SettingCardGroup("Giám Sát && Đo Hiệu Năng GPU", self.videoScrollWidget.widget())
+        self.step1_group = SettingCardGroup("Bước 1: Khởi tạo và Khoanh vùng", self.videoScrollWidget.widget())
+
+        self.auto_tighten_card = SwitchSettingCard(
+            configItem=config.autoTightenMask,
+            icon=FluentIcon.ZOOM_IN if hasattr(FluentIcon, 'ZOOM_IN') else FluentIcon.SEARCH,
+            title="Tự động ôm khít nét chữ",
+            content="Tự động phân tích Canny Edge && Otsu Thresholding co hẹp khung vừa khít 100% nét chữ thực tế",
+            parent=self.step1_group
+        )
+        self.auto_tighten_card.setToolTip("Khi bật tự động, hệ thống sẽ tự động ôm khít 100% nét chữ sau khi nhận diện. Tắt đi để tùy chỉnh thủ công.")
+        config.autoTightenMask.valueChanged.connect(self.on_auto_tighten_changed)
+
+        self.step2_group = SettingCardGroup("Bước 2: Lựa chọn Mô hình Trí tuệ Nhân tạo", self.videoScrollWidget.widget())
 
         # Thẻ thông tin GPU trực quan trong tab Video
         self.gpu_info_card = SettingCard(
             icon=FluentIcon.INFO,
             title="Card màn hình: Đang quét...",
             content="Đang tối ưu hóa dung lượng VRAM GPU...",
-            parent=self.video_hardware_group
+            parent=self.step2_group
         )
         self.gpu_info_card.setToolTip("Hiển thị tên GPU, VRAM thực tế và hạn mức số khung hình xử lý đồng thời.")
 
@@ -271,17 +283,39 @@ class AdvancedSettingInterface(QWidget):
             icon=FluentIcon.SPEED_HIGH,
             title="Đánh giá hiệu năng đồ họa",
             content="Kiểm tra tốc độ xử lý tính toán thực tế của Card màn hình và tính toán số FPS ước tính",
-            parent=self.video_hardware_group
+            parent=self.step2_group
         )
         self.gpu_benchmark_card.setToolTip("Chạy thử nghiệm đo lường tốc độ tính toán thực tế trên GPU.")
         self.gpu_benchmark_card.clicked.connect(self.run_gpu_benchmark)
+
+        self.tracker_algorithm_combo = ComboBoxSettingCard(
+            configItem=config.trackerAlgorithm,
+            icon=FluentIcon.FINGERPRINT if hasattr(FluentIcon, 'FINGERPRINT') else FluentIcon.SEARCH,
+            title="Thuật toán Theo dõi Đối tượng",
+            content="Quyết định mức độ chính xác và thuật toán khi bám đuổi logo di chuyển",
+            parent=self.step2_group,
+            texts=["CSRT - Độ chính xác cao, Tốc độ chậm", "KCF - Cân bằng, Tốc độ cực nhanh", "MIL - Độ ổn định cao"]
+        )
+        self.tracker_algorithm_combo.setToolTip("Chọn thuật toán bám đuổi cho tính năng Xóa phụ đề di chuyển. Thuật toán CSRT mang lại độ chính xác cao nhất.")
+
+        self.hardware_acceleration = SwitchSettingCard(
+            configItem=config.hardwareAcceleration,
+            icon=FluentIcon.SPEED_HIGH, 
+            title=tr["Setting"]["HardwareAcceleration"],
+            content=tr["Setting"]["HardwareAccelerationDesc"],
+            parent=self.step2_group
+        )
+        self.hardware_acceleration.setToolTip("Bật hoặc Tắt tăng tốc đồ họa phần cứng GPU.")
+        if not HARDWARD_ACCELERATION_OPTION:
+            self.hardware_acceleration.setEnabled(False)
+            self.hardware_acceleration.setChecked(False)
 
         self.auto_hardware_tuning = SwitchSettingCard(
             configItem=config.autoHardwareTuning,
             icon=FluentIcon.SPEED_HIGH,
             title="Tối ưu hóa hiệu năng theo GPU",
             content="Tự động tính toán số frame xử lý tối ưu để tránh tràn VRAM GPU",
-            parent=self.video_hardware_group
+            parent=self.step2_group
         )
         self.auto_hardware_tuning.setToolTip("Tự động phân tích dung lượng VRAM thực tế trên GPU để tối ưu khung hình xử lý đồng thời.")
         self.auto_hardware_tuning.switchButton.checkedChanged.connect(self.on_auto_tuning_changed)
@@ -291,116 +325,16 @@ class AdvancedSettingInterface(QWidget):
             icon=FluentIcon.VIDEO,
             title="Tăng tốc xuất video bằng GPU",
             content="Sử dụng bộ giải mã/mã hóa phần cứng GPU giúp xuất video nhanh gấp 5-10 lần",
-            parent=self.video_hardware_group
+            parent=self.step2_group
         )
         self.gpu_video_encoding.setToolTip("Kích hoạt chip phần cứng chuyên dụng trên Card đồ họa (NVENC/DirectML) để nén/giải nén video trực tiếp.")
 
-        self.preserve_color_card = SwitchSettingCard(
-            configItem=config.preserveColorMetadata,
-            icon=FluentIcon.PALETTE if hasattr(FluentIcon, 'PALETTE') else FluentIcon.BRUSH,
-            title="Bảo tồn chuẩn màu sắc video gốc",
-            content="Giữ nguyên thông số màu sắc HDR và hồ sơ màu của video gốc khi xuất",
-            parent=self.video_hardware_group
-        )
-        self.preserve_color_card.setToolTip("Giúp video sau khi xóa phụ đề giữ được màu sắc gốc, tránh hiện tượng bị nhạt màu hay sai profile màu trên thiết bị HDR.")
-
-        self.subtitle_removal_group = SettingCardGroup("Tùy Chọn Xóa Phụ Đề && Nét Chữ Nâng Cao", self.videoScrollWidget.widget())
-
-        self.tracker_algorithm_combo = ComboBoxSettingCard(
-            configItem=config.trackerAlgorithm,
-            icon=FluentIcon.FINGERPRINT if hasattr(FluentIcon, 'FINGERPRINT') else FluentIcon.SEARCH,
-            title="Thuật toán Theo dõi Đối tượng",
-            content="Quyết định mức độ chính xác và thuật toán khi bám đuổi logo di chuyển",
-            parent=self.subtitle_removal_group,
-            texts=["CSRT - Độ chính xác cao, Tốc độ chậm", "KCF - Cân bằng, Tốc độ cực nhanh", "MIL - Độ ổn định cao"]
-        )
-        self.tracker_algorithm_combo.setToolTip("Chọn thuật toán bám đuổi cho tính năng Xóa phụ đề di chuyển. Thuật toán CSRT mang lại độ chính xác cao nhất.")
-
-
-        self.auto_tighten_card = SwitchSettingCard(
-            configItem=config.autoTightenMask,
-            icon=FluentIcon.ZOOM_IN if hasattr(FluentIcon, 'ZOOM_IN') else FluentIcon.SEARCH,
-            title="Tự động ôm khít nét chữ",
-            content="Tự động phân tích Canny Edge && Otsu Thresholding co hẹp khung vừa khít 100% nét chữ thực tế",
-            parent=self.subtitle_removal_group
-        )
-        self.auto_tighten_card.setToolTip("Khi bật tự động, hệ thống sẽ tự động ôm khít 100% nét chữ sau khi nhận diện. Tắt đi để tùy chỉnh thủ công.")
-        config.autoTightenMask.valueChanged.connect(self.on_auto_tighten_changed)
-
-        self.hardware_acceleration = SwitchSettingCard(
-            configItem=config.hardwareAcceleration,
-            icon=FluentIcon.SPEED_HIGH, 
-            title=tr["Setting"]["HardwareAcceleration"],
-            content=tr["Setting"]["HardwareAccelerationDesc"],
-            parent=self.subtitle_removal_group
-        )
-        self.hardware_acceleration.setToolTip("Bật hoặc Tắt tăng tốc đồ họa phần cứng GPU.")
-        if not HARDWARD_ACCELERATION_OPTION:
-            self.hardware_acceleration.setEnabled(False)
-            self.hardware_acceleration.setChecked(False)
-
-        self.poisson_blending = SwitchSettingCard(
-            configItem=config.poissonBlending,
-            icon=FluentIcon.BRUSH, 
-            title=tr["Setting"]["PoissonBlending"],
-            content=tr["Setting"]["PoissonBlendingDesc"],
-            parent=self.subtitle_removal_group
-        )
-        self.poisson_blending.setToolTip("Sử dụng thuật toán Poisson Blending để hòa trộn mượt mà biên giao thoa giữa vùng được xóa và video gốc.")
-
-        self.temporal_smoothing = SwitchSettingCard(
-            configItem=config.temporalSmoothing,
-            icon=FluentIcon.MOVIE, 
-            title="Lọc mượt thời gian",
-            content="Khử nhấp nháy, rung hạt nền bằng bộ lọc thích ứng chuyển động",
-            parent=self.subtitle_removal_group
-        )
-        self.temporal_smoothing.setToolTip("Khử hiện tượng nhấp nháy hoặc rung hạt nhiễu ở vùng inpaint bằng cách nội suy trung bình trọng số thích ứng chuyển động.")
-
-        self.sharpen_inpainted_area = SwitchSettingCard(
-            configItem=config.sharpenInpaintedArea,
-            icon=FluentIcon.EDIT,
-            title="Làm nét vùng xóa",
-            content="Làm nét nhẹ vùng nền sau khi xóa phụ đề",
-            parent=self.subtitle_removal_group
-        )
-        self.sharpen_inpainted_area.setToolTip("Áp dụng bộ lọc Unsharp Mask làm nét cục bộ vùng ảnh sau khi xóa.")
-
-        self.mask_dilation = RangeSettingCard(
-            configItem=config.maskDilation,
-            icon=FluentIcon.ZOOM_IN,
-            title="Độ giãn nở mặt nạ",
-            content="Độ rộng phần giãn nở bao phủ xung quanh viền phụ đề (0-50 px)",
-            parent=self.subtitle_removal_group
-        )
-        self.mask_dilation.setToolTip("Độ giãn nở ra phía ngoài của mặt nạ chữ. Giúp loại bỏ viền đen hoặc bóng mờ còn sót lại.")
-
-        self.mask_feather = RangeSettingCard(
-            configItem=config.maskFeather,
-            icon=FluentIcon.BRUSH,
-            title="Làm mềm biên mặt nạ",
-            content="Độ làm mềm mượt biên mặt nạ tránh gãy pixel răng cưa (0-30 px)",
-            parent=self.subtitle_removal_group
-        )
-        self.mask_feather.setToolTip("Độ mờ nhòe biên mặt nạ. Giúp làm mượt chuyển tiếp giữa khu vực lấp nền mới và video gốc.")
-
-        self.temporal_smoothing_radius = RangeSettingCard(
-            configItem=config.temporalSmoothingRadius,
-            icon=FluentIcon.MOVIE,
-            title="Bán kính làm mịn thời gian",
-            content="Bán kính khung hình lân cận để lọc mượt chống nhấp nháy chuyển động (1-10)",
-            parent=self.subtitle_removal_group
-        )
-        self.temporal_smoothing_radius.setToolTip("Bán kính khung hình lân cận lấy làm tham chiếu để tính toán mượt hóa thời gian.")
-
-        # STTN & ProPainter groups
-        self.sttn_group = SettingCardGroup(tr["Setting"]["SttnSetting"], self.videoScrollWidget.widget())
         self.sttn_neighbor_stride = RangeSettingCard(
             configItem=config.sttnNeighborStride,
             icon=FluentIcon.UNIT,
             title=tr["Setting"]["SttnNeighborStride"],
             content=tr["Setting"]["SttnNeighborStrideDesc"],
-            parent=self.sttn_group
+            parent=self.step2_group
         )
         self.sttn_neighbor_stride.setToolTip("Bước nhảy khung hình lân cận cho mô hình STTN.")
 
@@ -409,7 +343,7 @@ class AdvancedSettingInterface(QWidget):
             icon=FluentIcon.MORE,
             title=tr["Setting"]["SttnReferenceLength"],
             content=tr["Setting"]["SttnReferenceLengthDesc"],
-            parent=self.sttn_group
+            parent=self.step2_group
         )
         self.sttn_reference_length.setToolTip("Số lượng khung hình tham chiếu dài hạn cho mô hình STTN.")
 
@@ -418,19 +352,65 @@ class AdvancedSettingInterface(QWidget):
             icon=FluentIcon.DICTIONARY,
             title=tr["Setting"]["SttnMaxLoadNum"],
             content=tr["Setting"]["SttnMaxLoadNumDesc"],
-            parent=self.sttn_group
+            parent=self.step2_group
         )
         self.sttn_max_load_num.setToolTip("Số khung hình tối đa xử lý đồng thời trong một phân đoạn của STTN.")
 
-        self.propainter_group = SettingCardGroup(tr["Setting"]["ProPainterSetting"], self.videoScrollWidget.widget())
         self.propainter_max_load_num = RangeSettingCard(
             configItem=config.propainterMaxLoadNum,
             icon=FluentIcon.DICTIONARY,
             title=tr["Setting"]["PropainterMaxLoadNum"],
             content=tr["Setting"]["PropainterMaxLoadNumDesc"],
-            parent=self.propainter_group
+            parent=self.step2_group
         )
         self.propainter_max_load_num.setToolTip("Số khung hình tối đa xử lý đồng thời trong một phân đoạn của ProPainter.")
+
+        self.step3_group = SettingCardGroup("Bước 3: Cấu hình Chất lượng và Độ nét", self.videoScrollWidget.widget())
+
+        self.preserve_color_card = SwitchSettingCard(
+            configItem=config.preserveColorMetadata,
+            icon=FluentIcon.PALETTE if hasattr(FluentIcon, 'PALETTE') else FluentIcon.BRUSH,
+            title="Bảo tồn chuẩn màu sắc video gốc",
+            content="Giữ nguyên thông số màu sắc HDR và hồ sơ màu của video gốc khi xuất",
+            parent=self.step3_group
+        )
+        self.preserve_color_card.setToolTip("Giúp video sau khi xóa phụ đề giữ được màu sắc gốc, tránh hiện tượng bị nhạt màu hay sai profile màu trên thiết bị HDR.")
+
+        self.poisson_blending = SwitchSettingCard(
+            configItem=config.poissonBlending,
+            icon=FluentIcon.BRUSH, 
+            title=tr["Setting"]["PoissonBlending"],
+            content=tr["Setting"]["PoissonBlendingDesc"],
+            parent=self.step3_group
+        )
+        self.poisson_blending.setToolTip("Sử dụng thuật toán Poisson Blending để hòa trộn mượt mà biên giao thoa giữa vùng được xóa và video gốc.")
+
+        self.temporal_smoothing = SwitchSettingCard(
+            configItem=config.temporalSmoothing,
+            icon=FluentIcon.MOVIE, 
+            title="Lọc mượt thời gian",
+            content="Khử nhấp nháy, rung hạt nền bằng bộ lọc thích ứng chuyển động",
+            parent=self.step3_group
+        )
+        self.temporal_smoothing.setToolTip("Khử hiện tượng nhấp nháy hoặc rung hạt nhiễu ở vùng inpaint bằng cách nội suy trung bình trọng số thích ứng chuyển động.")
+
+        self.sharpen_inpainted_area = SwitchSettingCard(
+            configItem=config.sharpenInpaintedArea,
+            icon=FluentIcon.EDIT,
+            title="Làm nét vùng xóa",
+            content="Làm nét nhẹ vùng nền sau khi xóa phụ đề",
+            parent=self.step3_group
+        )
+        self.sharpen_inpainted_area.setToolTip("Áp dụng bộ lọc Unsharp Mask làm nét cục bộ vùng ảnh sau khi xóa.")
+
+        self.temporal_smoothing_radius = RangeSettingCard(
+            configItem=config.temporalSmoothingRadius,
+            icon=FluentIcon.MOVIE,
+            title="Bán kính làm mịn thời gian",
+            content="Bán kính khung hình lân cận để lọc mượt chống nhấp nháy chuyển động (1-10)",
+            parent=self.step3_group
+        )
+        self.temporal_smoothing_radius.setToolTip("Bán kính khung hình lân cận lấy làm tham chiếu để tính toán mượt hóa thời gian.")
 
         # Listen to config changes to dynamically update GPU info card
         config.autoHardwareTuning.valueChanged.connect(self.update_gpu_info)
@@ -438,9 +418,40 @@ class AdvancedSettingInterface(QWidget):
         config.sttnMaxLoadNum.valueChanged.connect(self.update_gpu_info)
         self.update_gpu_info()
 
+        # MMO Features Group
+        self.mmo_group = SettingCardGroup("Công Cụ Lách Bản Quyền", self.videoScrollWidget.widget())
+        
+        self.mmo_flip_video_card = SwitchSettingCard(
+            configItem=config.mmoFlipVideo,
+            icon=FluentIcon.SYNC,
+            title="Lật ngược video",
+            content="Lật video theo chiều ngang để tránh thuật toán quét bản quyền",
+            parent=self.mmo_group
+        )
+        self.mmo_flip_video_card.setToolTip("Lật toàn bộ khung hình video từ trái sang phải, hữu ích cho làm video MMO.")
+
+        self.mmo_speed_shift_card = SwitchSettingCard(
+            configItem=config.mmoSpeedShift,
+            icon=FluentIcon.SPEED_HIGH,
+            title="Thay đổi tốc độ",
+            content="Vi chỉnh tốc độ video một chút để lách bản quyền âm thanh và hình ảnh",
+            parent=self.mmo_group
+        )
+        
+        self.mmo_sub_style_combo = ComboBoxSettingCard(
+            configItem=config.mmoSubStyle,
+            icon=FluentIcon.FONT,
+            title="Kiểu phụ đề MMO",
+            content="Mẫu thiết kế phụ đề nổi bật chuẩn TikTok/Shorts",
+            parent=self.mmo_group,
+            texts=["TikTok Vàng", "YouTube Trắng", "Netflix", "Tự Do"]
+        )
+
         # Trigger single shot initial states
         QtCore.QTimer.singleShot(0, lambda: self.on_auto_tighten_changed(config.autoTightenMask.value))
         QtCore.QTimer.singleShot(0, lambda: self.on_auto_tuning_changed(config.autoHardwareTuning.value))
+        config.translateSubtitles.valueChanged.connect(self.on_translate_subtitles_changed)
+        QtCore.QTimer.singleShot(0, lambda: self.on_translate_subtitles_changed(config.translateSubtitles.value))
 
         # ==========================================
         # TAB 3: TÍNH NĂNG SRT && NHẬN DIỆN PHỤ ĐỀ
@@ -475,6 +486,15 @@ class AdvancedSettingInterface(QWidget):
         )
         self.whisper_fallback_card.setToolTip("Khi bật, hệ thống sẽ tự động quét phổ âm thanh nói để đảm bảo 100% thời gian hiện câu phụ đề trong file SRT không bị ngắt quãng.")
 
+        self.voice_separation_card = SwitchSettingCard(
+            configItem=config.voiceSeparation,
+            icon=FluentIcon.MUSIC if hasattr(FluentIcon, 'MUSIC') else FluentIcon.MICROPHONE,
+            title="Tách giọng nói bằng AI",
+            content="Tách riêng giọng nói khỏi nhạc nền trước khi nhận diện Whisper AI để tăng độ chính xác lên 99%",
+            parent=self.srt_feature_group
+        )
+        self.voice_separation_card.setToolTip("Khuyên dùng nếu video có nhạc nền to hoặc nhiều tạp âm. Thời gian xử lý sẽ lâu hơn một chút do chạy AI tách âm.")
+
         self.translate_subtitles_card = SwitchSettingCard(
             configItem=config.translateSubtitles,
             icon=FluentIcon.LANGUAGE,
@@ -483,6 +503,16 @@ class AdvancedSettingInterface(QWidget):
             parent=self.srt_feature_group
         )
         self.translate_subtitles_card.setToolTip("Tự động sử dụng máy dịch để dịch file SRT sang ngôn ngữ bạn đã cấu hình.")
+
+        self.target_language_combo = ComboBoxSettingCard(
+            configItem=config.targetLanguage,
+            icon=FluentIcon.GLOBE,
+            title="Ngôn ngữ dịch đích",
+            content="Chọn ngôn ngữ mà bạn muốn dịch phụ đề sang",
+            parent=self.srt_feature_group,
+            texts=["Tiếng Việt", "Tiếng Anh", "Tiếng Trung", "Tiếng Nhật", "Tiếng Hàn", "Tiếng Pháp", "Tiếng Đức"]
+        )
+        self.target_language_combo.setToolTip("Khi bật Tự động dịch phụ đề SRT, văn bản sẽ được dịch sang ngôn ngữ này.")
 
         self.burn_translated_subtitles_card = SwitchSettingCard(
             configItem=config.burnTranslatedSubtitles,
@@ -589,30 +619,32 @@ class AdvancedSettingInterface(QWidget):
         self.systemLayout.setContentsMargins(16, 16, 16, 48)
 
         # Tab 2: Video Editing
-        self.video_hardware_group.addSettingCard(self.gpu_info_card)
-        self.video_hardware_group.addSettingCard(self.gpu_benchmark_card)
-        self.video_hardware_group.addSettingCard(self.auto_hardware_tuning)
-        self.video_hardware_group.addSettingCard(self.gpu_video_encoding)
-        self.video_hardware_group.addSettingCard(self.preserve_color_card)
-        self.videoLayout.addWidget(self.video_hardware_group)
+        self.step1_group.addSettingCard(self.auto_tighten_card)
+        self.videoLayout.addWidget(self.step1_group)
 
-        self.subtitle_removal_group.addSettingCard(self.hardware_acceleration)
-        self.subtitle_removal_group.addSettingCard(self.poisson_blending)
-        self.subtitle_removal_group.addSettingCard(self.temporal_smoothing)
-        self.subtitle_removal_group.addSettingCard(self.sharpen_inpainted_area)
-        self.subtitle_removal_group.addSettingCard(self.mask_dilation)
-        self.subtitle_removal_group.addSettingCard(self.mask_feather)
-        self.subtitle_removal_group.addSettingCard(self.temporal_smoothing_radius)
-        self.subtitle_removal_group.addSettingCard(self.auto_tighten_card)
-        self.videoLayout.addWidget(self.subtitle_removal_group)
+        self.step2_group.addSettingCard(self.gpu_info_card)
+        self.step2_group.addSettingCard(self.gpu_benchmark_card)
+        self.step2_group.addSettingCard(self.tracker_algorithm_combo)
+        self.step2_group.addSettingCard(self.hardware_acceleration)
+        self.step2_group.addSettingCard(self.auto_hardware_tuning)
+        self.step2_group.addSettingCard(self.gpu_video_encoding)
+        self.step2_group.addSettingCard(self.sttn_neighbor_stride)
+        self.step2_group.addSettingCard(self.sttn_reference_length)
+        self.step2_group.addSettingCard(self.sttn_max_load_num)
+        self.step2_group.addSettingCard(self.propainter_max_load_num)
+        self.videoLayout.addWidget(self.step2_group)
 
-        self.sttn_group.addSettingCard(self.sttn_neighbor_stride)
-        self.sttn_group.addSettingCard(self.sttn_reference_length)
-        self.sttn_group.addSettingCard(self.sttn_max_load_num)
-        self.videoLayout.addWidget(self.sttn_group)
+        self.step3_group.addSettingCard(self.preserve_color_card)
+        self.step3_group.addSettingCard(self.poisson_blending)
+        self.step3_group.addSettingCard(self.temporal_smoothing)
+        self.step3_group.addSettingCard(self.sharpen_inpainted_area)
+        self.step3_group.addSettingCard(self.temporal_smoothing_radius)
+        self.videoLayout.addWidget(self.step3_group)
 
-        self.propainter_group.addSettingCard(self.propainter_max_load_num)
-        self.videoLayout.addWidget(self.propainter_group)
+        self.mmo_group.addSettingCard(self.mmo_flip_video_card)
+        self.mmo_group.addSettingCard(self.mmo_speed_shift_card)
+        self.mmo_group.addSettingCard(self.mmo_sub_style_combo)
+        self.videoLayout.addWidget(self.mmo_group)
 
         self.videoLayout.setSpacing(16)
         self.videoLayout.setContentsMargins(16, 16, 16, 48)
@@ -621,7 +653,9 @@ class AdvancedSettingInterface(QWidget):
         self.srt_feature_group.addSettingCard(self.export_srt_card)
         self.srt_feature_group.addSettingCard(self.srt_save_directory)
         self.srt_feature_group.addSettingCard(self.whisper_fallback_card)
+        self.srt_feature_group.addSettingCard(self.voice_separation_card)
         self.srt_feature_group.addSettingCard(self.translate_subtitles_card)
+        self.srt_feature_group.addSettingCard(self.target_language_combo)
         self.srt_feature_group.addSettingCard(self.burn_translated_subtitles_card)
         self.srtLayout.addWidget(self.srt_feature_group)
 
@@ -636,6 +670,13 @@ class AdvancedSettingInterface(QWidget):
 
         self.srtLayout.setSpacing(16)
         self.srtLayout.setContentsMargins(16, 16, 16, 48)
+
+        # Cho phép tất cả các nhãn (SettingCard) tự động xuống dòng (Word Wrap)
+        for child in self.findChildren(QtWidgets.QWidget):
+            if hasattr(child, 'contentLabel') and hasattr(child, 'titleLabel'):
+                child.contentLabel.setWordWrap(True)
+                child.titleLabel.setWordWrap(True)
+
 
     def apply_preset(self, preset_name: str):
         """Áp dụng cấu hình nhanh 1-click theo nhu cầu"""
@@ -940,11 +981,20 @@ class AdvancedSettingInterface(QWidget):
             self.sttn_max_load_num.setEnabled(not checked)
         if hasattr(self, 'propainter_max_load_num'):
             self.propainter_max_load_num.setEnabled(not checked)
+        if hasattr(self, 'gpu_video_encoding'):
+            self.gpu_video_encoding.setEnabled(not checked)
         self.update_gpu_info()
+
+    def on_translate_subtitles_changed(self, checked):
+        """Khi tự động dịch, kích hoạt các tùy chọn đích"""
+        if hasattr(self, 'target_language_combo'):
+            self.target_language_combo.setEnabled(checked)
+        if hasattr(self, 'burn_translated_subtitles_card'):
+            self.burn_translated_subtitles_card.setEnabled(checked)
 
     def _format_card_labels(self):
         """Cấu hình tự động xuống dòng và chiều cao hiển thị phù hợp cho tất cả SettingCards"""
-        from PySide6.QtWidgets import QWidget
+        # Cải tiến WordWrap cho nhãn cài đặt
         for child in self.findChildren(QWidget):
             if hasattr(child, 'contentLabel') and hasattr(child, 'titleLabel'):
                 child.contentLabel.setWordWrap(True)
