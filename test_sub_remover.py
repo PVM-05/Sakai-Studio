@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 # Ensure backend module can be found
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backend.main import SubtitleRemover
+from src.core.main import GUISubtitleRemover
 
 def test():
     video_path = 'C:/Users/ADMIN/Videos/2D/Minecraft/DVD Logo Hits Corner.mp4'
@@ -20,7 +20,7 @@ def test():
         def update(self, num):
             print(f"Progress: {num}")
             
-    class MockSubRemover(SubtitleRemover):
+    class MockSubRemover(GUISubtitleRemover):
         def update_gui(self):
             return MockUpdateGui()
             

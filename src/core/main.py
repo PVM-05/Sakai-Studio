@@ -1,0 +1,928 @@
+import gc
+import torch
+import shutil
+import traceback
+import subprocess
+import os
+import sys
+
+from src.core.utils.logger import get_logger
+
+logger = get_logger()
+
+from pathlib import Path
+import threading
+import cv2
+from functools import cached_property
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from src.core.config import *
+from src.core.tools.constant import InpaintMode, SubtitleDetectMode
+from src.core.tools.hardware_accelerator import HardwareAccelerator
+from src.core.tools.common_tools import is_video_or_image, is_image_file, get_readable_path, read_image
+from src.ai_engines.inpaint.sttn_auto_inpaint import STTNAutoInpaint
+from src.ai_engines.inpaint.sttn_det_inpaint import STTNDetInpaint
+from src.ai_engines.inpaint.lama_inpaint import LamaInpaint
+from src.ai_engines.inpaint.opencv_inpaint import OpenCVInpaint
+from src.ai_engines.inpaint.propainter_inpaint import PropainterInpaint
+from src.ai_engines.translator import SubtitleTranslator, SubtitleBlock
+from src.core.tools.subtitle_exporter import SubtitleExporter
+from src.core.tools.inpaint_tools import create_mask, batch_generator, expand_frame_ranges, apply_temporal_smoothing, create_stroke_mask, create_combined_mask
+from src.core.tools.model_config import ModelConfig
+from src.core.tools.ffmpeg_cli import FFmpegCLI
+from src.core.tools.subtitle_detect import SubtitleDetect
+from src.core.tools.video_io import FramePrefetcher, FFmpegVideoWriter
+import tempfile
+import multiprocessing
+import time
+from tqdm import tqdm
+import numpy as np
+
+class ModelCacheManager:
+    _cache = {}
+
+    @classmethod
+    def get_model(cls, model_type, loader_fn, param_key=None):
+        # Hủy phiên bản cũ của cùng model nếu tham số thay đổi (để tiết kiệm VRAM)
+        if model_type in cls._cache and cls._cache[model_type]['param_key'] != param_key:
+            logger.info(f"[ModelCacheManager] Giải phóng model '{model_type}' VRAM cũ do đổi tham số...")
+            del cls._cache[model_type]
+            gc.collect()
+            torch.cuda.empty_cache()
+            
+        if model_type not in cls._cache:
+            logger.info(f"[ModelCacheManager] Nạp mới model '{model_type}' với tham số {param_key}...")
+            cls._cache[model_type] = {
+                'model': loader_fn(),
+                'param_key': param_key
+            }
+        else:
+            logger.info(f"[ModelCacheManager] Tái sử dụng model '{model_type}' từ cache!")
+        return cls._cache[model_type]['model']
+
+    @classmethod
+    def clear(cls):
+        cls._cache.clear()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+class GUISubtitleRemover:
+    def __init__(self, vd_path, gui_mode=False, callback=None):
+        self.callback = callback
+        self._static_noise_map = None
+        # 线程锁
+        self.lock = threading.RLock()
+        # 用户指定的字幕区域位置
+        self.sub_areas = []
+        # 是否为gui运行，gui运行需要显示预览
+        self.gui_mode = gui_mode
+        self.hardware_accelerator = HardwareAccelerator.instance()
+        # 是否使用硬件加速
+        self.hardware_accelerator.set_enabled(config.hardwareAcceleration.value)
+        self.model_config = ModelConfig()
+        # 判断是否为图片
+        self.is_picture = is_image_file(str(vd_path))
+        # 视频路径
+        self.video_path = vd_path
+        self.video_cap = cv2.VideoCapture(get_readable_path(vd_path))
+        # 通过视频路径获取视频名称
+        self.vd_name = Path(self.video_path).stem
+        # 视频帧总数
+        self.frame_count = int(self.video_cap.get(cv2.CAP_PROP_FRAME_COUNT) + 0.5)
+        # 视频帧率
+        self.fps = self.video_cap.get(cv2.CAP_PROP_FPS)
+        # 视频尺寸
+        self.size = (int(self.video_cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(self.video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+        self.mask_size = (int(self.video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT)), int(self.video_cap.get(cv2.CAP_PROP_FRAME_WIDTH)))
+        self.frame_height = int(self.video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.frame_width = int(self.video_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        # 初始化临时文件，windows下delete=True会引起permission denied报错
+        self.video_temp_file = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False)
+        self.video_temp_file.close() # Đóng ngay để giải phóng lock trên Windows, cho phép FFmpeg ghi vào
+        # 创建视频写对象（使用 FFmpeg libx264 编码，比 mp4v 质量更好、文件更小）
+        try:
+            self.video_writer = FFmpegVideoWriter(get_readable_path(self.video_temp_file.name), self.fps, self.size)
+        except Exception:
+            self.video_writer = cv2.VideoWriter(get_readable_path(self.video_temp_file.name), cv2.VideoWriter_fourcc(*'mp4v'), self.fps, self.size)
+        self.video_out_path = os.path.abspath(os.path.join(os.path.dirname(self.video_path), f'{self.vd_name}_no_sub.mp4'))
+        self.ext = os.path.splitext(vd_path)[-1]
+        if self.is_picture:
+            pic_dir = os.path.join(os.path.dirname(self.video_path), 'no_sub')
+            if not os.path.exists(pic_dir):
+                os.makedirs(pic_dir)
+            self.video_out_path = os.path.join(pic_dir, f'{self.vd_name}{self.ext}')
+
+        # 总处理进度
+        self.progress_total = 0
+        self.progress_remover = 0
+        self.isFinished = False
+        # 是否将原音频嵌入到去除字幕后的视频
+        self.is_successful_merged = False
+        # 进度监听器列表
+        self.progress_listeners = []
+        # inpaint的frame_no区域列表, 默认为inpaint所有帧
+        self.ab_sections = None
+
+    @staticmethod
+    def is_current_frame_no_start(frame_no, continuous_frame_no_list):
+        """
+        判断给定的帧号是否为开头，是的话返回结束帧号，不是的话返回-1
+        """
+        for start_no, end_no in continuous_frame_no_list:
+            if start_no == frame_no:
+                return True
+        return False
+
+    @staticmethod
+    def find_frame_no_end(frame_no, continuous_frame_no_list):
+        """
+        判断给定的帧号是否为开头，是的话返回结束帧号，不是的话返回-1
+        """
+        for start_no, end_no in continuous_frame_no_list:
+            if start_no <= frame_no <= end_no:
+                return end_no
+        return -1
+
+    def update_progress(self, tbar, increment):
+        tbar.update(increment)
+        current_percentage = (tbar.n / tbar.total) * 100
+        self.progress_remover = int(current_percentage)
+        self.progress_total = 40 + int(self.progress_remover * 0.6)
+        self.current_frame_no = tbar.n
+        if hasattr(self, 'callback') and self.callback:
+            self.callback.update_progress(self.progress_total, self.isFinished, self.current_frame_no)
+        self.notify_progress_listeners()
+
+    def append_output(self, *args):
+        """输出信息到控制台
+        Args:
+            *args: 要输出的内容，多个参数将用空格连接
+        """
+        print(*args)
+    
+    def add_progress_listener(self, listener):
+        """
+        添加进度监听器
+        
+        Args:
+            listener: 一个回调函数，接收参数 (progress_total, isFinished)
+        """
+        if listener not in self.progress_listeners:
+            self.progress_listeners.append(listener)
+    
+    def remove_progress_listener(self, listener):
+        """
+        移除进度监听器
+        
+        Args:
+            listener: 要移除的监听器函数
+        """
+        if listener in self.progress_listeners:
+            self.progress_listeners.remove(listener)
+            
+    def notify_progress_listeners(self):
+        """
+        通知所有进度监听器当前进度
+        """
+        frame_no = getattr(self, 'current_frame_no', 0)
+        for listener in self.progress_listeners:
+            try:
+                listener(self.progress_total, self.isFinished, frame_no)
+            except Exception:
+                try:
+                    listener(self.progress_total, self.isFinished)
+                except Exception:
+                    pass
+
+    def update_preview_with_comp(self, frame_ori, frame_comp):
+        """
+        更新预览
+        """
+        pass
+
+    def propainter_mode(self, tbar):
+        if getattr(self, 'tracked_sub_list', None):
+            sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
+            sub_list = self.tracked_sub_list
+            sub_list = {int(k): v for k, v in sub_list.items()}
+        elif getattr(config, 'movingSubtitleTracking', None) and config.movingSubtitleTracking.value:
+            from src.core.tools.object_tracker import ObjectTracker
+            sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
+            tracker = ObjectTracker(self.video_path, self.sub_areas)
+            sub_list = tracker.find_subtitle_frame_no(sub_remover=self)
+            if not sub_list:
+                sub_list = sub_detector.find_subtitle_frame_no(sub_remover=self)
+        else:
+            sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
+            sub_list = sub_detector.find_subtitle_frame_no(sub_remover=self)
+        if len(sub_list) == 0:
+            self.append_output("Không tìm thấy phụ đề nào trong video. Tiến hành sao chép trực tiếp video gốc...")
+            reader = FramePrefetcher(self.video_cap)
+            while True:
+                ret, frame = reader.read()
+                if not ret:
+                    break
+                self.video_writer.write(frame)
+                self.update_progress(tbar, increment=1)
+                if hasattr(self, 'callback') and self.callback:
+                    self.callback.update_preview(frame, frame)
+            reader.stop()
+            return
+        is_moving_tracking = getattr(self, 'tracked_sub_list', None) or (getattr(config, 'movingSubtitleTracking', None) and config.movingSubtitleTracking.value)
+        if is_moving_tracking:
+            self.append_output("[Nhận Diện Chuyển Động] Tự động kích hoạt mô hình AI bám sát từng khung hình để xóa sạch logo di chuyển...")
+            self.video_inpaint(tbar, self.lama_inpaint)
+            return
+        scene_div_points = sub_detector.get_scene_div_frame_no(self.video_path)
+        continuous_frame_no_list = sub_detector.split_range_by_scene(continuous_frame_no_list,
+                                                                          scene_div_points)
+        self.process_subtitle_translation(continuous_frame_no_list)
+        del sub_detector
+        gc.collect()        
+        propainter_inpaint = self.propainter_inpaint
+        self.append_output(tr['Main']['ProcessingStartRemovingSubtitles'])
+        index = 0
+        # 使用帧预读取，I/O 与推理重叠
+        reader = FramePrefetcher(self.video_cap)
+        while True:
+            ret, frame = reader.read()
+            if not ret:
+                break
+            index += 1
+            # 如果当前帧没有水印/文本则直接写
+            if index not in sub_list.keys():
+                self.video_writer.write(frame)
+                self.update_progress(tbar, increment=1)
+                if hasattr(self, 'callback') and self.callback:
+                    self.callback.update_preview(frame, frame)
+                continue
+            # 如果有水印，判断该帧是不是开头帧
+            else:
+                # 如果是开头帧，则批推理到尾帧
+                if self.is_current_frame_no_start(index, continuous_frame_no_list):
+                    # self.append_output(f'No 1 Current index: {index}')
+                    start_frame_no = index
+                    # self.append_output(f'find start: {start_frame_no}')
+                    # 找到结束帧
+                    end_frame_no = self.find_frame_no_end(index, continuous_frame_no_list)
+                    # 判断当前帧号是不是字幕起始位置
+                    # 如果获取的结束帧号不为-1则说明
+                    if end_frame_no != -1:
+                        # self.append_output(f'find end: {end_frame_no}')
+                        # ************ 读取该区间所有帧 start ************
+                        temp_frames = list()
+                        # 将头帧加入处理列表
+                        temp_frames.append(frame)
+                        inner_index = 0
+                        # 一直读取到尾帧
+                        while index < end_frame_no:
+                            ret, frame = reader.read()
+                            if not ret:
+                                break
+                            index += 1
+                            temp_frames.append(frame)
+                        # ************ 读取该区间所有帧 end ************
+                        if len(temp_frames) < 1:
+                            # 没有待处理，直接跳过
+                            continue
+                        elif len(temp_frames) == 1:
+                            inner_index += 1
+                            single_mask = self.get_mask(frame, sub_list[index])
+                            if np.any(single_mask > 0):
+                                inpainted_frame = self.lama_inpaint.inpaint(frame, single_mask)
+                                inpainted_frame = self.apply_sharpening_to_inpainted_frame(frame, inpainted_frame, single_mask)
+                            else:
+                                inpainted_frame = frame
+                            self.video_writer.write(inpainted_frame)
+                            # self.append_output(f'write frame: {start_frame_no + inner_index} with mask {sub_list[start_frame_no]}')
+                            self.update_progress(tbar, increment=1)
+                            continue
+                        else:
+                            # 将读取的视频帧分批处理
+                            mask_area_coordinates = []
+                            for mask_index in range(start_frame_no, end_frame_no + 1):
+                                if mask_index in sub_list.keys():
+                                    for area in sub_list[mask_index]:
+                                        xmin, xmax, ymin, ymax = area
+                                        if (ymax - ymin) - (xmax - xmin) > config.subtitleYXAxisDifferencePixel.value:
+                                            continue
+                                        if area not in mask_area_coordinates:
+                                            mask_area_coordinates.append(area)
+                            mask = self.get_mask(temp_frames[0], mask_area_coordinates)
+                            # Cho phép LaMa xử lý theo batch để áp dụng Temporal Smoothing
+                            max_load = self.get_adaptive_propainter_max_load()
+                            for batch in batch_generator(temp_frames, max_load):
+                                # 2. Gọi batch inference (cho cả LaMa và ProPainter)
+                                if np.any(mask > 0):
+                                    # Gọi __call__ của model (LaMa hoặc ProPainter đều hỗ trợ)
+                                    inpainted_frames = model(batch, mask)
+                                    if config.temporalSmoothing.value:
+                                        inpainted_frames = apply_temporal_smoothing(batch, inpainted_frames, mask, radius=config.temporalSmoothingRadius.value)
+                                    for i, inpainted_frame in enumerate(inpainted_frames):
+                                        inpainted_frame = self.apply_sharpening_to_inpainted_frame(batch[i], inpainted_frame, mask)
+                                        self.video_writer.write(inpainted_frame)
+                                        inner_index += 1
+                                        if hasattr(self, 'callback') and self.callback:
+                                            self.callback.update_preview(np.clip(batch[i]+mask[:,:,np.newaxis]*0.3,0,255).astype(np.uint8), inpainted_frame)
+                                else:
+                                    for single_frame in batch:
+                                        self.video_writer.write(single_frame)
+                                        inner_index += 1
+                                        if hasattr(self, 'callback') and self.callback:
+                                            self.callback.update_preview(single_frame, single_frame)
+                                self.update_progress(tbar, increment=len(batch))
+
+    def get_mask(self, ref_frame, coords):
+        dilation = config.maskDilation.value
+        feather = config.maskFeather.value
+        strokes = getattr(self, 'strokes', None)
+        if strokes:
+            return create_combined_mask(self.mask_size, coords_list=coords, strokes_list=strokes, dilation=dilation, feather_pixels=feather, frame=ref_frame)
+        if config.maskType.value == 'stroke':
+            return create_stroke_mask(ref_frame, self.mask_size, coords, dilation=dilation, feather_pixels=feather)
+        else:
+            return create_mask(self.mask_size, coords, dilation=dilation, feather_pixels=feather, frame=ref_frame)
+
+    def apply_sharpening_to_inpainted_frame(self, original_frame, inpainted_frame, mask):
+        """Áp dụng bộ lọc làm nét bảo toàn cạnh (Bilateral Filter) và bổ sung vân bề mặt"""
+        if getattr(config, 'sharpenInpaintedArea', None) and config.sharpenInpaintedArea.value:
+            # Chuyển đổi mask thành float 0.0 - 1.0
+            gray_mask = mask.astype(np.float32) / 255.0
+            if gray_mask.ndim == 2:
+                gray_mask = gray_mask[:, :, np.newaxis]
+
+            # 1. Trích xuất chi tiết hạt mịn bằng Bilateral Filter
+            # Bilateral Filter làm mịn vùng phẳng nhưng giữ nguyên các cạnh sắc nét
+            smoothed = cv2.bilateralFilter(inpainted_frame, d=5, sigmaColor=50, sigmaSpace=50)
+            
+            # Chi tiết cao tần (vân hạt/nhiễu) = Ảnh gốc - Ảnh mịn
+            details = cv2.subtract(inpainted_frame, smoothed)
+            
+            # Thêm chi tiết làm nét (Khuếch đại chi tiết hạt lên 1.8 lần)
+            sharpened = cv2.addWeighted(inpainted_frame, 1.0, details, 1.8, 0)
+            
+            # 2. Tạo nhiễu hạt nhẹ tĩnh (Static Grain/Texture Synthesis) để chống nhấp nháy
+            h, w = original_frame.shape[:2]
+            if self._static_noise_map is None or self._static_noise_map.shape[:2] != (h, w):
+                self._static_noise_map = np.random.normal(0, 1.0, (h, w, 3)).astype(np.float32)
+            
+            # Cảm biến độ sần sùi môi trường (Adaptive Grain)
+            # Quét vùng ảnh không bị che (mask == 0) để đo lường độ lệch chuẩn (Standard Deviation)
+            # Chọn một mẫu ảnh nhỏ không có mask để tính toán nhanh hơn (ví dụ: góc trên cùng bên trái)
+            bg_sample = original_frame[0:min(200, h), 0:min(200, w)]
+            bg_mask_sample = mask[0:min(200, h), 0:min(200, w)]
+            valid_bg = bg_sample[bg_mask_sample == 0]
+            
+            noise_scale = 1.8 # Giá trị mặc định
+            if valid_bg.size > 0:
+                # Tính độ phân tán của ảnh (Càng tối/nhiễu, std càng cao)
+                std_dev = np.std(valid_bg)
+                # Chuyển đổi std thành hệ số scale cho nhiễu (Thực nghiệm: std_dev ~ 30-80 -> noise ~ 1.5 - 3.5)
+                noise_scale = np.clip(std_dev * 0.05, 1.2, 3.5)
+            
+            sharpened_with_noise = (sharpened.astype(np.float32) + self._static_noise_map * noise_scale).clip(0, 255).astype(np.uint8)
+
+            # Trộn cục bộ: chỉ làm nét đúng phần được xóa (theo mask)
+            final_frame = (inpainted_frame * (1.0 - gray_mask) + sharpened_with_noise * gray_mask).clip(0, 255).astype(np.uint8)
+            return final_frame
+        return inpainted_frame
+
+    def sttn_auto_mode(self, tbar):
+        """
+        Sử dụng STTN để xóa phụ đề/logo. Hỗ trợ cả chế độ tĩnh và di chuyển.
+        """
+        self.append_output(tr['Main']['ProcessingStartRemovingSubtitles'])
+        
+        is_moving = getattr(self, 'tracked_sub_list', None) or (getattr(config, 'movingSubtitleTracking', None) and config.movingSubtitleTracking.value)
+        
+        if is_moving:
+            self.append_output("[Nhận Diện Chuyển Động] Tự động kích hoạt mô hình AI bám sát từng khung hình để xóa sạch logo di chuyển...")
+            self.video_inpaint(tbar, self.lama_inpaint)
+            return
+        
+        # 1. Phát hiện phụ đề để lấy mask chính xác, tránh việc xóa mờ toàn bộ vùng khoanh
+        sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
+        sub_list = sub_detector.find_subtitle_frame_no(sub_remover=self)
+        
+        if len(sub_list) == 0:
+            self.append_output("Không tìm thấy phụ đề nào trong video. Tiến hành sao chép trực tiếp video gốc...")
+            reader = FramePrefetcher(self.video_cap)
+            while True:
+                ret, frame = reader.read()
+                if not ret:
+                    break
+                self.video_writer.write(frame)
+                self.update_progress(tbar, increment=1)
+                if hasattr(self, 'callback') and self.callback:
+                    self.callback.update_preview(frame, frame)
+            reader.stop()
+            return
+            
+        del sub_detector
+        gc.collect()
+
+        # 2. Truyền trực tiếp danh sách toạ độ (sub_list) cho STTNAutoInpaint
+        # để tự động sinh mask nét chữ/mask động theo từng frame khi đọc video
+        sttn_video_inpaint = STTNAutoInpaint(self.hardware_accelerator.device, self.model_config.STTN_AUTO_MODEL_PATH, self.video_path)
+        tbar.reset(total=int(self.frame_count))  # Đặt lại bộ đếm thời gian để không bị sai lệch tốc độ (s/frame)
+        sttn_video_inpaint(input_mask=sub_list, input_sub_remover=self, tbar=tbar)
+
+    def video_inpaint(self, tbar, model):
+        if getattr(self, 'tracked_sub_list', None):
+            sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
+            sub_list = self.tracked_sub_list
+            sub_list = {int(k): v for k, v in sub_list.items()}
+        elif getattr(self, 'watermark_tracking', None):
+            sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
+            sub_list = self.watermark_tracking
+            sub_list = {int(k): v for k, v in sub_list.items()}
+        elif getattr(config, 'movingSubtitleTracking', None) and config.movingSubtitleTracking.value:
+            from src.core.tools.object_tracker import ObjectTracker
+            sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
+            tracker = ObjectTracker(self.video_path, self.sub_areas)
+            sub_list = tracker.find_subtitle_frame_no(sub_remover=self)
+            if not sub_list:
+                sub_list = sub_detector.find_subtitle_frame_no(sub_remover=self)
+        else:
+            sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
+            sub_list = sub_detector.find_subtitle_frame_no(sub_remover=self)
+            
+            
+        if len(sub_list) == 0:
+            self.append_output("Không tìm thấy phụ đề nào trong video. Tiến hành sao chép trực tiếp video gốc...")
+            reader = FramePrefetcher(self.video_cap)
+            while True:
+                ret, frame = reader.read()
+                if not ret:
+                    break
+                self.video_writer.write(frame)
+                self.update_progress(tbar, increment=1)
+                if hasattr(self, 'callback') and self.callback:
+                    self.callback.update_preview(frame, frame)
+            reader.stop()
+            return
+        is_moving_tracking = getattr(self, 'tracked_sub_list', None) or (getattr(config, 'movingSubtitleTracking', None) and config.movingSubtitleTracking.value)
+        if is_moving_tracking:
+            continuous_frame_no_list = sub_detector.find_continuous_ranges(sub_list)
+        else:
+            continuous_frame_no_list = sub_detector.find_continuous_ranges_with_same_mask(sub_list)
+        tbar.write(f"Subtitle detected: {continuous_frame_no_list}")
+        continuous_frame_no_list = expand_frame_ranges(continuous_frame_no_list, config.subtitleTimelineBackwardFrameCount.value, config.subtitleTimelineForwardFrameCount.value)
+        tbar.write(f"Subtitle timeline expand ({config.subtitleTimelineBackwardFrameCount.value} <- -> {config.subtitleTimelineForwardFrameCount.value}): {continuous_frame_no_list}")
+        continuous_frame_no_list = sub_detector.filter_and_merge_intervals(continuous_frame_no_list, config.sttnReferenceLength.value)
+        tbar.write(f'Subtitle filter_and_merge_intervals: {continuous_frame_no_list}')
+        del sub_detector
+        gc.collect()
+        start_end_map = dict()
+        for start, end in continuous_frame_no_list:
+            # 确保区间不超出视频总帧数，否则会导致 FramePrefetcher 哨兵被内循环消费后外层死锁
+            start_end_map[start] = min(end, self.frame_count)
+        current_frame_index = 0
+        self.append_output(tr['Main']['ProcessingStartRemovingSubtitles'])
+        # Đặt lại bộ đếm thời gian tqdm để đo lường chính xác tốc độ xoá phụ đề
+        tbar.reset(total=int(self.frame_count))
+        # 使用帧预读取，I/O 与推理重叠
+        reader = FramePrefetcher(self.video_cap)
+        while True:
+            ret, frame = reader.read()
+            # 如果读取到为，则结束
+            if not ret:
+                break
+            current_frame_index += 1
+            # 判断当前帧号是不是字幕区间开始, 如果不是，则直接写
+            if current_frame_index not in start_end_map.keys():
+                self.video_writer.write(frame)
+                # self.append_output(f'write frame: {current_frame_index}')
+                self.update_progress(tbar, increment=1)
+                if hasattr(self, 'callback') and self.callback:
+                    self.callback.update_preview(frame, frame)
+            # 如果是区间开始，则找到尾巴
+            else:
+                start_frame_index = current_frame_index
+                end_frame_index = start_end_map[current_frame_index]
+                tbar.write(f'processing frame {start_frame_index} to {end_frame_index}')
+                # 用于存储需要去字幕的视频帧
+                frames_need_inpaint = list()
+                frames_need_inpaint.append(frame)
+                inner_index = 0
+                # 接着往下读，直到读取到尾巴
+                for j in range(end_frame_index - start_frame_index):
+                    ret, frame = reader.read()
+                    if not ret:
+                        break
+                    current_frame_index += 1
+                    frames_need_inpaint.append(frame)
+                if is_moving_tracking:
+                    frames_masks = []
+                    for idx, m_idx in enumerate(range(start_frame_index, end_frame_index + 1)):
+                        if idx < len(frames_need_inpaint):
+                            area_coords = sub_list.get(m_idx, [])
+                            m_frame = self.get_mask(frames_need_inpaint[idx], area_coords)
+                            frames_masks.append(m_frame)
+                    mask = frames_masks
+                else:
+                    mask_area_coordinates = []
+                    for mask_index in range(start_frame_index, end_frame_index + 1):
+                        if mask_index in sub_list.keys():
+                            for area in sub_list[mask_index]:
+                                xmin, xmax, ymin, ymax = area
+                                if (ymax - ymin) - (xmax - xmin) > config.subtitleYXAxisDifferencePixel.value:
+                                    continue
+                                if area not in mask_area_coordinates:
+                                    mask_area_coordinates.append(area)
+                    mask = self.get_mask(frames_need_inpaint[0], mask_area_coordinates)
+
+                batch_offset = 0
+                for batch in batch_generator(frames_need_inpaint, self.get_adaptive_sttn_max_load()):
+                    # 2. Gọi batch inpaint với mask tương ứng
+                    batch_len = len(batch)
+                    if batch_len >= 1:
+                        if is_moving_tracking and isinstance(mask, list):
+                            batch_mask = mask[batch_offset:batch_offset + batch_len]
+                        else:
+                            batch_mask = mask
+                        inpainted_frames = model(batch, batch_mask)
+                        if not is_moving_tracking and len(batch) > 1 and config.temporalSmoothing.value:
+                            ref_m = batch_mask[0] if isinstance(batch_mask, list) else batch_mask
+                            inpainted_frames = apply_temporal_smoothing(batch, inpainted_frames, ref_m, radius=config.temporalSmoothingRadius.value)
+                        for i, inpainted_frame in enumerate(inpainted_frames):
+                            cur_m = batch_mask[i] if isinstance(batch_mask, list) else batch_mask
+                            inpainted_frame = self.apply_sharpening_to_inpainted_frame(batch[i], inpainted_frame, cur_m)
+                            self.video_writer.write(inpainted_frame)
+                            inner_index += 1
+                            vis_m = cur_m[:,:,np.newaxis] if cur_m.ndim == 2 else cur_m
+                            if hasattr(self, 'callback') and self.callback:
+                                self.callback.update_preview(np.clip(batch[i]+vis_m*0.3,0,255).astype(np.uint8), inpainted_frame)
+                        batch_offset += batch_len
+                    self.update_progress(tbar, increment=batch_len)
+        reader.stop()
+
+    def run(self):
+        # Kích hoạt Tensor Cores và tối ưu hóa toán tử CUDA nếu có GPU NVIDIA
+        if self.hardware_accelerator.has_cuda():
+            logger.info("Enabling PyTorch Tensor Cores optimizations (TF32, FP16 MatMul)...")
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            if hasattr(torch.backends.cuda.matmul, 'allow_fp16_reduced_precision_reduction'):
+                torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True
+
+        # 记录开始时间
+        start_time = time.time()
+        if len(self.sub_areas) == 0:
+            self.append_output(tr['Main']['FullScreenProcessingNote'])
+            self.sub_areas.append((0, self.frame_height, 0, self.frame_width))
+        self.append_output(tr['Main']['SubtitleArea'].format(self.sub_areas))
+        self.append_output(tr['Main']['ABSection'].format(str(self.ab_sections).replace("range", "") if self.ab_sections is not None and len(self.ab_sections) > 0 else tr['Main']['ABSectionAll']))
+        # 如果使用GPU加速，则打印GPU加速提示
+        if self.hardware_accelerator.has_accelerator():
+            accelerator_name = self.hardware_accelerator.accelerator_name
+            if accelerator_name == 'DirectML' and config.inpaintMode.value not in [InpaintMode.STTN_AUTO, InpaintMode.STTN_DET]:
+                self.append_output(tr['Main']['DirectMLWarning'])
+        os.makedirs(os.path.dirname(self.video_out_path), exist_ok=True)
+        # 重置进度条
+        self.progress_total = 0
+        tbar = tqdm(total=int(self.frame_count), unit='frame', position=0, file=sys.__stdout__,
+                    desc='Subtitle Removing')
+        if self.is_picture:
+            original_frame = read_image(self.video_path)
+            if original_frame is None:
+                self.append_output(tr['Main']['ReadImageFailed'].format(self.video_path))
+                return
+            sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
+            sub_list = sub_detector.detect_subtitle(original_frame)
+            del sub_detector
+            gc.collect()
+            if len(sub_list):
+                mask = create_mask(original_frame.shape[0:2], sub_list, frame=original_frame)
+                if np.any(mask > 0):
+                    inpainted_frame = self.lama_inpaint.inpaint(original_frame, mask)
+                    if hasattr(self, 'callback') and self.callback:
+                        self.callback.update_preview(np.clip(original_frame+mask[:,:,np.newaxis]*0.3,0,255).astype(np.uint8), inpainted_frame)
+                else:
+                    inpainted_frame = original_frame
+                    if hasattr(self, 'callback') and self.callback:
+                        self.callback.update_preview(original_frame, inpainted_frame)
+            else:
+                inpainted_frame = original_frame
+                if hasattr(self, 'callback') and self.callback:
+                    self.callback.update_preview(original_frame, inpainted_frame)
+            cv2.imencode(self.ext, inpainted_frame)[1].tofile(self.video_out_path)
+            tbar.update(1)
+            self.progress_total = 100
+        else:
+            # 精准模式下，获取场景分割的帧号，进一步切割
+            is_moving = getattr(self, 'tracked_sub_list', None) or (getattr(config, 'movingSubtitleTracking', None) and config.movingSubtitleTracking.value)
+            if is_moving:
+                self.append_output("[Nhận Diện Chuyển Động] Tự động kích hoạt mô hình AI LaMa bám sát từng khung hình để xóa sạch 100% logo di chuyển...")
+                self.video_inpaint(tbar, self.lama_inpaint)
+            elif config.inpaintMode.value == InpaintMode.PROPAINTER:
+                self.propainter_mode(tbar)
+            elif config.inpaintMode.value == InpaintMode.STTN_AUTO:
+                self.sttn_auto_mode(tbar)
+            elif config.inpaintMode.value == InpaintMode.STTN_DET:
+                self.video_inpaint(tbar, self.sttn_det_inpaint)
+            elif config.inpaintMode.value == InpaintMode.LAMA:
+                self.video_inpaint(tbar, self.lama_inpaint)
+            elif config.inpaintMode.value == InpaintMode.OPENCV:
+                self.video_inpaint(tbar, OpenCVInpaint())
+            else:
+                raise Exception(f'inpaint mode: {config.inpaintMode.value} not implemented')
+
+        self.video_cap.release()
+        self.video_writer.release()
+        if not self.is_picture:
+            # 将原音频合并到新生成的视频文件中
+            self.merge_audio_to_video()
+            
+            # Apply MMO effects if needed
+            if getattr(config, 'mmoHorizontalFlip', None):
+                if config.mmoHorizontalFlip.value or config.mmoSpeedMultiplier.value != 1.0 or config.mmoCropPercentage.value > 0:
+                    from src.core.tools.mmo_fx import MMOFXEngine
+                    self.append_output("[MMO FX] Đang áp dụng các bộ lọc lách bản quyền...")
+                    mmo_out_path = self.video_out_path.replace(self.ext, f'_mmo{self.ext}')
+                    success = MMOFXEngine.apply_copyright_bypass(
+                        self.video_out_path, 
+                        mmo_out_path,
+                        horizontal_flip=config.mmoHorizontalFlip.value,
+                        speed_multiplier=config.mmoSpeedMultiplier.value,
+                        crop_percentage=config.mmoCropPercentage.value
+                    )
+                    if success and os.path.exists(mmo_out_path):
+                        import shutil
+                        shutil.move(mmo_out_path, self.video_out_path)
+                        self.append_output("[MMO FX] Hoàn tất áp dụng bộ lọc MMO!")
+                    else:
+                        self.append_output("[MMO FX] Lỗi khi áp dụng bộ lọc MMO!")
+
+        self.append_output(tr['Main']['FinishedProcessing'].format(self.video_out_path))
+        self.append_output(tr['Main']['ProcessingTime'].format(round(time.time() - start_time)))
+        self.isFinished = True
+        if os.path.exists(self.video_temp_file.name):
+            try:
+                os.remove(self.video_temp_file.name)
+            except Exception:
+                pass
+
+    def log_model(self):
+        model_friendly_name = list(tr['InpaintMode'].values())[list(InpaintMode).index(config.inpaintMode.value)]
+        model_device = 'CPU'
+        if config.inpaintMode.value != InpaintMode.OPENCV and self.hardware_accelerator.has_accelerator():
+            accelerator_name = self.hardware_accelerator.accelerator_name
+            if accelerator_name == 'DirectML' and config.inpaintMode.value in [InpaintMode.STTN_AUTO, InpaintMode.STTN_DET]:
+                model_device = 'DirectML'
+            if self.hardware_accelerator.has_cuda() or self.hardware_accelerator.has_mps():
+                model_device = accelerator_name
+        self.append_output(tr['Main']['SubtitleRemoverModel'].format(f"{model_friendly_name} ({model_device})"))
+        providers = ", ".join(self.hardware_accelerator.onnx_providers)
+        providers_str = f" ({providers})" if providers else ""
+        mode = config.subtitleDetectMode.value
+        mode_val = mode.value if hasattr(mode, 'value') else str(mode)
+        detect_mode_index = [e.value for e in SubtitleDetectMode].index(mode_val)
+        detect_mode_name = list(tr['SubtitleDetectMode'].values())[detect_mode_index]
+        self.append_output(tr['Main']['SubtitleDetectionModel'].format(f"{detect_mode_name}{providers_str}"))
+
+    def merge_audio_to_video(self):
+        use_shell = False # Không dùng shell=True để tránh lỗi đường dẫn chứa khoảng trắng
+        if not os.path.exists(self.video_temp_file.name):
+            return
+
+        # 1. Thử ghép trực tiếp và sao chép (copy) luồng âm thanh gốc
+        audio_merge_command = [
+            FFmpegCLI.instance().ffmpeg_path,
+            "-y",
+            "-i", self.video_temp_file.name,
+            "-i", self.video_path,
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-c:v", "copy",
+            "-c:a", "copy",
+            "-movflags", "+faststart",
+            "-loglevel", "error",
+            self.video_out_path
+        ]
+        try:
+            subprocess.check_output(audio_merge_command, stdin=open(os.devnull), shell=use_shell, timeout=600)
+            self.is_successful_merged = True
+        except Exception:
+            pass
+
+        # 2. Thử ghép và encode lại âm thanh thành AAC (phòng khi định dạng âm thanh gốc không tương thích với MP4)
+        if not self.is_successful_merged:
+            audio_encode_command = [
+                FFmpegCLI.instance().ffmpeg_path,
+                "-y",
+                "-i", self.video_temp_file.name,
+                "-i", self.video_path,
+                "-map", "0:v:0",
+                "-map", "1:a:0",
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-movflags", "+faststart",
+                "-loglevel", "error",
+                self.video_out_path
+            ]
+            try:
+                subprocess.check_output(audio_encode_command, stdin=open(os.devnull), shell=use_shell, timeout=600)
+                self.is_successful_merged = True
+            except Exception:
+                pass
+
+        # 3. Nếu video gốc không có âm thanh (hoặc ghép âm thanh thất bại), copy trực tiếp tệp video tạm sang tệp đầu ra
+        if not self.is_successful_merged or not os.path.exists(self.video_out_path):
+            try:
+                shutil.copyfile(self.video_temp_file.name, self.video_out_path)
+            except Exception as e:
+                self.append_output(f"[Lỗi] Không thể sao chép tệp video đầu ra: {e}")
+        if config.burnTranslatedSubtitles.value and hasattr(self, 'ass_file_path') and os.path.exists(self.ass_file_path):
+            self.append_output("[Thông báo] Đang ghép phụ đề mới vào video kết quả...")
+            base_no_ext = os.path.splitext(self.video_out_path)[0]
+            temp_burned = f"{base_no_ext}_burned.mp4"
+            ass_escaped = self.ass_file_path.replace("\\", "/").replace(":", "\\:")
+            
+            codec_flag = "h264_nvenc" if "CUDAExecutionProvider" in self.hardware_accelerator.onnx_providers else "libx264"
+            burn_cmd = [
+                FFmpegCLI.instance().ffmpeg_path,
+                "-y",
+                "-i", self.video_out_path,
+                "-vf", f"subtitles='{ass_escaped}'",
+                "-c:v", codec_flag,
+                "-c:a", "copy",
+                "-loglevel", "error",
+                temp_burned
+            ]
+            try:
+                subprocess.check_output(burn_cmd, stdin=open(os.devnull), shell=use_shell, timeout=600)
+                if os.path.exists(temp_burned):
+                    shutil.move(temp_burned, self.video_out_path)
+                    self.append_output("[Hoàn tất] Đã ghép phụ đề mới vào video thành công!")
+            except Exception as e:
+                self.append_output(f"[Lỗi] Lỗi ghép phụ đề mới: {e}")
+
+        # Giải phóng tệp tạm (đã được close ở trên)
+        pass
+
+    def process_subtitle_translation(self, continuous_frame_no_list):
+        """
+        Dịch thuật phụ đề và xuất file .srt / .ass
+        """
+        if not config.translateSubtitles.value and not config.burnTranslatedSubtitles.value:
+            return
+
+        self.append_output("[Hệ thống] Đang thực hiện dịch thuật phụ đề...")
+        items = []
+        for start_f, end_f in continuous_frame_no_list:
+            items.append({
+                'start_frame': start_f,
+                'end_frame': end_f,
+                'text': f"Phụ đề đoạn {start_f}-{end_f}"
+            })
+
+        if not items:
+            return
+
+        target_lang = config.targetLanguage.value
+        translator = SubtitleTranslator()
+        blocks = []
+        for idx, it in enumerate(items, 1):
+            blocks.append(SubtitleBlock(
+                index=idx,
+                start_time="00:00:00,000",
+                end_time="00:00:01,000",
+                text=it['text'],
+            ))
+        try:
+            translated_blocks = translator.translator.translate_blocks(
+                blocks, source_lang="auto", target_lang=target_lang
+            )
+            for it, blk in zip(items, translated_blocks):
+                it['translated_text'] = blk.translated_text or blk.text
+        except Exception:
+            for it in items:
+                it['translated_text'] = it['text']
+
+        base_name = os.path.splitext(self.video_out_path)[0]
+        srt_path = f"{base_name}_translated.srt"
+        ass_path = f"{base_name}_translated.ass"
+
+        SubtitleExporter.export_srt(srt_path, items, self.fps)
+        SubtitleExporter.export_ass(ass_path, items, self.fps)
+        self.ass_file_path = ass_path
+        self.append_output(f"[Hoàn tất] Đã xuất file phụ đề dịch: {os.path.basename(srt_path)} và {os.path.basename(ass_path)}")
+
+    def get_adaptive_propainter_max_load(self) -> int:
+        """
+        Trả về propainterMaxLoadNum.
+        - CHẾ ĐỘ THỦ CÔNG (autoHardwareTuning = False): Dùng 100% giá trị thủ công do người dùng fix trong Advanced Settings.
+        - CHẾ ĐỘ TỰ ĐỘNG (autoHardwareTuning = True): Tự động đo VRAM còn trống để đặt tham số an toàn tối ưu.
+        """
+        user_fixed = config.propainterMaxLoadNum.value
+        
+        # 1. CHẾ ĐỘ THỦ CÔNG (MANUAL MODE)
+        if not config.autoHardwareTuning.value:
+            self.append_output(f"[Chế độ Thủ công] Tôn trọng cài đặt Advanced Settings: ProPainter Max Load = {user_fixed}")
+            return user_fixed
+
+        # 2. CHẾ ĐỘ TỰ ĐỘNG (AUTO MODE)
+        if not torch.cuda.is_available():
+            safe_load = 15
+            self.append_output(f"[Chế độ Tự động - CPU] Đặt ProPainter Max Load = {safe_load}")
+            return safe_load
+
+        try:
+            free_bytes, total_bytes = torch.cuda.mem_get_info()
+            free_vram_gb = free_bytes / (1024 ** 3)
+            total_vram_gb = total_bytes / (1024 ** 3)
+
+            if free_vram_gb >= 12:
+                safe_load = 75
+            elif free_vram_gb >= 8:
+                safe_load = 55
+            elif free_vram_gb >= 4:
+                safe_load = 35
+            else:
+                safe_load = 15
+
+            self.append_output(f"[Chế độ Tự động] VRAM trống: {free_vram_gb:.1f}GB/{total_vram_gb:.1f}GB -> Tự động đặt ProPainter Max Load = {safe_load}")
+            return safe_load
+        except Exception:
+            return min(user_fixed, 30)
+
+    def get_adaptive_sttn_max_load(self) -> int:
+        """
+        Trả về sttnMaxLoadNum.
+        - CHẾ ĐỘ THỦ CÔNG (autoHardwareTuning = False): Dùng 100% giá trị thủ công do người dùng fix trong Advanced Settings.
+        - CHẾ ĐỘ TỰ ĐỘNG (autoHardwareTuning = True): Tự động đo VRAM còn trống để đặt tham số an toàn tối ưu.
+        """
+        user_fixed = config.sttnMaxLoadNum.value
+        
+        # 1. CHẾ ĐỘ THỦ CÔNG (MANUAL MODE)
+        if not config.autoHardwareTuning.value:
+            self.append_output(f"[Chế độ Thủ công] Tôn trọng cài đặt Advanced Settings: STTN Max Load = {user_fixed}")
+            return user_fixed
+
+        # 2. CHẾ ĐỘ TỰ ĐỘNG (AUTO MODE)
+        if not torch.cuda.is_available():
+            safe_load = 20
+            self.append_output(f"[Chế độ Tự động - CPU] Đặt STTN Max Load = {safe_load}")
+            return safe_load
+
+        try:
+            free_bytes, total_bytes = torch.cuda.mem_get_info()
+            free_vram_gb = free_bytes / (1024 ** 3)
+            total_vram_gb = total_bytes / (1024 ** 3)
+
+            if free_vram_gb >= 10:
+                safe_load = 100
+            elif free_vram_gb >= 6:
+                safe_load = 60
+            elif free_vram_gb >= 3:
+                safe_load = 30
+            else:
+                safe_load = 15
+
+            self.append_output(f"[Chế độ Tự động] VRAM trống: {free_vram_gb:.1f}GB/{total_vram_gb:.1f}GB -> Tự động đặt AI Max Load = {safe_load} khung hình/lô")
+            return safe_load
+        except Exception:
+            return min(user_fixed, 40)
+
+    @property
+    def lama_inpaint(self):
+        def load():
+            model_path = os.path.join(self.model_config.LAMA_MODEL_DIR, 'big-lama.pt')
+            device = self.hardware_accelerator.device if self.hardware_accelerator.has_cuda() or self.hardware_accelerator.has_mps() else torch.device("cpu")
+            return LamaInpaint(device, model_path)
+        return ModelCacheManager.get_model("lama", load)
+
+    @property
+    def sttn_det_inpaint(self):
+        def load():
+            return STTNDetInpaint(self.hardware_accelerator.device, self.model_config.STTN_DET_MODEL_PATH)
+        return ModelCacheManager.get_model("sttn_det", load)
+
+    @property
+    def propainter_inpaint(self):
+        max_load = self.get_adaptive_propainter_max_load()
+        def load():
+            device = self.hardware_accelerator.device if self.hardware_accelerator.has_cuda() or self.hardware_accelerator.has_mps() else torch.device("cpu")
+            return PropainterInpaint(device, self.model_config.PROPAINTER_MODEL_DIR, max_load)
+        return ModelCacheManager.get_model("propainter", load, param_key=max_load)
+
+
+if __name__ == '__main__':
+    multiprocessing.set_start_method("spawn")
+    from src.core.tools.args_handler import parse_args
+    args = parse_args()
+    # force english
+    config.set(config.interface, 'en')
+    TRANSLATION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'interface', f"{config.interface.value}.ini")
+    tr.read(TRANSLATION_FILE, encoding='utf-8')
+    sr = GUISubtitleRemover(args.input)
+    if not is_video_or_image(args.input):
+        sr.append_output(f'Error: {args.input} is not supported or is corrupted.')
+        exit(-1)
+    sr.sub_areas = args.subtitle_area_coords
+    sr.video_out_path = args.output
+    config.inpaintMode.value = args.inpaint_mode
+    sr.run()
+        

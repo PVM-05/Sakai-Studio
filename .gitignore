@@ -29,16 +29,13 @@ output/
 # PyInstaller
 *.manifest
 
-# AI model weights (auto-downloaded, large)
-models/*.pth
-models/*.pt
-models/*.onnx
-models/*.bin
-models/*.gguf
-!models/README.txt
-
-# Ignore all model weights under backend/models
+# Ignore all model weights and large AI assets
+src/ai_engines/models/
 backend/models/
+
+# Junk files
+cookies.txt
+flake8_results.txt
 
 # Test media files
 test/*.mp4
@@ -50,11 +47,11 @@ test/*.wav
 test/*.mp3
 
 # User-specific config & runtime sessions (auto-generated at runtime)
-config/folder_memory.json
-config/translation_api_config.json
-config/ytdlp_settings.json
-config/auto_pipeline_config.json
-config/tasks_session.json
+# User-specific config & runtime sessions (auto-generated at runtime)
+config/*.json
+configs_data/*.json
+src/config/*.json
+src/desktop/config/*.json
 
 # Scratch & temporary test directories
 scratch/

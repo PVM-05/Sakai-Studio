@@ -4,7 +4,7 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from backend.translator import (
+from src.ai_engines.translator import (
     SubtitleBlock,
     parse_srt,
     blocks_to_srt,
