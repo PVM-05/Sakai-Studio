@@ -5,7 +5,7 @@ import os
 # Ensure backend module can be found
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backend.tools.object_tracker import ObjectTracker
+from src.core.tools.object_tracker import ObjectTracker
 
 
 def test_backward_tracking():

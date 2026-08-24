@@ -25,19 +25,19 @@ Sakai Studio là phần mềm ứng dụng trí tuệ nhân tạo để xóa ph�
 
 ```shell
 # Thẻ đồ họa NVIDIA dòng 10, 20, 30
-docker run -it --name sakai --gpus all eritpchy/video-subtitle-remover:1.4.0-cuda11.8 python backend/main.py -i test/test.mp4 -o test/test_no_sub.mp4
+docker run -it --name sakai --gpus all eritpchy/video-subtitle-remover:1.4.0-cuda11.8 python -m src.core.main -i test/test.mp4 -o test/test_no_sub.mp4
 
 # Thẻ đồ họa NVIDIA dòng 40
-docker run -it --name sakai --gpus all eritpchy/video-subtitle-remover:1.4.0-cuda12.6 python backend/main.py -i test/test.mp4 -o test/test_no_sub.mp4
+docker run -it --name sakai --gpus all eritpchy/video-subtitle-remover:1.4.0-cuda12.6 python -m src.core.main -i test/test.mp4 -o test/test_no_sub.mp4
 
 # Thẻ đồ họa NVIDIA dòng 50
-docker run -it --name sakai --gpus all eritpchy/video-subtitle-remover:1.4.0-cuda12.8 python backend/main.py -i test/test.mp4 -o test/test_no_sub.mp4
+docker run -it --name sakai --gpus all eritpchy/video-subtitle-remover:1.4.0-cuda12.8 python -m src.core.main -i test/test.mp4 -o test/test_no_sub.mp4
 
 # Thẻ đồ họa AMD hoặc Intel
-docker run -it --name sakai --gpus all eritpchy/video-subtitle-remover:1.4.0-directml python backend/main.py -i test/test.mp4 -o test/test_no_sub.mp4
+docker run -it --name sakai --gpus all eritpchy/video-subtitle-remover:1.4.0-directml python -m src.core.main -i test/test.mp4 -o test/test_no_sub.mp4
 
 # Bộ xử lý trung tâm
-docker run -it --name sakai --gpus all eritpchy/video-subtitle-remover:1.4.0-cpu python backend/main.py -i test/test.mp4 -o test/test_no_sub.mp4
+docker run -it --name sakai --gpus all eritpchy/video-subtitle-remover:1.4.0-cpu python -m src.core.main -i test/test.mp4 -o test/test_no_sub.mp4
 
 # Xuất tệp tin video
 docker cp sakai:/vsr/test/test_no_sub.mp4 ./
@@ -157,44 +157,27 @@ pip install -r requirements.txt
 
 ### 5. Khởi chạy chương trình
 
-Chạy giao diện đồ họa người dùng:
+Chạy giao diện đồ họa người dùng (GUI):
 ```shell
-python gui.py
+python -m src.desktop.main
 ```
+Hoặc đơn giản là chạy tệp `start.bat`.
 
-Chạy phiên bản dòng lệnh:
+Chạy phiên bản dòng lệnh (CLI):
 ```shell
-python ./backend/main.py
+python -m src.core.main
 ```
 
 ## Các vấn đề thường gặp
 
 **Làm thế nào để xử lý tốc độ xóa chậm?**
-Bạn có thể tăng đáng kể tốc độ xóa bằng cách sửa đổi các tham số trong tệp cấu hình phụ trợ:
-```python
-MODE = InpaintMode.STTN
-STTN_SKIP_DETECTION = True
-```
+Bạn có thể tăng đáng kể tốc độ xóa bằng cách tinh chỉnh các thông số trong Cài đặt Nâng cao trên giao diện người dùng. Đặc biệt là các chế độ STTN.
 
 **Phải làm gì nếu kết quả xóa video không đạt yêu cầu?**
-Sửa đổi các giá trị trong tệp cấu hình phụ trợ và thử các thuật toán xóa khác nhau. Dưới đây là giới thiệu về các thuật toán:
-- Thuật toán STTN: Phù hợp với các video hành động thực tế và có tốc độ nhanh, có khả năng bỏ qua việc phát hiện phụ đề.
-- Thuật toán LAMA: Phù hợp nhất cho hình ảnh và hiệu quả với các video hoạt hình, tốc độ trung bình, không thể bỏ qua phát hiện phụ đề.
-- Thuật toán PROPAINTER: Tiêu tốn một lượng lớn bộ nhớ đồ họa, tốc độ chậm hơn, hoạt động tốt hơn đối với các video có chuyển động rất mạnh.
-
-Ví dụ cho thuật toán STTN:
-```python
-MODE = InpaintMode.STTN
-STTN_NEIGHBOR_STRIDE = 10
-STTN_REFERENCE_LENGTH = 10
-STTN_MAX_LOAD_NUM = 30
-```
-
-Ví dụ cho thuật toán LAMA:
-```python
-MODE = InpaintMode.LAMA
-LAMA_SUPER_FAST = False
-```
+Hãy đổi Mô hình xóa chữ trong Cài đặt Trí tuệ Nhân tạo:
+- Thuật toán STTN: Phù hợp với các video có tiết tấu nhanh, có khả năng bỏ qua việc phát hiện phụ đề thông qua nội suy khung hình. Tốc độ cao.
+- Thuật toán LAMA: Phù hợp nhất cho hình ảnh và hiệu quả với các video có hình nền tĩnh hoặc ít chuyển động. Xóa cực sạch.
+- Thuật toán PROPAINTER: Tiêu tốn một lượng lớn bộ nhớ đồ họa, tốc độ chậm hơn, nhưng tái tạo cực kỳ thông minh đối với các video có chuyển động rất mạnh.
 
 **Lỗi giải nén tệp lưu trữ 7z**
 Giải pháp: Nâng cấp chương trình giải nén lên phiên bản mới nhất.
