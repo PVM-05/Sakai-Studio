@@ -25,6 +25,9 @@ output/
 *.bak
 *.log
 *.exe
+*.db
+src/web_api/uploads/
+src/web_api/downloads/
 
 # PyInstaller
 *.manifest
@@ -34,7 +37,7 @@ src/ai_engines/models/
 backend/models/
 
 # Junk files
-cookies.txt
+*cookies*.txt
 flake8_results.txt
 
 # Test media files

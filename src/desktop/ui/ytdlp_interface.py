@@ -80,18 +80,36 @@ def normalize_url(url):
         modal_id = query.get('modal_id', [None])[0]
         if modal_id:
             return f"https://www.douyin.com/video/{modal_id}"
+    # YouTube Mix / Radio normalizer (prevent downloading 2000+ songs from radio mix)
+    if 'youtube.com' in url.lower() or 'youtu.be' in url.lower():
+        parsed = urllib.parse.urlparse(url)
+        query = urllib.parse.parse_qs(parsed.query)
+        if 'v' in query and 'list' in query:
+            list_id = query['list'][0]
+            if list_id.startswith('RD') or list_id.startswith('UL'):
+                clean_query = urllib.parse.urlencode({'v': query['v'][0]})
+                return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{clean_query}"
     return url
 
 
 def translate_ytdlp_error(err):
     """Translate raw technical yt-dlp tracebacks into user-friendly Vietnamese guidance."""
     err_str = str(err)
+    err_str = re.sub(r'\x1b\[[0-9;]*m', '', err_str)
     err_lower = err_str.lower()
     
-    if '403' in err_lower or 'forbidden' in err_lower or 'caller does not have permission' in err_lower:
+    if 'bytes read' in err_lower and 'more expected' in err_lower:
+        return "Máy chủ ngắt kết nối đột ngột. Hệ thống tự động khôi phục đã được kích hoạt, vui lòng tải lại để tiếp tục phần đang dở."
+    elif 'fresh cookies' in err_lower or ('douyin' in err_lower and ('cookie' in err_lower or '403' in err_lower)):
+        return "Douyin yêu cầu xác thực bảo mật tệp cookies.txt. Vui lòng chọn tệp cookies.txt (chứa cookies của Douyin) để tiếp tục."
+    elif 'premium member' in err_lower or ('bilibili' in err_lower and ('premium' in err_lower or 'member' in err_lower or 'vip' in err_lower)):
+        return "Bilibili yêu cầu tài khoản VIP cho chất lượng này (1080P 60fps). Vui lòng chọn chất lượng khác hoặc cung cấp file cookies.txt của tài khoản VIP."
+    elif '403' in err_lower or 'forbidden' in err_lower or 'caller does not have permission' in err_lower:
         return "Bị trang web từ chối truy cập do lỗi quyền hạn (mã lỗi 403). Vui lòng sử dụng tệp cookies.txt để xác thực tài khoản."
     elif 'fresh cookies' in err_lower or ('douyin' in err_lower and 'cookies' in err_lower):
         return "Nguồn video yêu cầu xác thực bảo mật. Vui lòng chọn tệp cookies.txt của bạn để tiếp tục."
+    elif 'could not copy chrome cookie database' in err_lower or 'database is locked' in err_lower or 'app-bound encryption' in err_lower:
+        return "Lỗi trích xuất Cookies: Trình duyệt đang mở hoặc do bảo mật App-Bound Encryption của Chromium. Vui lòng đóng hoàn toàn trình duyệt rồi thử lại, hoặc xuất thủ công file cookies.txt."
     elif 'private' in err_lower or 'sign in' in err_lower or 'age' in err_lower or 'login' in err_lower:
         return "Video riêng tư hoặc bị giới hạn độ tuổi. Vui lòng chọn tệp cookies.txt của bạn để tiếp tục."
     elif '404' in err_lower or 'not found' in err_lower:
@@ -188,24 +206,71 @@ class ThumbnailDownloader(QThread):
         self.url = url
 
     def run(self):
+        thumb_data = None
         try:
             req = urllib.request.Request(self.url, headers={'User-Agent': 'Mozilla/5.0'})
             with urllib.request.urlopen(req) as response:
-                self.finished_sig.emit(response.read())
+                thumb_data = response.read()
         except Exception as e:
             print("Error downloading thumbnail:", e)
+        if thumb_data is not None:
+            self.finished_sig.emit(thumb_data)
 
+
+def resolve_cookies_file(cookiefile=None, url=""):
+    """
+    Intelligently select the best cookies.txt file:
+    1. If targeting douyin.com:
+       - Check if specified cookiefile has douyin cookies. If not, fallback to root cookies.txt if it has douyin cookies!
+    2. If specified cookiefile exists, use it.
+    3. Fallback to 'cookies.txt' in working directory if present.
+    """
+    root_cookie = os.path.abspath('cookies.txt')
+    has_root = os.path.exists(root_cookie)
+    is_douyin = 'douyin.com' in (url or '').lower()
+    
+    if cookiefile and os.path.exists(cookiefile):
+        if is_douyin:
+            try:
+                with open(cookiefile, 'r', encoding='utf-8', errors='ignore') as f:
+                    if 'douyin' in f.read():
+                        return cookiefile
+            except Exception:
+                pass
+            if has_root:
+                try:
+                    with open(root_cookie, 'r', encoding='utf-8', errors='ignore') as f:
+                        if 'douyin' in f.read():
+                            return root_cookie
+                except Exception:
+                    pass
+        return cookiefile
+
+    if has_root:
+        return root_cookie
+    return None
+
+def normalize_video_url(url):
+    import re
+    # Convert https://www.douyin.com/user/...?vid=12345 to https://www.douyin.com/video/12345
+    match = re.search(r'douyin\.com/(?:user|share/user)/[^/?#]+\?.*?\bvid=(\d+)', url)
+    if match:
+        return f"https://www.douyin.com/video/{match.group(1)}"
+    return url
 
 class YtdlpAnalysisWorker(QThread):
     finished_sig = Signal(dict)
     error_sig = Signal(str)
 
-    def __init__(self, url, cookiefile=None):
+    def __init__(self, url, cookiefile=None, browser_cookies=None):
         super().__init__()
-        self.url = url
+        self.url = normalize_video_url(url)
         self.cookiefile = cookiefile
+        self.browser_cookies = browser_cookies
 
     def run(self):
+        result_info = None
+        error_msg = None
         try:
             ydl_opts = {
                 'noplaylist': False,
@@ -217,18 +282,29 @@ class YtdlpAnalysisWorker(QThread):
                     'node': {},
                     'quickjs': {}
                 },
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36'
+                },
                 'extractor_args': {
                     'tiktok': ['api_hostname=api16-normal-c-useast1a.tiktokv.com']
                 }
             }
-            if self.cookiefile and os.path.exists(self.cookiefile):
-                ydl_opts['cookiefile'] = self.cookiefile
+            if self.browser_cookies and self.browser_cookies not in ["Không dùng", "Tệp cookies.txt"]:
+                ydl_opts['cookiesfrombrowser'] = (self.browser_cookies.lower(),)
+            else:
+                cookie_path = resolve_cookies_file(self.cookiefile, self.url)
+                if cookie_path:
+                    ydl_opts['cookiefile'] = cookie_path
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(self.url, download=False)
-                self.finished_sig.emit(info)
+                result_info = ydl.extract_info(self.url, download=False)
         except Exception as e:
-            self.error_sig.emit(str(e))
+            error_msg = str(e)
+
+        if error_msg is not None:
+            self.error_sig.emit(error_msg)
+        elif result_info is not None:
+            self.finished_sig.emit(result_info)
 
 
 class YtdlpWorker(QThread):
@@ -240,14 +316,15 @@ class YtdlpWorker(QThread):
     error_sig = Signal(str)            # Error message
     finished_sig = Signal(str)         # Path of the downloaded file
 
-    def __init__(self, url, save_dir, format_opt, selected_format_id=None, selected_format_type=None, cookiefile=None, preferred_container=None, preferred_audio_format=None, concurrent_fragments=4, custom_filename=None):
+    def __init__(self, url, save_dir, format_opt, selected_format_id=None, selected_format_type=None, cookiefile=None, preferred_container=None, preferred_audio_format=None, concurrent_fragments=4, custom_filename=None, browser_cookies=None):
         super().__init__()
-        self.url = url
+        self.url = normalize_video_url(url)
         self.save_dir = save_dir
         self.format_opt = format_opt
         self.selected_format_id = selected_format_id
         self.selected_format_type = selected_format_type
         self.cookiefile = cookiefile
+        self.browser_cookies = browser_cookies
         self.preferred_container = preferred_container or 'mp4'
         self.preferred_audio_format = preferred_audio_format or 'mp3'
         self.concurrent_fragments = concurrent_fragments or 4
@@ -331,21 +408,32 @@ class YtdlpWorker(QThread):
             'progress_hooks': [progress_hook],
             'logger': YtdlpLogger(self.log_sig),
             'noprogress': True,
+            'noplaylist': True,
             'allow_unverified_js': True,
             'remote_components': ['ejs:github'],
             'concurrent_fragment_downloads': self.concurrent_fragments,
+            'http_chunk_size': 10485760,  # 10MB chunks to bypass YouTube throttling
+            'retries': 10,
+            'fragment_retries': 10,
             'js_runtimes': {
                 'deno': {},
                 'node': {},
                 'quickjs': {}
+            },
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36'
             },
             'extractor_args': {
                 'tiktok': ['api_hostname=api16-normal-c-useast1a.tiktokv.com']
             }
         }
 
-        if self.cookiefile and os.path.exists(self.cookiefile):
-            ydl_opts['cookiefile'] = self.cookiefile
+        if self.browser_cookies and self.browser_cookies not in ["Không dùng", "Tệp cookies.txt"]:
+            ydl_opts['cookiesfrombrowser'] = (self.browser_cookies.lower(),)
+        else:
+            cookie_path = resolve_cookies_file(self.cookiefile, self.url)
+            if cookie_path:
+                ydl_opts['cookiefile'] = cookie_path
 
         audio_ext = self.preferred_audio_format.lower()
         # Lossless wav/flac doesn't need bitrate compression settings
@@ -376,30 +464,51 @@ class YtdlpWorker(QThread):
                 ydl_opts['format'] = 'bestvideo+bestaudio/best'
                 ydl_opts['merge_output_format'] = self.preferred_container
 
+        downloaded_filename = None
+        error_msg = None
+        cancelled = False
         try:
             self.status_sig.emit('downloading')
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(self.url, download=True)
                 if info.get('_type') == 'playlist':
-                    filename = self.save_dir
+                    entries = info.get('entries') or []
+                    if entries and entries[0]:
+                        try:
+                            downloaded_filename = ydl.prepare_filename(entries[0])
+                        except Exception:
+                            downloaded_filename = self.save_dir
+                    else:
+                        downloaded_filename = self.save_dir
                 else:
                     filename = ydl.prepare_filename(info)
+                    base, _ = os.path.splitext(filename)
                     if self.selected_format_type == 'Audio Only' or (not self.selected_format_id and self.format_opt == 'audio_only'):
-                        base, _ = os.path.splitext(filename)
-                        if os.path.exists(base + "." + audio_ext):
-                            filename = base + "." + audio_ext
+                        for candidate_ext in [audio_ext, 'mp3', 'm4a', 'wav', 'flac', 'aac', 'opus']:
+                            target = f"{base}.{candidate_ext}"
+                            if os.path.exists(target):
+                                filename = target
+                                break
                     else:
-                        # Make sure container matches preferred setting if merged
-                        base, _ = os.path.splitext(filename)
-                        if os.path.exists(base + "." + self.preferred_container):
-                            filename = base + "." + self.preferred_container
-                self.finished_sig.emit(filename)
+                        for candidate_ext in [self.preferred_container, 'mp4', 'mkv', 'webm', 'avi', 'mov']:
+                            target = f"{base}.{candidate_ext}"
+                            if os.path.exists(target):
+                                filename = target
+                                break
+                    downloaded_filename = filename
         except Exception as e:
             if self._is_cancelled:
-                self.status_sig.emit('cancelled')
+                cancelled = True
             else:
-                self.error_sig.emit(str(e))
-                self.status_sig.emit('error')
+                error_msg = str(e)
+
+        if cancelled:
+            self.status_sig.emit('cancelled')
+        elif error_msg is not None:
+            self.error_sig.emit(error_msg)
+            self.status_sig.emit('error')
+        elif downloaded_filename is not None:
+            self.finished_sig.emit(downloaded_filename)
 
     def cancel(self):
         self._is_cancelled = True
@@ -412,6 +521,7 @@ class YtdlpInterface(ScrollArea):
         self.worker = None
         self.analysis_worker = None
         self.thumb_downloader = None
+        self._active_threads = set()
         self.formats_list = []
         self.is_analyzed = False
         self.is_playlist = False
@@ -616,6 +726,13 @@ class YtdlpInterface(ScrollArea):
         # Cookies File Selection
         self.cookies_label = BodyLabel(self.card)
         self.cookies_layout = QHBoxLayout()
+        
+        self.browser_cookies_combo = ComboBox(self.card)
+        self.browser_cookies_combo.addItems(["Tệp cookies.txt", "Chrome", "Edge", "Firefox", "Brave", "Opera", "Vivaldi", "Safari"])
+        saved_browser = self.settings.get('browser_cookies', 'Tệp cookies.txt')
+        self.browser_cookies_combo.setCurrentText(saved_browser)
+        self.browser_cookies_combo.currentTextChanged.connect(self.on_browser_cookies_changed)
+        
         self.cookies_input = LineEdit(self.card)
         self.cookies_input.setReadOnly(True)
         
@@ -636,8 +753,13 @@ class YtdlpInterface(ScrollArea):
         self.choose_cookies_btn.setIcon(FluentIcon.VPN)
         self.choose_cookies_btn.clicked.connect(self.choose_cookies_file)
         
+        self.cookies_layout.addWidget(self.browser_cookies_combo)
         self.cookies_layout.addWidget(self.cookies_input)
         self.cookies_layout.addWidget(self.choose_cookies_btn)
+        
+        is_file_mode = (saved_browser == "Tệp cookies.txt")
+        self.cookies_input.setVisible(is_file_mode)
+        self.choose_cookies_btn.setVisible(is_file_mode)
         
         self.card_layout.addWidget(self.cookies_label)
         self.card_layout.addLayout(self.cookies_layout)
@@ -953,19 +1075,16 @@ class YtdlpInterface(ScrollArea):
             category="default"
         )
         if file_path:
-            import shutil
-            dest_path = os.path.join(os.getcwd(), 'cookies.txt')
-            try:
-                if os.path.abspath(file_path) != os.path.abspath(dest_path):
-                    shutil.copy2(file_path, dest_path)
-                file_path = dest_path
-                self.on_log(f"Đã sao chép tệp cookies vào thư mục dự án: {file_path}")
-            except Exception as e:
-                self.on_log(f"Không thể sao chép cookies vào dự án: {e}")
-                
             self.cookies_input.setText(file_path)
             self.settings['cookies_file'] = file_path
             save_settings(self.settings)
+
+    def on_browser_cookies_changed(self, text):
+        self.settings['browser_cookies'] = text
+        save_settings(self.settings)
+        is_file_mode = (text == "Tệp cookies.txt")
+        self.cookies_input.setVisible(is_file_mode)
+        self.choose_cookies_btn.setVisible(is_file_mode)
 
     def select_all_playlist_items(self):
         for row in range(self.playlist_table.rowCount()):
@@ -1023,6 +1142,12 @@ class YtdlpInterface(ScrollArea):
 
     def check_clipboard_and_paste(self):
         """Auto clipboard monitoring: Triggered when user enters this tab"""
+        if hasattr(self, 'analysis_worker') and self.analysis_worker is not None:
+            try:
+                if self.analysis_worker.isRunning():
+                    return
+            except Exception:
+                self.analysis_worker = None
         clipboard = QtWidgets.QApplication.clipboard()
         text = clipboard.text().strip()
         if text:
@@ -1153,10 +1278,20 @@ class YtdlpInterface(ScrollArea):
         self.open_folder_btn.hide()
         self.open_remover_btn.hide()
 
+        if hasattr(self, 'analysis_worker') and self.analysis_worker is not None:
+            try:
+                if self.analysis_worker.isRunning():
+                    return
+            except (RuntimeError, Exception):
+                self.analysis_worker = None
+
         cookies_file = self.cookies_input.text().strip()
-        self.analysis_worker = YtdlpAnalysisWorker(url, cookies_file)
+        browser_cookies = self.browser_cookies_combo.currentText()
+        self.analysis_worker = YtdlpAnalysisWorker(url, cookies_file, browser_cookies)
+        self.track_thread(self.analysis_worker)
         self.analysis_worker.finished_sig.connect(self.on_analysis_success)
         self.analysis_worker.error_sig.connect(self.on_analysis_failed)
+        self.analysis_worker.finished.connect(self.on_analysis_worker_finished)
         self.analysis_worker.finished.connect(self.analysis_worker.deleteLater)
         self.analysis_worker.start()
 
@@ -1263,7 +1398,15 @@ class YtdlpInterface(ScrollArea):
         self.thumbnail_label.setText("Loading...")
         
         if thumb_url:
+            if hasattr(self, 'thumb_downloader') and self.thumb_downloader is not None:
+                try:
+                    if self.thumb_downloader.isRunning():
+                        self.thumb_downloader.quit()
+                        self.thumb_downloader.wait(300)
+                except Exception:
+                    pass
             self.thumb_downloader = ThumbnailDownloader(thumb_url)
+            self.track_thread(self.thumb_downloader)
             self.thumb_downloader.finished_sig.connect(self.on_thumbnail_downloaded)
             self.thumb_downloader.finished.connect(self.thumb_downloader.deleteLater)
             self.thumb_downloader.start()
@@ -1319,10 +1462,14 @@ class YtdlpInterface(ScrollArea):
                     type_str = "Video + Audio"
                     raw_type = "Video + Audio"
                     resolution = f.get('resolution') or f.get('format_note') or f"{f.get('width')}x{f.get('height')}"
+                    fps = f.get('fps')
+                    if fps: resolution += f" {fps}fps"
                 elif is_video:
-                    type_str = "Video + Audio"
+                    type_str = "Video + Audio"  # Will be merged with best audio
                     raw_type = "Video Only"
                     resolution = f.get('resolution') or f.get('format_note') or f"{f.get('width')}x{f.get('height')}"
+                    fps = f.get('fps')
+                    if fps: resolution += f" {fps}fps"
                 else:
                     type_str = "Audio Only"
                     raw_type = "Audio Only"
@@ -1402,6 +1549,7 @@ class YtdlpInterface(ScrollArea):
         url = self.url_input.text().strip()
         save_dir = self.save_dir_input.text().strip() or os.getcwd()
         cookies_file = self.cookies_input.text().strip()
+        browser_cookies = self.browser_cookies_combo.currentText()
         pref_container = self.container_combo.currentText()
         pref_audio = self.audio_format_combo.currentText()
         
@@ -1414,10 +1562,14 @@ class YtdlpInterface(ScrollArea):
                     entry = self.playlist_entries[row]
                     video_title = entry.get('title') or f"Video #{row + 1}"
                     video_url = entry.get('url')
-                    if not video_url:
-                        video_id = entry.get('id')
-                        if video_id:
-                            video_url = f"https://www.youtube.com/watch?v={video_id}"
+                    video_id = entry.get('id')
+                    if video_id:
+                        video_url = f"https://www.youtube.com/watch?v={video_id}"
+                    elif video_url and ('&list=' in video_url or '?list=' in video_url):
+                        parsed_v = urllib.parse.urlparse(video_url)
+                        q_v = urllib.parse.parse_qs(parsed_v.query)
+                        if 'v' in q_v:
+                            video_url = f"https://www.youtube.com/watch?v={q_v['v'][0]}"
                             
                     if not video_url:
                         continue
@@ -1446,6 +1598,7 @@ class YtdlpInterface(ScrollArea):
                         'selected_format_type': selected_format_type,
                         'format_desc': format_desc,
                         'cookie_file': cookies_file,
+                        'browser_cookies': browser_cookies,
                         'save_dir': save_dir,
                         'preferred_container': pref_container,
                         'preferred_audio_format': pref_audio,
@@ -1518,9 +1671,9 @@ class YtdlpInterface(ScrollArea):
             'selected_format_type': selected_format_type,
             'format_desc': f"[{selected_format['quality']}] {selected_format['type']} ({selected_format['ext']})",
             'cookie_file': cookies_file,
+            'browser_cookies': browser_cookies,
             'save_dir': save_dir,
             'preferred_container': pref_container,
-            'preferred_audio_format': pref_audio,
             'preferred_audio_format': pref_audio,
             'concurrent_fragments': self.get_selected_threads(),
             'custom_filename': self.filename_input.text().strip() if hasattr(self, 'filename_input') else None,
@@ -1567,10 +1720,32 @@ class YtdlpInterface(ScrollArea):
             pbar.setValue(int(item['progress']))
             self.queue_table.setCellWidget(idx, 4, pbar)
 
+    def track_thread(self, thread):
+        """Keep strong reference to QThread until it finishes execution to prevent GC crashes."""
+        if thread is None:
+            return
+        self._active_threads.add(thread)
+        thread.finished.connect(lambda: self._active_threads.discard(thread))
+
+    def on_analysis_worker_finished(self):
+        self.analysis_worker = None
+
+    def is_worker_running(self):
+        if self.worker is None:
+            return False
+        try:
+            return self.worker.isRunning()
+        except (RuntimeError, Exception):
+            self.worker = None
+            return False
+
+    def on_worker_finished(self):
+        self.worker = None
+
     def remove_selected_queue(self):
         row = self.queue_table.currentRow()
         if row >= 0 and row < len(self.download_queue):
-            if row == self.current_queue_index and self.worker and self.worker.isRunning():
+            if row == self.current_queue_index and self.is_worker_running():
                 InfoBar.warning(
                     title=tr['Ytdlp']['Title'],
                     content="Không thể xóa video đang tải! / Cannot remove active download!",
@@ -1582,7 +1757,7 @@ class YtdlpInterface(ScrollArea):
             self.update_queue_table()
 
     def clear_queue(self):
-        if self.worker and self.worker.isRunning() and self.current_queue_index >= 0:
+        if self.is_worker_running() and self.current_queue_index >= 0:
             InfoBar.warning(
                 title=tr['Ytdlp']['Title'],
                 content="Vui lòng dừng tải trước khi xoá hết! / Stop downloading first!",
@@ -1595,7 +1770,7 @@ class YtdlpInterface(ScrollArea):
         self.update_queue_table()
 
     def start_queue_download(self):
-        if self.worker and self.worker.isRunning():
+        if self.is_worker_running():
             return
             
         self.process_next_queue_item()
@@ -1655,7 +1830,8 @@ class YtdlpInterface(ScrollArea):
             preferred_container=item['preferred_container'],
             preferred_audio_format=item.get('preferred_audio_format', 'mp3'),
             concurrent_fragments=item.get('concurrent_fragments', 4),
-            custom_filename=item.get('custom_filename')
+            custom_filename=item.get('custom_filename'),
+            browser_cookies=item.get('browser_cookies')
         )
         self.worker.progress_sig.connect(self.on_queue_progress)
         self.worker.speed_sig.connect(self.on_speed)
@@ -1664,6 +1840,8 @@ class YtdlpInterface(ScrollArea):
         self.worker.log_sig.connect(self.on_log)
         self.worker.error_sig.connect(self.on_queue_error)
         self.worker.finished_sig.connect(self.on_queue_finished)
+        self.worker.finished.connect(self.on_worker_finished)
+        self.track_thread(self.worker)
         self.worker.finished.connect(self.worker.deleteLater)
         self.worker.start()
 
@@ -1694,6 +1872,7 @@ class YtdlpInterface(ScrollArea):
 
     @Slot(str)
     def on_queue_error(self, err):
+        self.worker = None
         friendly_msg = translate_ytdlp_error(err)
         self.log_console.appendPlainText(f"\nERROR: {err}\n-> Hướng xử lý: {friendly_msg}")
         if self.current_queue_index >= 0:
@@ -1707,6 +1886,7 @@ class YtdlpInterface(ScrollArea):
 
     @Slot(str)
     def on_queue_finished(self, filename):
+        self.worker = None
         if self.current_queue_index >= 0:
             item = self.download_queue[self.current_queue_index]
             item['status'] = tr['Ytdlp']['StatusQueueSuccess']
@@ -1912,8 +2092,9 @@ class YtdlpInterface(ScrollArea):
         self.format_combo.setEnabled(False)
 
         custom_fn = self.filename_input.text().strip() if hasattr(self, 'filename_input') else None
+        browser_cookies = self.browser_cookies_combo.currentText()
         self.worker = YtdlpWorker(
-            url, save_dir, format_opt, selected_format_id, selected_format_type, cookies_file, pref_container, pref_audio, self.get_selected_threads(), custom_fn
+            url, save_dir, format_opt, selected_format_id, selected_format_type, cookies_file, pref_container, pref_audio, self.get_selected_threads(), custom_fn, browser_cookies
         )
         self.worker.progress_sig.connect(self.on_progress)
         self.worker.speed_sig.connect(self.on_speed)
@@ -1922,10 +2103,13 @@ class YtdlpInterface(ScrollArea):
         self.worker.log_sig.connect(self.on_log)
         self.worker.error_sig.connect(self.on_error)
         self.worker.finished_sig.connect(self.on_finished)
+        self.worker.finished.connect(self.on_worker_finished)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.track_thread(self.worker)
         self.worker.start()
 
     def cancel_download(self):
-        if self.worker and self.worker.isRunning():
+        if self.is_worker_running():
             self.worker.cancel()
             self.cancel_btn.setEnabled(False)
             self.log_console.appendPlainText("\nCancelling download...")
@@ -1970,6 +2154,7 @@ class YtdlpInterface(ScrollArea):
 
     @Slot(str)
     def on_error(self, err):
+        self.worker = None
         friendly_msg = translate_ytdlp_error(err)
         self.log_console.appendPlainText(f"\nERROR: {err}\n-> Hướng xử lý: {friendly_msg}")
         self.status_label.setText(friendly_msg)
@@ -1982,6 +2167,7 @@ class YtdlpInterface(ScrollArea):
 
     @Slot(str)
     def on_finished(self, filename):
+        self.worker = None
         self.reset_ui_state()
         self.start_queue_btn.setEnabled(True)
         self.progress_bar.setValue(100)

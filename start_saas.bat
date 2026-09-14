@@ -3,9 +3,9 @@ echo ===================================================
 echo     KHOI DONG HE THONG SAAS - SAKAI STUDIO
 echo ===================================================
 
-echo [1] Kiem tra Redis Server (Bat buoc de Celery hoat dong)
-echo Xin dam bao ban da chay Redis (qua Docker hoac WSL tren Windows).
-echo Neu chua co Redis, Celery Worker se bao loi ket noi.
+echo [1] Kiem tra hang doi tac vu...
+echo He thong tu dong nhan dien Redis tren cong 6379.
+echo Neu chua co Redis, Celery se tu dong dung co che SQLite cuc bo.
 echo.
 
 echo [2] Khoi dong FastAPI Backend (Port 8000)...
@@ -13,7 +13,7 @@ start "FastAPI Server" cmd /k "venv\Scripts\activate && uvicorn src.web_api.api.
 timeout /t 2 /nobreak > NUL
 
 echo [3] Khoi dong Celery AI Worker...
-start "Celery Worker" cmd /k "venv\Scripts\activate && celery -A src.web_api.api.worker_tasks worker --loglevel=info -P gevent"
+start "Celery Worker" cmd /k "venv\Scripts\activate && celery -A src.web_api.api.celery_app worker --loglevel=info -P solo"
 timeout /t 2 /nobreak > NUL
 
 echo [4] Khoi dong Next.js Frontend (Port 3000)...

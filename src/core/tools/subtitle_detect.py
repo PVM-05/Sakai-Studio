@@ -246,6 +246,29 @@ class SubtitleDetect:
         return temp_list
 
     def find_subtitle_frame_no(self, sub_remover=None):
+        mode = config.subtitleDetectMode.value
+        mode_val = mode.value if hasattr(mode, 'value') else str(mode)
+        if mode_val == SubtitleDetectMode.NONE.value:
+            video_cap = cv2.VideoCapture(get_readable_path(self.video_path))
+            frame_count = int(video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            video_cap.release()
+            
+            coords = []
+            for area in self.sub_areas:
+                ymin, ymax, xmin, xmax = area
+                coords.append((xmin, xmax, ymin, ymax))
+                
+            subtitle_frame_no_box_dict = {}
+            for i in range(1, frame_count + 1):
+                if not is_frame_number_in_ab_sections(i - 1, sub_remover.ab_sections if sub_remover else None):
+                    continue
+                subtitle_frame_no_box_dict[i] = coords
+                
+            if sub_remover:
+                sub_remover.progress_total = 40
+                sub_remover.notify_progress_listeners()
+            return subtitle_frame_no_box_dict
+
         video_cap = cv2.VideoCapture(get_readable_path(self.video_path))
         frame_count = video_cap.get(cv2.CAP_PROP_FRAME_COUNT)
         tbar = tqdm(total=int(frame_count), unit='frame', position=0, file=sys.__stdout__, desc='Subtitle Finding')

@@ -215,8 +215,9 @@ class STTNInpaint:
 class STTNAutoInpaint:
 
     def read_frame_info_from_video(self):
-        # 使用opencv读取视频
-        reader = cv2.VideoCapture(self.video_path)
+        # Sử dụng hàm đọc luồng thuần phần mềm để tránh lỗi bộ đệm HWAccel
+        from src.core.tools.common_tools import open_capture_no_hwaccel
+        reader = open_capture_no_hwaccel(self.video_path)
         # 获取视频的宽度, 高度, 帧率和帧数信息并存储在frame_info字典中
         frame_info = {
             'W_ori': int(reader.get(cv2.CAP_PROP_FRAME_WIDTH) + 0.5),  # 视频的原始宽度
@@ -261,8 +262,7 @@ class STTNAutoInpaint:
                 # 创建视频写入对象，用于输出修复后的视频
                 writer = cv2.VideoWriter(self.video_out_path, cv2.VideoWriter_fourcc(*"mp4v"), frame_info['fps'], (frame_info['W_ori'], frame_info['H_ori']))
             
-            # 计算分割高度，用于确定修复区域的大小
-            split_h = int(frame_info['W_ori'] * 3 / 16)
+            # 分割高度将在后面根据掩码动态计算
 
             # ===== Xử lý mask: Hỗ trợ cả mask tĩnh (ndarray), mask động per-frame (dict np.ndarray), và toạ độ động (dict list) =====
             is_per_frame_mask = isinstance(input_mask, dict)
@@ -271,7 +271,6 @@ class STTNAutoInpaint:
             if is_coord_dict:
                 if not input_mask:
                     # Dict rỗng: không có đối tượng nào, ghi video gốc không thay đổi
-                    prefetcher = FramePrefetcher(reader)
                     while True:
                         success, image = prefetcher.read()
                         if not success:
@@ -286,7 +285,7 @@ class STTNAutoInpaint:
                 for fno, coords in input_mask.items():
                     for area in coords:
                         xmin, xmax, ymin, ymax = area
-                        # Padding an toàn cho union mask
+# Padding an toàn cho union mask
                         padding = 32
                         if hasattr(config, 'maskDilation'):
                             padding += config.maskDilation.value
@@ -300,7 +299,6 @@ class STTNAutoInpaint:
             elif is_per_frame_mask:
                 if not input_mask:
                     # Dict rỗng: không có đối tượng nào, ghi video gốc không thay đổi
-                    prefetcher = FramePrefetcher(reader)
                     while True:
                         success, image = prefetcher.read()
                         if not success:
@@ -331,8 +329,18 @@ class STTNAutoInpaint:
                 if mask.ndim == 2:
                     mask = mask[:, :, None]
 
-            # 得到修复区域位置
-            inpaint_area = get_inpaint_area_by_mask(frame_info['W_ori'], frame_info['H_ori'], split_h, mask)
+            # Tính toán chiều cao vùng crop tối ưu dựa trên kích thước thật của mặt nạ phụ đề
+            # Tránh việc cắt vùng quá lớn (cố định 360px) gây quá tải VRAM và làm chậm STTN Transformer
+            ys, xs = np.where(mask > 0)[:2]
+            if len(ys) > 0:
+                h_mask = ys.max() - ys.min()
+                # Tối thiểu 120px (chuẩn của STTN), nếu phụ đề lớn hơn thì cộng thêm viền 32px
+                split_h = max(120, int(h_mask + 32))
+            else:
+                split_h = 120
+
+            # 得到修复区域位置 (Yêu cầu STTN: khung bao là bội số của 16)
+            inpaint_area = get_inpaint_area_by_mask(frame_info['W_ori'], frame_info['H_ori'], split_h, mask, multiple=16)
             # 根据可用显存动态调整 clip_gap，避免 OOM
             effective_clip_gap = self.clip_gap
             vram_mb = HardwareAccelerator.instance().get_available_vram_mb()
@@ -375,12 +383,17 @@ class STTNAutoInpaint:
                     
                     if is_frame_number_in_ab_sections(j, ab_sections):
                         for k in range(len(inpaint_area)):
-                            # 裁剪、缩放并添加到帧字典
-                            image_crop = image[inpaint_area[k][0]:inpaint_area[k][1], :, :]
+                            image_crop = image[inpaint_area[k][0]:inpaint_area[k][1], inpaint_area[k][2]:inpaint_area[k][3], :]
                             h_c, w_c = image_crop.shape[:2]
-                            pad_h = (120 - h_c % 120) % 120
-                            pad_w = (640 - w_c % 640) % 640
-                            image_resize = cv2.copyMakeBorder(image_crop, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT_101)
+                            
+                            # Kẹp chặt kích thước crop về đúng (640, 120) theo giới hạn của STTN để tránh lỗi rainbow noise
+                            if w_c <= 640 and h_c <= 120:
+                                pad_h = 120 - h_c
+                                pad_w = 640 - w_c
+                                image_resize = cv2.copyMakeBorder(image_crop, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT_101)
+                            else:
+                                image_resize = cv2.resize(image_crop, (640, 120), interpolation=cv2.INTER_AREA)
+                                
                             image_resize_rgb = cv2.cvtColor(image_resize, cv2.COLOR_BGR2RGB)
                             frames[k].append(image_resize_rgb)
                 
@@ -445,17 +458,26 @@ class STTNAutoInpaint:
                             for k in range(len(inpaint_area)):
                                 if comp_idx < len(comps[k]):  # 确保索引有效
                                     actual_h = inpaint_area[k][1] - inpaint_area[k][0]
-                                    comp = comps[k][comp_idx][:actual_h, :frame_info['W_ori']]
-                                    mask_area = cur_mask[inpaint_area[k][0]:inpaint_area[k][1], :]
+                                    actual_w = inpaint_area[k][3] - inpaint_area[k][2]
+                                    comp = comps[k][comp_idx]
+                                    
+                                    # Lấy chính xác vùng ảnh (bỏ phần padding dư thừa)
+                                    # Nếu crop ban đầu đã vượt 640x120, model đã resize, nên phải resize-ngược lại
+                                    if actual_w <= 640 and actual_h <= 120:
+                                        comp = comp[:actual_h, :actual_w]
+                                    else:
+                                        comp = cv2.resize(comp, (actual_w, actual_h), interpolation=cv2.INTER_LANCZOS4)
+                                        
+                                    mask_area = cur_mask[inpaint_area[k][0]:inpaint_area[k][1], inpaint_area[k][2]:inpaint_area[k][3]]
                                     
                                     use_poisson = False
                                     if hasattr(config, 'poissonBlending'):
                                         use_poisson = config.poissonBlending.value
                                     method = 'poisson' if use_poisson else 'feather'
                                     
-                                    original_crop = frame[inpaint_area[k][0]:inpaint_area[k][1], :, :]
+                                    original_crop = frame[inpaint_area[k][0]:inpaint_area[k][1], inpaint_area[k][2]:inpaint_area[k][3], :]
                                     blended = blend_inpaint(original_crop, comp, mask_area, method=method, feather_pixels=8)
-                                    frame[inpaint_area[k][0]:inpaint_area[k][1], :, :] = blended
+                                    frame[inpaint_area[k][0]:inpaint_area[k][1], inpaint_area[k][2]:inpaint_area[k][3], :] = blended
                         
                         writer.write(frame)
                         
@@ -464,6 +486,16 @@ class STTNAutoInpaint:
                                 input_sub_remover.update_progress(tbar, increment=1)
                             if original_frame is not None and input_sub_remover.gui_mode:
                                 input_sub_remover.update_preview_with_comp(original_frame, frame)
+                elif valid_frames_count > 0:
+                    # 如果没有要修复的区域，直接写入原帧并更新进度
+                    for j in range(valid_frames_count):
+                        frame = frames_hr[j]
+                        writer.write(frame)
+                        if input_sub_remover is not None:
+                            if tbar is not None:
+                                input_sub_remover.update_progress(tbar, increment=1)
+                            if input_sub_remover.gui_mode:
+                                input_sub_remover.update_preview_with_comp(frame, frame)
                 # 每个chunk处理完后清理GPU缓存
                 del frames_hr, frames, comps
                 gc.collect()

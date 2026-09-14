@@ -197,9 +197,10 @@ class GUISubtitleRemover:
 
     def update_preview_with_comp(self, frame_ori, frame_comp):
         """
-        更新预览
+        Cập nhật preview với frame gốc và frame kết quả
         """
-        pass
+        if hasattr(self, 'callback') and self.callback:
+            self.callback.update_preview(frame_ori, frame_comp)
 
     def propainter_mode(self, tbar):
         if getattr(self, 'tracked_sub_list', None):

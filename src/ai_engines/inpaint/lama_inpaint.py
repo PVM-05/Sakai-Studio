@@ -52,8 +52,17 @@ class LamaInpaint:
             return [self.inpaint(images[0], masks[0])]
 
         orig_height, orig_width = images[0].shape[:2]
-        # 分小批次推理，每批最多 4 帧
-        mini_batch_size = 4
+        
+        # Tính mini_batch_size động theo VRAM khả dụng thay vì hardcode 4
+        from src.core.tools.hardware_accelerator import HardwareAccelerator
+        vram_mb = HardwareAccelerator.instance().get_available_vram_mb()
+        if vram_mb > 0:
+            # LAMA cần nhiều RAM hơn do FFC, ước lượng an toàn ~16 bytes per pixel cho toàn bộ tensor
+            bytes_per_frame = orig_width * orig_height * 16
+            mini_batch_size = max(1, min(4, int(vram_mb * 1024 * 1024 / bytes_per_frame)))
+        else:
+            mini_batch_size = 4
+            
         results = [None] * len(images)
         for start in range(0, len(images), mini_batch_size):
             end = min(start + mini_batch_size, len(images))
@@ -99,7 +108,31 @@ class LamaInpaint:
         :param input_mask: 字幕区域mask (numpy array hoặc list các mask per-frame)
         """
         is_mask_list = isinstance(input_mask, (list, tuple))
-        if is_mask_list:
+        is_dict_mask = isinstance(input_mask, dict)
+        
+        if is_dict_mask:
+            # Support per-frame mask dict or coord dict (fallback for robustness)
+            if not input_mask:
+                return [f.copy() for f in input_frames]
+            is_coord = isinstance(next(iter(input_mask.values())), list)
+            from src.core.tools.inpaint_tools import create_mask
+            H_ori, W_ori = input_frames[0].shape[:2]
+            mask_list = []
+            union_mask = np.zeros((H_ori, W_ori, 1), dtype=np.float32)
+            frame_nos = sorted(input_mask.keys())
+            for i, fno in enumerate(frame_nos):
+                if i >= len(input_frames): break
+                if is_coord:
+                    m = create_mask((H_ori, W_ori), input_mask[fno], frame=input_frames[i])
+                else:
+                    m = input_mask[fno]
+                m_3d = m[:, :, None] if m.ndim == 2 else m
+                mask_list.append(m_3d)
+                union_mask = np.maximum(union_mask, m_3d)
+            calc_mask = union_mask
+            input_mask = mask_list
+            is_mask_list = True
+        elif is_mask_list:
             first_m = input_mask[0]
             ref_mask = first_m[:, :, None] if first_m.ndim == 2 else first_m
             union_mask = np.zeros_like(ref_mask)
@@ -128,13 +161,16 @@ class LamaInpaint:
             cropped_masks = []
             for j in range(len(frames_hr)):
                 if is_mask_list:
-                    m_j = input_mask[j]
+                    # Đảm bảo không vượt quá index của input_mask nếu list ngắn hơn
+                    m_idx = min(j, len(input_mask) - 1)
+                    m_j = input_mask[m_idx]
                     cur_mask = m_j[:, :, None] if m_j.ndim == 2 else m_j
                 else:
                     cur_mask = calc_mask
 
-                image_crop = frames_hr[j][inpaint_area[k][0]:inpaint_area[k][1], :, :]
-                mask_crop = cur_mask[inpaint_area[k][0]:inpaint_area[k][1], :, :]
+                # Cắt chính xác cả chiều cao và chiều rộng theo bounding box để tăng tốc & đồng bộ với STTN
+                image_crop = frames_hr[j][inpaint_area[k][0]:inpaint_area[k][1], inpaint_area[k][2]:inpaint_area[k][3], :]
+                mask_crop = cur_mask[inpaint_area[k][0]:inpaint_area[k][1], inpaint_area[k][2]:inpaint_area[k][3], :]
                 cropped_frames.append(image_crop)
                 cropped_masks.append(mask_crop)
 
@@ -154,7 +190,7 @@ class LamaInpaint:
                     cur_mask = calc_mask
 
                 for k in range(len(inpaint_area)):
-                    mask_area = cur_mask[inpaint_area[k][0]:inpaint_area[k][1], :, :]
+                    mask_area = cur_mask[inpaint_area[k][0]:inpaint_area[k][1], inpaint_area[k][2]:inpaint_area[k][3], :]
                     comp = comps[k][j]
                     
                     # Xác định phương pháp hòa trộn dựa trên cấu hình
@@ -163,9 +199,9 @@ class LamaInpaint:
                         use_poisson = config.poissonBlending.value
                     method = 'poisson' if use_poisson else 'feather'
                     
-                    original_crop = frame[inpaint_area[k][0]:inpaint_area[k][1], :, :]
+                    original_crop = frame[inpaint_area[k][0]:inpaint_area[k][1], inpaint_area[k][2]:inpaint_area[k][3], :]
                     blended = blend_inpaint(original_crop, comp, mask_area, method=method, feather_pixels=8)
-                    frame[inpaint_area[k][0]:inpaint_area[k][1], :, :] = blended
+                    frame[inpaint_area[k][0]:inpaint_area[k][1], inpaint_area[k][2]:inpaint_area[k][3], :] = blended
                 inpainted_frames.append(frame)
         else:
             # 无需处理的区域，返回原始帧

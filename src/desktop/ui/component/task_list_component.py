@@ -557,9 +557,24 @@ class TaskListComponent(QWidget):
                     "output_path": t._output_path
                 })
             
+            class NpEncoder(json.JSONEncoder):
+                def default(self, obj):
+                    import numpy as np
+                    if isinstance(obj, np.integer) or type(obj).__name__ in ['int32', 'int64']:
+                        return int(obj)
+                    if isinstance(obj, np.floating) or type(obj).__name__ in ['float32', 'float64']:
+                        return float(obj)
+                    if isinstance(obj, np.ndarray):
+                        return obj.tolist()
+                    if type(obj).__name__ == 'bool_':
+                        return bool(obj)
+                    return super(NpEncoder, self).default(obj)
+            
             with open(session_file, "w", encoding="utf-8") as f:
-                json.dump(task_data, f, ensure_ascii=False, indent=2)
+                json.dump(task_data, f, ensure_ascii=False, indent=2, cls=NpEncoder)
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             print(f"[TaskListComponent] Save session failed: {e}")
 
     def has_saved_session(self):

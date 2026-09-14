@@ -725,24 +725,8 @@ class HomeInterface(QWidget):
                                     text_recognition_model_dir=model_config.REC_MODEL_DIR,
                                 )
                         
-                        result = []
-                        if hasattr(self._cached_paddle_engine, "ocr"):
-                            res = self._cached_paddle_engine.ocr(frame, det=True, rec=True)
-                            if res and isinstance(res, (list, tuple)) and len(res) > 0 and res[0]:
-                                for item in res[0]:
-                                    if item and len(item) == 2:
-                                        box = item[0]
-                                        txt = item[1][0] if isinstance(item[1], (list, tuple)) and len(item[1]) > 0 else ""
-                                        score = item[1][1] if isinstance(item[1], (list, tuple)) and len(item[1]) > 1 else 1.0
-                                        result.append((box, txt, score))
-                        else:
-                            # Fallback if somehow .ocr() is missing (unlikely)
-                            from src.ai_engines.paddle_compat import extract_paddle_boxes
-                            boxes = extract_paddle_boxes(self._cached_paddle_engine, frame, threshold=0.3)
-                            if boxes:
-                                for (x1, y1, x2, y2) in boxes:
-                                    poly = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
-                                    result.append((poly, "TEXT", 1.0))
+                        from src.ai_engines.paddle_compat import extract_paddle_text
+                        result = extract_paddle_text(self._cached_paddle_engine, frame, threshold=0.3)
                 except Exception as e:
                     import traceback
                     traceback.print_exc()
@@ -808,10 +792,12 @@ class HomeInterface(QWidget):
                         
                         # Mở rộng lề rộng hơn (40px ngang, 20px dọc) để bao phủ sạch sẽ 
                         # toàn bộ khung nền (background pill) của phụ đề trên các video ngắn (TikTok/Shorts).
-                        xmin = max(0, xmin - 40)
-                        xmax = min(w, xmax + 40)
-                        ymin = max(0, ymin - 20)
-                        ymax = min(h, ymax + 20)
+                        # Bỏ qua bước này nếu người dùng chủ động bật "Tự động ôm khít" (muốn bám sát nét chữ).
+                        if not config.autoTighten.value:
+                            xmin = max(0, xmin - 40)
+                            xmax = min(w, xmax + 40)
+                            ymin = max(0, ymin - 20)
+                            ymax = min(h, ymax + 20)
 
                         detected_rects.append((ymin, ymax, xmin, xmax))
             except Exception as e:
@@ -1580,8 +1566,11 @@ class HomeInterface(QWidget):
             )
             return
 
-        selections = self.video_display_component.selection_rects
-        if not selections:
+        # Lấy tọa độ gốc trên video (absolute pixels) từ tọa độ preview
+        video_selections = self.video_display_component.preview_coordinates_to_video_coordinates(
+            self.video_display_component.selection_rects
+        )
+        if not video_selections:
             InfoBar.warning(
                 title=tr['TaskList']['Warning'],
                 content=tr['SubtitleExtractorGUI']['PleaseSelectSubtitleArea'],
@@ -1591,17 +1580,13 @@ class HomeInterface(QWidget):
             return
 
         frame_h, frame_w = self.current_frame.shape[:2]
-        new_selections = []
+        tightened_video_selections = []
 
-        for rect in selections:
-            ymin_r, ymax_r, xmin_r, xmax_r = rect
-            y1 = max(0, int(ymin_r * frame_h))
-            y2 = min(frame_h, int(ymax_r * frame_h))
-            x1 = max(0, int(xmin_r * frame_w))
-            x2 = min(frame_w, int(xmax_r * frame_w))
+        for rect in video_selections:
+            y1, y2, x1, x2 = rect
 
             if y2 - y1 < 5 or x2 - x1 < 5:
-                new_selections.append(rect)
+                tightened_video_selections.append(rect)
                 continue
 
             crop = self.current_frame[y1:y2, x1:x2]
@@ -1631,17 +1616,22 @@ class HomeInterface(QWidget):
                 nx1 = max(0, x1 + x_min_c - pad)
                 nx2 = min(frame_w, x1 + x_max_c + pad)
 
-                new_selections.append((ny1 / frame_h, ny2 / frame_h, nx1 / frame_w, nx2 / frame_w))
+                tightened_video_selections.append((ny1, ny2, nx1, nx2))
             else:
-                new_selections.append(rect)
+                tightened_video_selections.append(rect)
 
-        self.video_display_component.set_selection_rects(new_selections)
+        # Chuyển tọa độ absolute pixels vừa tighten về lại tỷ lệ widget preview (0..1) để vẽ
+        new_widget_selections = self.video_display_component.video_coordinates_to_preview_coordinates(tightened_video_selections)
+        
+        self.video_display_component.set_selection_rects(new_widget_selections)
         self.video_display_component.update_preview_with_rect()
         
-        # FIX BUG-04: Save tightened selections back to task options for backend processing
+        self.sub_areas = tightened_video_selections
+
+        # FIX BUG: Save absolute pixel selections back to task options for backend processing
         get_current_task_index = self.task_list_component.get_current_task_index()
         if get_current_task_index >= 0:
-            self.task_list_component.update_task_option(get_current_task_index, TaskOptions.SUB_AREAS, new_selections)
+            self.task_list_component.update_task_option(get_current_task_index, TaskOptions.SUB_AREAS, tightened_video_selections)
 
         InfoBar.success(
             title="Thành công",
