@@ -58,16 +58,14 @@ def build_paddleocr(lang: str, device: str, **extra):
                     use_doc_orientation_classify=False,
                     use_doc_unwarping=False,
                     use_textline_orientation=False,
-                    show_log=False,
                     **extra,
                 )
                 is_v3 = True
-            except TypeError:
+            except (TypeError, ValueError):
                 model = PaddleOCR(
                     lang=lang,
                     use_angle_cls=False,
                     use_gpu=use_cuda,
-                    show_log=False,
                     **extra,
                 )
                 is_v3 = False
@@ -87,6 +85,13 @@ def extract_paddle_boxes(model, frame: np.ndarray,
     if hasattr(model, "predict"):
         return _extract_v3(model, frame, threshold)
     return _extract_v2(model, frame, threshold)
+
+
+def extract_paddle_text(model, frame: np.ndarray, threshold: float = 0.0) -> List[Tuple[list, str, float]]:
+    """Run det+rec on ``frame`` and return (poly, text, score) on either major version."""
+    if hasattr(model, "predict"):
+        return _extract_text_v3(model, frame, threshold)
+    return _extract_text_v2(model, frame, threshold)
 
 
 def _extract_v3(model, frame: np.ndarray, threshold: float) -> List[Box]:
@@ -176,3 +181,44 @@ def _extract_v2(model, frame: np.ndarray, threshold: float) -> List[Box]:
                 x2, y2 = pts.max(axis=0)
                 boxes.append((int(x1), int(y1), int(x2), int(y2)))
     return boxes
+
+
+def _extract_text_v3(model, frame: np.ndarray, threshold: float) -> List[Tuple[list, str, float]]:
+    results: List[Tuple[list, str, float]] = []
+    preds = model.predict(frame)
+    for res in preds or []:
+        data = _result_payload(res)
+        if not isinstance(data, dict):
+            continue
+        data = data.get("res", data)
+        polys = data.get("rec_polys") or data.get("dt_polys") or []
+        scores = data.get("rec_scores") or []
+        texts = data.get("rec_text") or data.get("rec_texts") or []
+        
+        for idx, poly in enumerate(polys):
+            try:
+                score = float(scores[idx]) if idx < len(scores) else 1.0
+            except (TypeError, ValueError):
+                score = 1.0
+            if score < threshold:
+                continue
+            txt = str(texts[idx]) if idx < len(texts) else ""
+            results.append((poly, txt, score))
+    return results
+
+
+def _extract_text_v2(model, frame: np.ndarray, threshold: float) -> List[Tuple[list, str, float]]:
+    results: List[Tuple[list, str, float]] = []
+    try:
+        preds = model.ocr(frame, cls=False)
+    except TypeError:
+        preds = model.ocr(frame)
+    if preds and preds[0]:
+        for line in preds[0]:
+            if len(line) == 2:
+                poly = line[0]
+                txt = line[1][0] if isinstance(line[1], (list, tuple)) and len(line[1]) > 0 else ""
+                score = float(line[1][1]) if isinstance(line[1], (list, tuple)) and len(line[1]) > 1 else 1.0
+                if score >= threshold:
+                    results.append((poly, txt, score))
+    return results

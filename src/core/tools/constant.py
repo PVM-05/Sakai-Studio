@@ -20,3 +20,4 @@ class SubtitleDetectMode(Enum):
     PP_OCRv5_MOBILE = "PP_OCRv5_MOBILE"
     PP_OCRv5_SERVER = "PP_OCRv5_SERVER"
     PADDLE_OCR = "PADDLE_OCR"
+    NONE = "NONE"

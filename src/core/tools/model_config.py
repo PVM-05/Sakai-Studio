@@ -35,9 +35,12 @@ class ModelConfig:
         elif mode_val == SubtitleDetectMode.RAPID_OCR.value:
             self.DET_MODEL_DIR = None
             self.REC_MODEL_DIR = None
+        elif mode_val == SubtitleDetectMode.NONE.value:
+            self.DET_MODEL_DIR = None
+            self.REC_MODEL_DIR = None
         else:
             raise ValueError(f"Invalid subtitle detect mode: {mode_val}")
         self.DET_MODEL_NAME = _MODEL_NAME_MAP.get(mode_val, "")
 
-        merge_big_file_if_not_exists(self.LAMA_MODEL_DIR, 'bit-lama.pt')
+        merge_big_file_if_not_exists(self.LAMA_MODEL_DIR, 'big-lama.pt')
         merge_big_file_if_not_exists(self.PROPAINTER_MODEL_DIR, 'ProPainter.pth')

@@ -21,16 +21,31 @@ class FFmpegCLI:
         return cls._instance
     
     def __init__(self):
-        os.chmod(self.ffmpeg_path, stat.S_IRWXU + stat.S_IRWXG + stat.S_IRWXO)
+        ffmpeg_exe = self.ffmpeg_path
+        if os.path.exists(ffmpeg_exe):
+            try:
+                os.chmod(ffmpeg_exe, stat.S_IRWXU + stat.S_IRWXG + stat.S_IRWXO)
+            except Exception:
+                pass
         
     @property
     def ffmpeg_path(self):
         system = platform.system()
         if system == "Windows":
             ffmpeg_dir = os.path.join(BASE_DIR, 'ffmpeg', 'win_x64')
-            merge_big_file_if_not_exists(ffmpeg_dir, 'ffmpeg.exe')
-            return os.path.join(ffmpeg_dir, 'ffmpeg.exe')
+            ffmpeg_exe = 'ffmpeg.exe'
         elif system == "Linux":
-            return os.path.join(BASE_DIR, 'ffmpeg',  'linux_x64', 'ffmpeg')
+            ffmpeg_dir = os.path.join(BASE_DIR, 'ffmpeg',  'linux_x64')
+            ffmpeg_exe = 'ffmpeg'
         else:
-            return os.path.join(BASE_DIR, 'ffmpeg', 'macos', 'ffmpeg')
+            ffmpeg_dir = os.path.join(BASE_DIR, 'ffmpeg', 'macos')
+            ffmpeg_exe = 'ffmpeg'
+            
+        if os.path.exists(ffmpeg_dir):
+            try:
+                merge_big_file_if_not_exists(ffmpeg_dir, ffmpeg_exe)
+                return os.path.join(ffmpeg_dir, ffmpeg_exe)
+            except Exception:
+                pass
+        
+        return "ffmpeg"
