@@ -41,7 +41,13 @@ def is_video_or_image(filename):
     return file_extension in video_extensions or file_extension in image_extensions
 
 def merge_big_file_if_not_exists(dir, file, man_filename = None):
-    if file not in os.listdir(dir):
+    if not dir or not os.path.isdir(dir):
+        return
+    entries = os.listdir(dir)
+    if file not in entries:
+        manifest = man_filename or "fs_manifest.csv"
+        if manifest not in entries:
+            return
         if Filesplit is None:
             raise RuntimeError("Thư viện 'filesplit' (fsplit) chưa được cài đặt để ghép tệp mô hình.")
         fs = Filesplit()

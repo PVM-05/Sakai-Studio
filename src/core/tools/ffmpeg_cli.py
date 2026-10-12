@@ -1,4 +1,5 @@
 import os
+import shutil
 import stat
 
 import platform
@@ -44,8 +45,46 @@ class FFmpegCLI:
         if os.path.exists(ffmpeg_dir):
             try:
                 merge_big_file_if_not_exists(ffmpeg_dir, ffmpeg_exe)
-                return os.path.join(ffmpeg_dir, ffmpeg_exe)
+                candidate = os.path.join(ffmpeg_dir, ffmpeg_exe)
+                if os.path.exists(candidate):
+                    return candidate
             except Exception:
                 pass
+
+        which_ffmpeg = shutil.which("ffmpeg")
+        if which_ffmpeg:
+            return which_ffmpeg
+
+        try:
+            import imageio_ffmpeg
+            exe_path = imageio_ffmpeg.get_ffmpeg_exe()
+            if exe_path and os.path.exists(exe_path):
+                return exe_path
+        except Exception:
+            pass
         
         return "ffmpeg"
+
+    @property
+    def ffprobe_path(self):
+        system = platform.system()
+        if system == "Windows":
+            ffmpeg_dir = os.path.join(BASE_DIR, 'ffmpeg', 'win_x64')
+            ffprobe_exe = 'ffprobe.exe'
+        elif system == "Linux":
+            ffmpeg_dir = os.path.join(BASE_DIR, 'ffmpeg', 'linux_x64')
+            ffprobe_exe = 'ffprobe'
+        else:
+            ffmpeg_dir = os.path.join(BASE_DIR, 'ffmpeg', 'macos')
+            ffprobe_exe = 'ffprobe'
+
+        if os.path.exists(ffmpeg_dir):
+            candidate = os.path.join(ffmpeg_dir, ffprobe_exe)
+            if os.path.exists(candidate):
+                return candidate
+
+        which_ffprobe = shutil.which("ffprobe")
+        if which_ffprobe:
+            return which_ffprobe
+
+        return None
