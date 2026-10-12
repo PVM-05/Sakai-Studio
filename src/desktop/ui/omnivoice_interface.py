@@ -674,10 +674,12 @@ class OmniVoiceInterface(ScrollArea):
 
         tags_grid = QGridLayout()
         tags_grid.setSpacing(6)
+        self._studio_tag_buttons: List[PushButton] = []
         for idx, (vn_label, tag_code) in enumerate(EXPRESSIVE_TAG_BUTTONS):
             btn_tag = PushButton(f"{vn_label} {tag_code}", self.studio_page)
             btn_tag.clicked.connect(lambda checked=False, t=tag_code: self._insert_tag_into_studio(t))
             tags_grid.addWidget(btn_tag, idx // 4, idx % 4)
+            self._studio_tag_buttons.append(btn_tag)
         studio_layout.addLayout(tags_grid)
 
         pronun_row = QHBoxLayout()
@@ -1590,6 +1592,10 @@ class OmniVoiceInterface(ScrollArea):
                 blocks = self._parse_ass_fallback(content)
             self.subtitle_blocks = blocks
             self.current_subtitle_path = filepath
+            self.speaker_profiles = {}
+            self.lbl_speaker_summary.setText(
+                "Mẹo: Bấm Tự Động Nhận Diện Nhiều Người Nói để hệ thống tự tách giọng từng nhân vật từ video hoặc phân vai hội thoại từ tệp phụ đề."
+            )
             self._populate_subtitle_table()
             self._update_sub_video_status_label()
             self._update_subtitle_action_buttons()
@@ -1956,32 +1962,74 @@ class OmniVoiceInterface(ScrollArea):
     # ĐIỀU PHỐI LUỒNG NỀN & TRÌNH PHÁT ÂM THANH
     # =========================================================================
     def _set_task_running_state(self, running: bool):
-        """Quản lý tập trung trạng thái khóa/mở khóa bảng phụ đề và các điều khiển khi luồng nền hoạt động."""
+        """Quản lý tập trung trạng thái khóa/mở khóa bảng phụ đề và toàn bộ điều khiển khi luồng nền hoạt động."""
         self.btn_studio_synth.setEnabled(not running)
         self.btn_preview_vn_voice.setEnabled(not running)
         self.btn_preview_speaker_preset_vi.setEnabled(not running)
         self.btn_cancel_task.setEnabled(running)
 
-        # Khóa chỉnh sửa bảng phụ đề và các nút nạp/sửa dữ liệu trong lúc worker đang chạy
+        # Khóa chỉnh sửa bảng phụ đề và toàn bộ điều khiển ảnh hưởng đến tác vụ trong lúc worker đang chạy
         self.sub_table.setEditTriggers(
             QAbstractItemView.NoEditTriggers
             if running
             else (QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
         )
-        for ctrl in [
+        all_task_controls = [
+            self.combo_mode,
+            self.combo_lang,
+            self.combo_vn_catalog,
+            self.edit_vn_sample_text,
+            self.btn_free_vram,
+            self.btn_pick_ref_audio,
+            self.btn_extract_ref_video,
+            self.btn_load_prompt_pt,
+            self.chk_auto_extract_video,
+            self.edit_ref_text,
+            self.combo_gender,
+            self.combo_age,
+            self.combo_pitch,
+            self.combo_style,
+            self.combo_accent,
+            self.combo_dialect,
+            self.edit_instruct_preview,
+            self.studio_text_edit,
+            self.edit_pronun_token,
+            self.btn_insert_pronun,
             self.btn_load_srt,
             self.btn_load_video,
+            self.combo_multi_speaker_mode,
+            self.spin_max_speakers,
+            self.combo_target_speaker,
+            self.combo_speaker_voice_preset,
             self.btn_apply_preset_to_speaker,
             self.btn_pick_audio_for_speaker,
             self.btn_assign_speaker_to_rows,
             self.btn_reset_speaker_voice,
+            self.combo_sub_tag,
             self.btn_insert_tag_to_sub,
-            self.combo_mode,
-            self.combo_multi_speaker_mode,
-            self.btn_pick_ref_audio,
-            self.btn_extract_ref_video,
-            self.btn_load_prompt_pt,
-        ]:
+            self.spin_speed,
+            self.spin_duration,
+            self.spin_num_step,
+            self.spin_guidance,
+            self.spin_t_shift,
+            self.spin_layer_penalty,
+            self.spin_pos_temp,
+            self.spin_cls_temp,
+            self.spin_chunk_dur,
+            self.spin_chunk_thresh,
+            self.spin_pad_dur,
+            self.spin_fade_dur,
+            self.spin_duck_vol,
+            self.combo_ducking_mode,
+            self.chk_sync_sub_duration,
+            self.chk_denoise,
+            self.chk_preprocess_prompt,
+            self.chk_postprocess_output,
+            self.chk_normalize_text,
+            self.chk_flashinfer,
+            *getattr(self, "_studio_tag_buttons", []),
+        ]
+        for ctrl in all_task_controls:
             ctrl.setEnabled(not running)
 
         if not running:
@@ -1989,9 +2037,13 @@ class OmniVoiceInterface(ScrollArea):
             self.btn_export_dub_wav.setEnabled(has_subs)
             self.btn_dub_merge_video.setEnabled(has_subs and bool(self.current_video_path))
             self.btn_auto_detect_speakers.setEnabled(has_subs or bool(self.current_video_path))
+            self.btn_use_vn_voice_as_ref.setEnabled(
+                bool(self.last_generated_audio_path and os.path.exists(self.last_generated_audio_path))
+            )
             self._update_control_states()
             self._update_subtitle_action_buttons()
         else:
+            self.btn_use_vn_voice_as_ref.setEnabled(False)
             self.btn_clear_video.setEnabled(False)
             self.btn_save_prompt_pt.setEnabled(False)
             self.btn_transcribe_ref.setEnabled(False)
@@ -2184,4 +2236,17 @@ class OmniVoiceInterface(ScrollArea):
         InfoBar.success("Đã giải phóng VRAM", "Bộ nhớ đệm trên card đồ họa đã được làm sạch.", parent=self, duration=2500)
 
     def retranslateUi(self):
-        pass
+        self.btn_cancel_task.setText("Hủy Tác Vụ")
+        self.btn_free_vram.setText("Giải Phóng Bộ Nhớ Card Đồ Họa")
+        self.btn_preview_vn_voice.setText("Nghe Thử Tiếng Việt")
+        self.btn_use_vn_voice_as_ref.setText("Chốt Làm Giọng Mẫu Chính")
+        self.btn_studio_synth.setText("Tổng Hợp Giọng Nói Ngay")
+        self.btn_studio_save_wav.setText("Lưu Tệp Âm Thanh")
+        self.btn_load_srt.setText("Chọn Tệp Phụ Đề")
+        self.btn_load_video.setText("Chọn Video Nguồn Để Ghép")
+        self.btn_clear_video.setText("Bỏ Chọn Video")
+        self.btn_auto_detect_speakers.setText("Tự Động Nhận Diện Nhiều Người Nói")
+        self.btn_preview_selected_row.setText("Nghe Thử Câu Đang Chọn")
+        self.btn_export_dub_wav.setText("Xuất Tệp Âm Thanh Lồng Tiếng")
+        self.btn_dub_merge_video.setText("Lồng Tiếng Và Xuất Video")
+        self._update_sub_video_status_label()

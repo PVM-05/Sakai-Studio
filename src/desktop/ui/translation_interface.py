@@ -32,33 +32,121 @@ CONFIG_API_FILE = Path(__file__).parent.parent / "config" / "translation_api_con
 _OBF_SECRET = b"SakaiStudio_LocalKeyProtection_v1"
 
 
-def obfuscate_api_key(plain_key: str) -> str:
-    """Mã hóa khóa API trước khi lưu xuống tệp cấu hình cục bộ để tránh lộ văn bản thuần."""
+def _dpapi_protect(raw_bytes: bytes) -> str | None:
+    if os.name != "nt":
+        return None
+    try:
+        import base64
+        import ctypes
+        import ctypes.wintypes
+
+        class _DATA_BLOB(ctypes.Structure):
+            _fields_ = [
+                ("cbData", ctypes.wintypes.DWORD),
+                ("pbData", ctypes.POINTER(ctypes.c_char)),
+            ]
+
+        crypt32 = ctypes.windll.crypt32
+        kernel32 = ctypes.windll.kernel32
+        buf = ctypes.create_string_buffer(raw_bytes, len(raw_bytes))
+        blob_in = _DATA_BLOB(len(raw_bytes), buf)
+        blob_out = _DATA_BLOB()
+        if crypt32.CryptProtectData(
+            ctypes.byref(blob_in),
+            None,
+            None,
+            None,
+            None,
+            0x1,
+            ctypes.byref(blob_out),
+        ):
+            try:
+                protected = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+                return "dpapi:" + base64.urlsafe_b64encode(protected).decode("ascii")
+            finally:
+                kernel32.LocalFree(blob_out.pbData)
+    except Exception:
+        pass
+    return None
+
+
+def _dpapi_unprotect(b64_payload: str) -> str | None:
+    if os.name != "nt":
+        return None
+    try:
+        import base64
+        import ctypes
+        import ctypes.wintypes
+
+        class _DATA_BLOB(ctypes.Structure):
+            _fields_ = [
+                ("cbData", ctypes.wintypes.DWORD),
+                ("pbData", ctypes.POINTER(ctypes.c_char)),
+            ]
+
+        crypt32 = ctypes.windll.crypt32
+        kernel32 = ctypes.windll.kernel32
+        enc_bytes = base64.urlsafe_b64decode(b64_payload.encode("ascii"))
+        buf = ctypes.create_string_buffer(enc_bytes, len(enc_bytes))
+        blob_in = _DATA_BLOB(len(enc_bytes), buf)
+        blob_out = _DATA_BLOB()
+        if crypt32.CryptUnprotectData(
+            ctypes.byref(blob_in),
+            None,
+            None,
+            None,
+            None,
+            0x1,
+            ctypes.byref(blob_out),
+        ):
+            try:
+                plain = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+                return plain.decode("utf-8")
+            finally:
+                kernel32.LocalFree(blob_out.pbData)
+    except Exception:
+        pass
+    return None
+
+
+def _encrypt_secret(plain_key: str) -> str:
+    """Bảo vệ khóa API bằng kho bảo mật hệ điều hành Windows DPAPI (hoặc mã hóa dự phòng đa nền tảng)."""
     if not plain_key or not plain_key.strip():
         return ""
     raw = plain_key.strip()
-    if raw.startswith("obf:") or raw.startswith("dpapi:"):
+    if raw.startswith(("dpapi:", "obf:", "enc:")):
         return raw
-    import base64
     raw_bytes = raw.encode("utf-8")
+    dpapi_val = _dpapi_protect(raw_bytes)
+    if dpapi_val:
+        return dpapi_val
+    import base64
     xored = bytes(b ^ _OBF_SECRET[i % len(_OBF_SECRET)] for i, b in enumerate(raw_bytes))
     return "obf:" + base64.urlsafe_b64encode(xored).decode("ascii")
 
 
-def deobfuscate_api_key(stored_key: str) -> str:
-    """Giải mã khóa API đã lưu từ tệp cấu hình, tương thích ngược với khóa văn bản thuần cũ."""
+def _decrypt_secret(stored_key: str) -> str:
+    """Giải mã khóa API đã lưu từ DPAPI hoặc định dạng cũ, tương thích ngược với khóa văn bản thuần."""
     if not stored_key or not stored_key.strip():
         return ""
     val = stored_key.strip()
-    if val.startswith("obf:"):
+    if val.startswith("dpapi:"):
+        res = _dpapi_unprotect(val[len("dpapi:") :])
+        return res if res is not None else ""
+    if val.startswith(("obf:", "enc:")):
         import base64
+        prefix = "obf:" if val.startswith("obf:") else "enc:"
         try:
-            payload = base64.urlsafe_b64decode(val[len("obf:") :].encode("ascii"))
+            payload = base64.urlsafe_b64decode(val[len(prefix) :].encode("ascii"))
             plain_bytes = bytes(b ^ _OBF_SECRET[i % len(_OBF_SECRET)] for i, b in enumerate(payload))
             return plain_bytes.decode("utf-8")
         except Exception:
             return ""
     return val
+
+
+obfuscate_api_key = _encrypt_secret
+deobfuscate_api_key = _decrypt_secret
 
 
 def load_translation_api_config() -> dict:
@@ -68,7 +156,7 @@ def load_translation_api_config() -> dict:
     try:
         data = json.loads(CONFIG_API_FILE.read_text(encoding="utf-8"))
         if isinstance(data, dict) and "api_key" in data:
-            data["api_key"] = deobfuscate_api_key(str(data.get("api_key", "")))
+            data["api_key"] = _decrypt_secret(str(data.get("api_key", "")))
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
@@ -159,7 +247,7 @@ class TranslationInterface(QWidget):
     """
     progress_signal = Signal(float, str)
     finished_signal = Signal(bool, str)
-    _fetch_models_done_signal = Signal(bool, list, str)
+    _fetch_models_done_signal = Signal(int, str, bool, list, str)
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
@@ -170,6 +258,8 @@ class TranslationInterface(QWidget):
         self.subtitle_blocks: list[SubtitleBlock] = []
         self._is_translating = False
         self._is_updating_provider = False
+        self._model_fetch_req_id: int = 0
+        self.api_key_verified: bool = False
 
         self._init_ui()
         self._load_saved_api_config()
@@ -441,7 +531,9 @@ class TranslationInterface(QWidget):
         return "Google Gemini"
 
     def _start_async_fetch_models(self, provider_name: str, key: str, show_toast: bool = False):
-        """Nạp danh sách mô hình bất đồng bộ trên luồng nền để không làm treo giao diện chính."""
+        """Nạp danh sách mô hình bất đồng bộ trên luồng nền có gắn mã yêu cầu để chống ghi đè kết quả cũ."""
+        self._model_fetch_req_id += 1
+        req_id = self._model_fetch_req_id
         self._pending_toast_provider = provider_name if show_toast else ""
         self.model_combo.clear()
         self.model_combo.setPlaceholderText("Đang kiểm tra khóa và nạp danh sách mô hình...")
@@ -450,9 +542,9 @@ class TranslationInterface(QWidget):
         def _fetch_worker():
             try:
                 ok, models, msg = fetch_accessible_models(provider_name, key)
-                self._fetch_models_done_signal.emit(ok, models, msg)
+                self._fetch_models_done_signal.emit(req_id, provider_name, ok, models, msg)
             except Exception as ex:
-                self._fetch_models_done_signal.emit(False, [], f"Lỗi kết nối: {ex}")
+                self._fetch_models_done_signal.emit(req_id, provider_name, False, [], f"Lỗi kết nối: {ex}")
 
         threading.Thread(target=_fetch_worker, daemon=True).start()
 
@@ -526,12 +618,21 @@ class TranslationInterface(QWidget):
             self._is_updating_provider = False
             self._save_api_config()
 
-    @Slot(bool, list, str)
-    def _on_fetch_models_done(self, ok: bool, models: list, msg: str):
+    @Slot(int, str, bool, list, str)
+    def _on_fetch_models_done(self, req_id: int, provider_name: str, ok: bool, models: list, msg: str):
+        if req_id != self._model_fetch_req_id:
+            return
+        provider_keys = list(PROVIDERS_INFO.keys())
+        curr_idx = self.provider_combo.currentIndex()
+        curr_provider = provider_keys[curr_idx] if 0 <= curr_idx < len(provider_keys) else ""
+        if curr_provider and provider_name and curr_provider != provider_name:
+            return
+
         toast_provider = getattr(self, "_pending_toast_provider", "")
         self._pending_toast_provider = ""
         self.model_combo.clear()
         if ok and models:
+            self.api_key_verified = True
             self.model_combo.setEnabled(True)
             self.model_combo.addItems(models)
             self.model_combo.setCurrentIndex(0)
@@ -543,6 +644,7 @@ class TranslationInterface(QWidget):
                     duration=3500,
                 )
         else:
+            self.api_key_verified = False
             self.model_combo.setPlaceholderText(msg)
             self.model_combo.setEnabled(False)
             if toast_provider:
@@ -552,7 +654,8 @@ class TranslationInterface(QWidget):
     def _on_api_key_typed(self, key_text: str):
         if hasattr(self, '_debounce_timer') and self._debounce_timer is not None:
             self._debounce_timer.stop()
-            
+
+        self.api_key_verified = False
         provider_keys = list(PROVIDERS_INFO.keys())
         curr_idx = self.provider_combo.currentIndex()
         if 0 <= curr_idx < len(provider_keys):
@@ -881,16 +984,17 @@ class TranslationInterface(QWidget):
                 "engine_type": engine_type,
                 "provider_name": provider_name,
                 "base_url": base_url,
-                "api_key": obfuscate_api_key(self.api_key_edit.text().strip()),
+                "api_key": _encrypt_secret(self.api_key_edit.text().strip()),
+                "api_key_verified": bool(getattr(self, "api_key_verified", False)),
                 "model_name": model_name,
                 "custom_prompt": self.prompt_edit.text().strip(),
             }
             CONFIG_API_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
             if show_toast:
-                engine_label = f"Local GGUF ({model_name})" if engine_type == "gguf" else (
-                    "Local MarianMT" if engine_type == "marian" else (
-                        f"AI API ({provider_name} - {model_name})" if engine_type == "llm" else "Google Translate"
+                engine_label = f"Mô hình GGUF cục bộ ({model_name})" if engine_type == "gguf" else (
+                    "Mô hình MarianMT cục bộ" if engine_type == "marian" else (
+                        f"Mô hình AI ({provider_name} - {model_name})" if engine_type == "llm" else "Google Translate"
                     )
                 )
                 InfoBar.success(
@@ -918,6 +1022,7 @@ class TranslationInterface(QWidget):
                 if "api_key" in data and data["api_key"]:
                     self.api_key_edit.setText(data["api_key"])
                     self._on_api_key_typed(data["api_key"])
+                self.api_key_verified = bool(data.get("api_key_verified", False))
                 if "model_name" in data and data["model_name"]:
                     idx = self.model_combo.findText(data["model_name"])
                     if idx >= 0:
@@ -929,4 +1034,10 @@ class TranslationInterface(QWidget):
                 pass
 
     def retranslateUi(self):
-        pass
+        self.file_button.setText("Chọn tệp Phụ đề")
+        self.btn_toggle_api.setText("Cấu hình AI")
+        self.translate_btn.setText("Bắt đầu dịch")
+        self.btn_verify_key.setText("Xác thực & Nạp Key")
+        self.btn_save_config.setText("Lưu Cài Đặt")
+        self.export_srt_button.setText("Lưu tệp phụ đề dịch")
+        self.send_to_tts_button.setText("Chuyển Sang Lồng Tiếng")

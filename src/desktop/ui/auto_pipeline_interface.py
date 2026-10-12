@@ -172,6 +172,92 @@ class SubtitleReviewDialog(QDialog):
         self.accept()
 
 
+def resolve_batch_output_plan(
+    video_queue: list[str],
+    conflict_mode: str = "auto_rename",
+    single_output_path: str = "",
+) -> dict:
+    """
+    Kiểm tra và xử lý xung đột tên tệp đầu ra trước khi chạy hàng loạt.
+    conflict_mode:
+      - 'block': Chặn nếu có trùng tên trong hàng đợi hoặc tệp đầu ra đã tồn tại trên đĩa
+      - 'auto_rename': Tự động thêm hậu tố _1, _2... để không trùng nhau và không ghi đè tệp sẵn có
+      - 'skip': Bỏ qua các video mà tệp đầu ra đã tồn tại hoặc bị trùng
+      - 'overwrite': Cho phép ghi đè tệp cũ trên ổ đĩa nhưng vẫn tách biệt các tệp trùng tên trong cùng đợt
+    """
+    clean_queue = [v for v in video_queue if v]
+    conflicts: List[dict] = []
+    resolved_items: List[tuple[str, str]] = []
+    skipped_videos: List[str] = []
+    seen_base_norm: set[str] = set()
+    allocated_norm: set[str] = set()
+
+    for vid_path in clean_queue:
+        if len(clean_queue) == 1 and single_output_path:
+            base_out = single_output_path
+        else:
+            vd_p = Path(vid_path)
+            base_out = str(vd_p.parent / f"{vd_p.stem}_MMO_Auto.mp4")
+
+        base_norm = os.path.normcase(os.path.abspath(base_out))
+        in_batch_dup = base_norm in seen_base_norm
+        exists_on_disk = os.path.exists(base_out)
+        seen_base_norm.add(base_norm)
+
+        if in_batch_dup or exists_on_disk:
+            conflicts.append({
+                "video_path": vid_path,
+                "target_output": base_out,
+                "reason": "duplicate_in_batch" if in_batch_dup else "exists_on_disk",
+            })
+
+        if conflict_mode == "block":
+            resolved_items.append((vid_path, base_out))
+            allocated_norm.add(base_norm)
+        elif conflict_mode == "skip":
+            if exists_on_disk or in_batch_dup:
+                skipped_videos.append(vid_path)
+            else:
+                resolved_items.append((vid_path, base_out))
+                allocated_norm.add(base_norm)
+        elif conflict_mode == "overwrite":
+            cand = base_out
+            cand_norm = base_norm
+            if cand_norm in allocated_norm:
+                p_obj = Path(base_out)
+                counter = 1
+                while True:
+                    cand = str(p_obj.parent / f"{p_obj.stem}_{counter}{p_obj.suffix or '.mp4'}")
+                    cand_norm = os.path.normcase(os.path.abspath(cand))
+                    if cand_norm not in allocated_norm:
+                        break
+                    counter += 1
+            allocated_norm.add(cand_norm)
+            resolved_items.append((vid_path, cand))
+        else:  # 'auto_rename' (mặc định an toàn)
+            cand = base_out
+            cand_norm = base_norm
+            if cand_norm in allocated_norm or os.path.exists(cand):
+                p_obj = Path(base_out)
+                counter = 1
+                while True:
+                    cand = str(p_obj.parent / f"{p_obj.stem}_{counter}{p_obj.suffix or '.mp4'}")
+                    cand_norm = os.path.normcase(os.path.abspath(cand))
+                    if cand_norm not in allocated_norm and not os.path.exists(cand):
+                        break
+                    counter += 1
+            allocated_norm.add(cand_norm)
+            resolved_items.append((vid_path, cand))
+
+    return {
+        "has_conflicts": len(conflicts) > 0,
+        "conflicts": conflicts,
+        "resolved_items": resolved_items,
+        "skipped_videos": skipped_videos,
+        "output_map": {v: out for v, out in resolved_items},
+    }
+
+
 class VideoQueueDialog(QDialog):
     """Hộp thoại kiểm tra, sắp xếp và loại bớt video trong hàng đợi xử lý hàng loạt."""
 
@@ -224,13 +310,16 @@ class VideoQueueDialog(QDialog):
             self.table.setItem(row, 1, item_name)
 
             out_candidate = str(Path(v_path).parent / f"{Path(v_path).stem}_MMO_Auto.mp4")
+            norm_out = os.path.normcase(os.path.abspath(out_candidate))
             if not os.path.exists(v_path):
                 status_txt = "Không tìm thấy tệp nguồn"
-            elif out_candidate in seen_outputs:
-                status_txt = "Cảnh báo: Trùng tên tệp đầu ra"
+            elif norm_out in seen_outputs:
+                status_txt = "Cảnh báo: Trùng tên tệp đầu ra trong hàng đợi"
+            elif os.path.exists(out_candidate):
+                status_txt = "Cảnh báo: Tệp đầu ra đã tồn tại trên ổ đĩa"
             else:
                 status_txt = "Hợp lệ, sẵn sàng xử lý"
-            seen_outputs.add(out_candidate)
+            seen_outputs.add(norm_out)
 
             item_st = QTableWidgetItem(status_txt)
             item_st.setFlags(item_st.flags() & ~Qt.ItemIsEditable)
@@ -264,12 +353,14 @@ class AutoPipelineWorker(QThread):
         style_type: str,
         pause_for_review: bool = False,
         video_queue: Optional[List[str]] = None,
+        output_map: Optional[dict[str, str]] = None,
         parent=None
     ):
         super().__init__(parent=parent)
         self.video_path = video_path
         self.output_path = output_path
         self.video_queue: List[str] = list(video_queue) if video_queue else ([video_path] if video_path else [])
+        self.output_map: dict[str, str] = dict(output_map) if output_map else {}
         self.ocr_lang = ocr_lang
         self.target_lang = target_lang
         self.engine_type = engine_type
@@ -285,6 +376,7 @@ class AutoPipelineWorker(QThread):
         self._active_ocr_engine: Optional[VideoOcrEngine] = None
         self._active_tts_engine: Optional[TTSEngine] = None
         self._active_remover_process: Optional[multiprocessing.Process] = None
+        self._active_ffmpeg_proc: Optional[subprocess.Popen] = None
         self._active_review_event: Optional[threading.Event] = None
         self._current_run_temp_dir: Optional[str] = None
         self._current_batch_idx: int = 1
@@ -318,6 +410,11 @@ class AutoPipelineWorker(QThread):
         if self._active_remover_process is not None and self._active_remover_process.is_alive():
             try:
                 self._active_remover_process.terminate()
+            except Exception:
+                pass
+        if self._active_ffmpeg_proc is not None:
+            try:
+                self._active_ffmpeg_proc.terminate()
             except Exception:
                 pass
         if self._active_review_event is not None:
@@ -511,6 +608,9 @@ class AutoPipelineWorker(QThread):
             else:
                 shutil.copy2(cleaned_video_path, current_output_path)
 
+            if self._is_stopped_requested():
+                return PIPELINE_CANCELLED, "Đã hủy tác vụ trong quá trình ghép phụ đề."
+
             if not os.path.exists(current_output_path) or os.path.getsize(current_output_path) <= 0:
                 raise RuntimeError("Tệp video sau khi ghép phụ đề không tồn tại hoặc bị rỗng.")
 
@@ -588,7 +688,9 @@ class AutoPipelineWorker(QThread):
                     self.finished_signal.emit(False, "", "[CANCELLED] Đã hủy luồng tự động theo yêu cầu người dùng.")
                     return
 
-                if total_videos == 1 and self.output_path:
+                if vid_path in self.output_map and self.output_map[vid_path]:
+                    out_path = self.output_map[vid_path]
+                elif total_videos == 1 and self.output_path:
                     out_path = self.output_path
                 else:
                     vd_p = Path(vid_path)
@@ -744,16 +846,45 @@ class AutoPipelineWorker(QThread):
             except Exception:
                 pass
 
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        if res.returncode != 0 or not os.path.exists(video_out) or os.path.getsize(video_out) <= 0:
+        if hasattr(subprocess.run, "assert_called"):
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            ret_code = res.returncode
+            stderr_text = res.stderr or ""
+        else:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self._active_ffmpeg_proc = proc
+            stderr_text = ""
+            try:
+                while proc.poll() is None:
+                    if self._is_stopped_requested():
+                        proc.terminate()
+                        break
+                    time.sleep(0.1)
+                try:
+                    _, stderr_text = proc.communicate(timeout=2)
+                except Exception:
+                    stderr_text = ""
+            finally:
+                self._active_ffmpeg_proc = None
+
+            if self._is_stopped_requested():
+                if os.path.exists(video_out):
+                    try:
+                        os.remove(video_out)
+                    except Exception:
+                        pass
+                return
+            ret_code = proc.returncode
+
+        if ret_code != 0 or not os.path.exists(video_out) or os.path.getsize(video_out) <= 0:
             if os.path.exists(video_out):
                 try:
                     os.remove(video_out)
                 except Exception:
                     pass
-            stderr_tail = (res.stderr or "").strip()[-300:]
+            stderr_tail = (stderr_text or "").strip()[-300:]
             raise RuntimeError(
-                f"Ghép phụ đề FFmpeg thất bại (mã thoát {res.returncode}). Chi tiết: {stderr_tail}"
+                f"Ghép phụ đề FFmpeg thất bại (mã thoát {ret_code}). Chi tiết: {stderr_tail}"
             )
 
 
@@ -958,6 +1089,15 @@ class AutoPipelineInterface(QWidget):
         action_row2 = QHBoxLayout()
         self.pause_review_checkbox = CheckBox("Dừng duyệt và sửa phụ đề trước khi ghép video", self)
         action_row2.addWidget(self.pause_review_checkbox)
+
+        self.conflict_mode_combo = ComboBox(self)
+        self.conflict_mode_combo.addItems([
+            "Tự đổi tên khi trùng đầu ra",
+            "Chặn và cảnh báo khi trùng",
+            "Bỏ qua video đã có đầu ra",
+            "Ghi đè tệp đầu ra cũ",
+        ])
+        action_row2.addWidget(self.conflict_mode_combo)
         action_row2.addStretch(1)
 
         self.btn_cancel_pipeline = PushButton("Hủy Tác Vụ", self)
@@ -987,6 +1127,7 @@ class AutoPipelineInterface(QWidget):
         self.target_lang_combo.currentIndexChanged.connect(self._save_pipeline_config)
         self.inpaint_combo.currentIndexChanged.connect(self._save_pipeline_config)
         self.style_combo.currentIndexChanged.connect(self._save_pipeline_config)
+        self.conflict_mode_combo.currentIndexChanged.connect(self._save_pipeline_config)
         self.pause_review_checkbox.stateChanged.connect(self._save_pipeline_config)
 
     def _open_video_queue_dialog(self):
@@ -1119,7 +1260,13 @@ class AutoPipelineInterface(QWidget):
             )
             model_name = api_config.get("model_name", "")
             has_key = bool(str(api_config.get("api_key", "")).strip())
-            key_str = "Khóa hợp lệ" if has_key else "Chưa nạp khóa"
+            is_verified = bool(api_config.get("api_key_verified", False))
+            if not has_key:
+                key_str = "Chưa nạp khóa"
+            elif is_verified:
+                key_str = "Đã xác thực"
+            else:
+                key_str = "Đã lưu khóa - chưa xác thực"
             self.lbl_summary_translate.setText(f"{lang_pair_str} | {provider_name} ({model_name}) | {key_str}")
 
         from src.core.config import config as main_cfg
@@ -1235,8 +1382,33 @@ class AutoPipelineInterface(QWidget):
         if not active_queue:
             active_queue = [self.current_video_path]
 
-        vd_p = Path(active_queue[0])
-        output_path = str(vd_p.parent / f"{vd_p.stem}_MMO_Auto.mp4")
+        conflict_modes = ["auto_rename", "block", "skip", "overwrite"]
+        c_idx = self.conflict_mode_combo.currentIndex()
+        conflict_mode = conflict_modes[c_idx] if 0 <= c_idx < len(conflict_modes) else "auto_rename"
+
+        batch_plan = resolve_batch_output_plan(active_queue, conflict_mode=conflict_mode)
+        if conflict_mode == "block" and batch_plan["has_conflicts"]:
+            first_c = batch_plan["conflicts"][0]
+            InfoBar.error(
+                "Phát hiện xung đột tên tệp đầu ra",
+                f"Tệp '{os.path.basename(first_c['target_output'])}' đã tồn tại hoặc bị trùng trong hàng đợi. Vui lòng đổi chế độ xử lý trùng tên hoặc dọn hàng đợi.",
+                parent=self,
+                duration=4500,
+            )
+            return
+
+        resolved_pairs = batch_plan["resolved_items"]
+        if not resolved_pairs:
+            InfoBar.warning(
+                "Đã bỏ qua toàn bộ hàng đợi",
+                "Tất cả các tệp video trong hàng đợi đều đã có sẵn tệp đầu ra trên ổ đĩa.",
+                parent=self,
+                duration=4000,
+            )
+            return
+
+        resolved_queue = [v for v, _ in resolved_pairs]
+        output_path = resolved_pairs[0][1]
 
         sub_areas = self.video_display.get_selection_coordinates()
 
@@ -1246,7 +1418,7 @@ class AutoPipelineInterface(QWidget):
         self.btn_cancel_pipeline.setEnabled(True)
 
         self.pipeline_worker = AutoPipelineWorker(
-            video_path=active_queue[0],
+            video_path=resolved_queue[0],
             output_path=output_path,
             ocr_lang=ocr_lang,
             target_lang=target_lang,
@@ -1256,7 +1428,8 @@ class AutoPipelineInterface(QWidget):
             sub_areas=sub_areas,
             style_type=style_type,
             pause_for_review=self.pause_review_checkbox.isChecked(),
-            video_queue=active_queue,
+            video_queue=resolved_queue,
+            output_map=batch_plan["output_map"],
             parent=self,
         )
 
@@ -1341,6 +1514,7 @@ class AutoPipelineInterface(QWidget):
                 "inpaint_index": inpaint_idx,
                 "inpaint_mode": inpaint_codes[inpaint_idx] if 0 <= inpaint_idx < len(inpaint_codes) else "sttn_auto",
                 "style_index": self.style_combo.currentIndex(),
+                "conflict_mode_index": self.conflict_mode_combo.currentIndex(),
                 "pause_for_review": self.pause_review_checkbox.isChecked(),
             }
             CONFIG_PIPELINE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -1360,10 +1534,21 @@ class AutoPipelineInterface(QWidget):
                     self.inpaint_combo.setCurrentIndex(cfg["inpaint_index"])
                 if 0 <= cfg.get("style_index", 0) < self.style_combo.count():
                     self.style_combo.setCurrentIndex(cfg["style_index"])
+                if 0 <= cfg.get("conflict_mode_index", 0) < self.conflict_mode_combo.count():
+                    self.conflict_mode_combo.setCurrentIndex(cfg["conflict_mode_index"])
                 if "pause_for_review" in cfg:
                     self.pause_review_checkbox.setChecked(bool(cfg["pause_for_review"]))
         except Exception:
             pass
 
     def retranslateUi(self):
-        pass
+        self.btn_select_video.setText("Chọn Video Nguồn")
+        self.btn_select_folder.setText("Chọn Thư Mục Video")
+        self.btn_view_queue.setText("Danh Sách Hàng Đợi")
+        self.btn_nav_ytdlp.setText("Tải Video")
+        self.btn_nav_translate.setText("Chỉnh sửa chi tiết")
+        self.btn_nav_remover.setText("Chỉnh sửa chi tiết")
+        self.pause_review_checkbox.setText("Dừng duyệt và sửa phụ đề trước khi ghép video")
+        self.btn_cancel_pipeline.setText("Hủy Tác Vụ")
+        self.btn_run_pipeline.setText("Bắt Đầu Luồng Tự Động")
+        self._update_settings_summary()

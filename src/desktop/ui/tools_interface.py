@@ -99,11 +99,19 @@ class ToolsInterface(QWidget):
             self.translationInterface.load_subtitle_file(srt_path)
 
     def retranslateUi(self):
-        # Update Pivot tab labels
+        # Update Pivot tab labels and forward to child interfaces
         try:
             self.pivot.item(self.ytdlpInterface.objectName()).setText("Tải Video")
             self.pivot.item(self.extractorInterface.objectName()).setText("Trích Xuất Phụ Đề")
             self.pivot.item(self.translationInterface.objectName()).setText("Dịch Phụ Đề")
             self.pivot.item(self.homeInterface.objectName()).setText("Xóa Phụ Đề Video")
+            for sub_w in (
+                self.ytdlpInterface,
+                self.extractorInterface,
+                self.translationInterface,
+                self.homeInterface,
+            ):
+                if hasattr(sub_w, "retranslateUi"):
+                    sub_w.retranslateUi()
         except Exception:
             pass

@@ -567,7 +567,268 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
             self.assertEqual(auto_ui.width(), w)
             self.assertEqual(omni_ui.width(), w)
 
+    # -------------------------------------------------------------------------
+    # 16. Kiểm thử P1 Đợt 1 & 2: Khóa toàn bộ điều khiển OmniVoice & xóa profile cũ khi nạp SRT
+    # -------------------------------------------------------------------------
+    def test_omnivoice_comprehensive_control_lock_and_manual_srt_profile_reset(self):
+        from PySide6.QtWidgets import QApplication
+        from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+
+        app = QApplication.instance() or QApplication([])
+        ui = OmniVoiceInterface()
+
+        # Kiểm tra khóa toàn bộ điều khiển cấu hình khi tác vụ đang chạy
+        ui.spin_duration.setValue(3.5)
+        ui._update_control_states()
+        self.assertFalse(ui.spin_speed.isEnabled(), "Khi thời lượng cố định > 0, spin_speed phải bị khóa!")
+
+        ui._set_task_running_state(True)
+        locked_widgets = [
+            ui.combo_lang,
+            ui.combo_vn_catalog,
+            ui.edit_vn_sample_text,
+            ui.btn_free_vram,
+            ui.chk_auto_extract_video,
+            ui.edit_ref_text,
+            ui.combo_gender,
+            ui.combo_age,
+            ui.combo_pitch,
+            ui.combo_style,
+            ui.combo_accent,
+            ui.combo_dialect,
+            ui.edit_instruct_preview,
+            ui.studio_text_edit,
+            ui.edit_pronun_token,
+            ui.btn_insert_pronun,
+            ui.spin_max_speakers,
+            ui.combo_target_speaker,
+            ui.combo_speaker_voice_preset,
+            ui.combo_sub_tag,
+            ui.spin_speed,
+            ui.spin_duration,
+            ui.spin_num_step,
+            ui.spin_guidance,
+            ui.spin_t_shift,
+            ui.spin_layer_penalty,
+            ui.spin_pos_temp,
+            ui.spin_cls_temp,
+            ui.spin_chunk_dur,
+            ui.spin_chunk_thresh,
+            ui.spin_pad_dur,
+            ui.spin_fade_dur,
+            ui.spin_duck_vol,
+            ui.combo_ducking_mode,
+            ui.chk_sync_sub_duration,
+            ui.chk_denoise,
+            ui.chk_preprocess_prompt,
+            ui.chk_postprocess_output,
+            ui.chk_normalize_text,
+            ui.chk_flashinfer,
+        ]
+        for w in locked_widgets:
+            self.assertFalse(w.isEnabled(), f"Điều khiển {w} phải bị khóa khi OmniVoice đang chạy!")
+
+        # Mở khóa lại sau khi kết thúc: spin_speed vẫn phải giữ trạng thái khóa do spin_duration = 3.5 > 0
+        ui._set_task_running_state(False)
+        self.assertTrue(ui.combo_lang.isEnabled())
+        self.assertTrue(ui.spin_num_step.isEnabled())
+        self.assertTrue(ui.studio_text_edit.isEnabled())
+        self.assertFalse(ui.spin_speed.isEnabled(), "Sau khi mở khóa, spin_speed phải tôn trọng trạng thái spin_duration > 0!")
+
+        # Kiểm tra nạp tệp SRT thủ công phải xóa speaker_profiles cũ
+        ui.speaker_profiles = {"Người nói 1": {"speaker_id": "Người nói 1", "instruct": "female"}}
+        srt_file = os.path.join(self.temp_dir, "manual_load.srt")
+        Path(srt_file).write_text("1\n00:00:01,000 --> 00:00:02,000\nCâu thoại mới\n", encoding="utf-8")
+        ui._load_subtitle_file_internal(srt_file)
+        self.assertEqual(ui.speaker_profiles, {}, "Nạp tệp phụ đề thủ công mới phải xóa sạch speaker_profiles của phiên trước!")
+
+    # -------------------------------------------------------------------------
+    # 17. Kiểm thử P1 Đợt 2: Phát hiện và xử lý xung đột tên tệp đầu ra khi chạy hàng loạt
+    # -------------------------------------------------------------------------
+    def test_batch_output_conflict_detection_and_resolution_modes(self):
+        from src.desktop.ui.auto_pipeline_interface import resolve_batch_output_plan
+
+        dir_a = os.path.join(self.temp_dir, "batch_a")
+        os.makedirs(dir_a, exist_ok=True)
+        vid1 = os.path.join(dir_a, "clip.mp4")
+        vid2 = os.path.join(dir_a, "clip.mkv")  # Cùng stem "clip" trong cùng thư mục -> trùng đường dẫn đầu ra clip_MMO_Auto.mp4!
+        _create_dummy_video(vid1)
+        _create_dummy_video(vid2)
+
+        # Tạo sẵn tệp đầu ra của vid1 trên ổ đĩa để mô phỏng xung đột ghi đè
+        existing_out = os.path.join(dir_a, "clip_MMO_Auto.mp4")
+        _create_dummy_video(existing_out)
+
+        # Chế độ chặn (block): phát hiện xung đột và không cho phép chạy nếu chưa giải quyết
+        plan_block = resolve_batch_output_plan([vid1, vid2], conflict_mode="block")
+        self.assertTrue(plan_block["has_conflicts"])
+        self.assertGreaterEqual(len(plan_block["conflicts"]), 1)
+
+        # Chế độ tự đổi tên (auto_rename): tự thêm hậu tố _1, _2 để không trùng nhau và không ghi đè tệp sẵn có
+        plan_rename = resolve_batch_output_plan([vid1, vid2], conflict_mode="auto_rename")
+        resolved_pairs = plan_rename["resolved_items"]
+        self.assertEqual(len(resolved_pairs), 2)
+        out_paths = [p[1] for p in resolved_pairs]
+        self.assertEqual(len(set(out_paths)), 2, "Các đường dẫn đầu ra sau khi tự đổi tên phải hoàn toàn phân biệt!")
+        self.assertNotIn(existing_out, out_paths, "Chế độ tự đổi tên không được phép ghi đè lên tệp đã tồn tại trên đĩa!")
+
+        # Chế độ bỏ qua tệp đã tồn tại (skip)
+        plan_skip = resolve_batch_output_plan([vid1], conflict_mode="skip")
+        self.assertEqual(len(plan_skip["resolved_items"]), 0, "Chế độ skip phải bỏ qua video đã có sẵn tệp đầu ra trên ổ đĩa!")
+        self.assertEqual(len(plan_skip["skipped_videos"]), 1)
+
+    # -------------------------------------------------------------------------
+    # 18. Kiểm thử P1 Đợt 3: Chống trả kết quả sai khi nạp model dịch bất đồng bộ
+    # -------------------------------------------------------------------------
+    def test_async_model_fetch_ignores_stale_request_id_and_provider_mismatch(self):
+        from PySide6.QtWidgets import QApplication
+        from src.desktop.ui.translation_interface import TranslationInterface, PROVIDERS_INFO
+
+        app = QApplication.instance() or QApplication([])
+        ui = TranslationInterface()
+
+        provider_keys = list(PROVIDERS_INFO.keys())
+        gemini_idx = provider_keys.index("Google Gemini")
+        openai_idx = provider_keys.index("OpenAI")
+
+        ui._is_updating_provider = True
+        ui.provider_combo.setCurrentIndex(gemini_idx)
+        ui.api_key_edit.setText("AIzaSyDummyGeminiKey123456789")
+        ui._is_updating_provider = False
+
+        # Giả lập yêu cầu mới nhất có request_id = 5 cho Google Gemini
+        ui._model_fetch_req_id = 5
+        ui._on_fetch_models_done(5, "Google Gemini", True, ["gemini-2.5-flash", "gemini-2.5-pro"], "OK")
+        self.assertEqual(ui.model_combo.count(), 2)
+        self.assertEqual(ui.model_combo.currentText(), "gemini-2.5-flash")
+
+        # Một phản hồi trễ từ yêu cầu cũ (request_id = 4 của OpenAI) vừa về tới -> phải bị bỏ qua!
+        ui._on_fetch_models_done(4, "OpenAI", True, ["gpt-4o-mini"], "OK")
+        self.assertEqual(ui.model_combo.count(), 2)
+        self.assertEqual(ui.model_combo.currentText(), "gemini-2.5-flash", "Kết quả của request_id cũ không được ghi đè model mới!")
+
+        # Phản hồi có cùng request_id nhưng khác nhà cung cấp đang chọn hiện tại -> cũng phải bị bỏ qua!
+        ui._is_updating_provider = True
+        ui.provider_combo.setCurrentIndex(openai_idx)
+        ui._is_updating_provider = False
+        ui._on_fetch_models_done(5, "Google Gemini", True, ["gemini-1.5-flash"], "OK")
+        self.assertNotEqual(ui.model_combo.currentText(), "gemini-1.5-flash")
+
+    # -------------------------------------------------------------------------
+    # 19. Kiểm thử P2 Đợt 3: Bảo mật khóa DPAPI & phân biệt Đã lưu vs Đã xác thực
+    # -------------------------------------------------------------------------
+    def test_dpapi_key_encryption_and_verified_vs_saved_status(self):
+        from PySide6.QtWidgets import QApplication
+        from src.desktop.ui.translation_interface import (
+            _encrypt_secret,
+            _decrypt_secret,
+            CONFIG_API_FILE,
+        )
+        from src.desktop.ui.auto_pipeline_interface import AutoPipelineInterface
+
+        app = QApplication.instance() or QApplication([])
+        secret = "sk-proj-test-dpapi-secret-998877"
+        encrypted = _encrypt_secret(secret)
+        self.assertNotEqual(encrypted, secret)
+        if os.name == "nt":
+            self.assertTrue(encrypted.startswith("dpapi:"), "Trên Windows phải sử dụng kho bảo mật hệ điều hành DPAPI!")
+        self.assertEqual(_decrypt_secret(encrypted), secret)
+
+        backup_cfg = CONFIG_API_FILE.read_text(encoding="utf-8") if CONFIG_API_FILE.exists() else None
+        try:
+            auto_ui = AutoPipelineInterface()
+            # Trường hợp 1: Đã lưu khóa nhưng chưa xác thực (api_key_verified = False)
+            cfg_unverified = {
+                "engine_index": 1,
+                "engine_type": "llm",
+                "provider_index": 0,
+                "provider_name": "Google Gemini",
+                "api_key": encrypted,
+                "api_key_verified": False,
+                "model_name": "gemini-2.5-flash",
+            }
+            CONFIG_API_FILE.write_text(json.dumps(cfg_unverified, ensure_ascii=False), encoding="utf-8")
+            auto_ui._update_settings_summary()
+            self.assertIn("chưa xác thực", auto_ui.lbl_summary_translate.text().lower())
+
+            # Trường hợp 2: Đã xác thực thành công (api_key_verified = True)
+            cfg_unverified["api_key_verified"] = True
+            CONFIG_API_FILE.write_text(json.dumps(cfg_unverified, ensure_ascii=False), encoding="utf-8")
+            auto_ui._update_settings_summary()
+            self.assertIn("Đã xác thực", auto_ui.lbl_summary_translate.text())
+        finally:
+            if backup_cfg is not None:
+                CONFIG_API_FILE.write_text(backup_cfg, encoding="utf-8")
+
+    # -------------------------------------------------------------------------
+    # 20. Kiểm thử P1/P2 Đợt 1 & 4: Hủy tiến trình FFmpeg & cập nhật retranslateUi
+    # -------------------------------------------------------------------------
+    def test_ffmpeg_overlay_cancellation_and_retranslate_ui_all_tabs(self):
+        from PySide6.QtWidgets import QApplication
+        from src.desktop.ui.auto_pipeline_interface import AutoPipelineInterface, AutoPipelineWorker
+        from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+        from src.desktop.ui.translation_interface import TranslationInterface
+
+        app = QApplication.instance() or QApplication([])
+        auto_ui = AutoPipelineInterface()
+        omni_ui = OmniVoiceInterface()
+        trans_ui = TranslationInterface()
+
+        # Kiểm tra retranslateUi() thực sự cập nhật nhãn giao diện và không để trống
+        auto_ui.retranslateUi()
+        omni_ui.retranslateUi()
+        trans_ui.retranslateUi()
+        self.assertTrue(len(auto_ui.btn_run_pipeline.text()) > 0)
+        self.assertTrue(len(omni_ui.btn_studio_synth.text()) > 0)
+
+        # Kiểm tra hủy tiến trình FFmpeg đang chạy trong _overlay_subtitle_ffmpeg
+        in_vid = os.path.join(self.temp_dir, "ff_cancel_in.mp4")
+        ass_file = os.path.join(self.temp_dir, "ff_cancel.ass")
+        out_vid = os.path.join(self.temp_dir, "ff_cancel_out.mp4")
+        _create_dummy_video(in_vid)
+        Path(ass_file).write_text("[Script Info]\nTitle: Test\n", encoding="utf-8")
+
+        worker = AutoPipelineWorker(
+            video_path=in_vid,
+            output_path=out_vid,
+            ocr_lang="zh",
+            target_lang="vi",
+            engine_type="google",
+            api_config={},
+            inpaint_mode="sttn_auto",
+            sub_areas=[],
+            style_type="tiktok_yellow",
+        )
+
+        class DummyPopen:
+            def __init__(self, *args, **kwargs):
+                self.terminated = False
+                self.returncode = None
+                self.stderr = mock.MagicMock()
+                self.stderr.read.return_value = ""
+
+            def poll(self):
+                if self.terminated:
+                    self.returncode = -15
+                    return -15
+                worker.stop()
+                return None
+
+            def terminate(self):
+                self.terminated = True
+                self.returncode = -15
+
+            def communicate(self, timeout=None):
+                return ("", "")
+
+        dummy_proc = DummyPopen()
+        with mock.patch("subprocess.Popen", return_value=dummy_proc):
+            worker._overlay_subtitle_ffmpeg(in_vid, ass_file, out_vid)
+
+        self.assertTrue(dummy_proc.terminated, "Khi nhận lệnh dừng, tiến trình FFmpeg đang ghép phụ đề phải bị terminate ngay!")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
