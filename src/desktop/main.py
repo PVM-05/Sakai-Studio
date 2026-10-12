@@ -44,6 +44,7 @@ from src.desktop.ui.extractor_interface import ExtractorInterface
 from src.desktop.ui.ytdlp_interface import YtdlpInterface
 from src.desktop.ui.mmo_setting_interface import MMOSettingInterface
 from src.desktop.ui.translation_interface import TranslationInterface
+from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
 
 
 class SubtitleExtractorGUI(FluentWindow): 
@@ -150,29 +151,51 @@ class SubtitleExtractorGUI(FluentWindow):
         self.translationInterface = self.toolsInterface.translationInterface
         self.ytdlpInterface = self.toolsInterface.ytdlpInterface
 
-        # 3. Tab Cấu Hình Nâng Cao (Hệ thống)
+        # 3. Tab Lồng Tiếng Trí Tuệ Nhân Tạo (OmniVoice)
+        self.omnivoiceInterface = OmniVoiceInterface(self)
+        self.omnivoiceInterface.setObjectName("OmniVoiceInterface")
+
+        # 4. Tab Cấu Hình Nâng Cao (Hệ thống)
         self.advancedSettingInterface = AdvancedSettingInterface(self)
         self.advancedSettingInterface.setObjectName("AdvancedSettingInterface")
         
-        # 4. Tab Cấu Hình MMO
+        # 5. Tab Cấu Hình MMO
         self.mmoSettingInterface = MMOSettingInterface(self)
         self.mmoSettingInterface.setObjectName("MMOSettingInterface")
         
-        # Bổ sung 4 tab chính vào Navigation Bar
+        # Bổ sung 5 tab chính vào Navigation Bar
         self.addSubInterface(self.autoPipelineInterface, FluentIcon.HOME, "Tự Động")
         self.addSubInterface(self.toolsInterface, FluentIcon.DEVELOPER_TOOLS, "Công Cụ")
+        self.addSubInterface(self.omnivoiceInterface, FluentIcon.MICROPHONE, "Lồng Tiếng")
         self.addSubInterface(self.mmoSettingInterface, FluentIcon.MARKET, "Cấu Hình MMO")
         self.addSubInterface(self.advancedSettingInterface, FluentIcon.SETTING, tr['Setting']['AdvancedSetting'], NavigationItemPosition.BOTTOM)
 
     def open_video_in_remover(self, filepath):
-        """Chuyen sang Tab Cong Cu -> Sub-tab Xoa Sub va mo video da tai"""
+        """Chuyển sang Tab Công Cụ -> Sub-tab Xóa Phụ Đề và mở video đã tải"""
         self.switchTo(self.toolsInterface)
         self.toolsInterface.open_video_in_remover(filepath)
 
+    def open_in_omnivoice(self, srt_path=None, video_path=None, blocks=None):
+        """Chuyển sang Tab Lồng Tiếng và nạp thẳng dữ liệu phụ đề / video"""
+        self.switchTo(self.omnivoiceInterface)
+        self.omnivoiceInterface.load_subtitle_and_video(srt_path=srt_path, video_path=video_path, blocks=blocks)
+
     def closeEvent(self, event):
-        """程序关闭时保存窗口位置并清理资源"""
+        """Lưu vị trí cửa sổ và giải phóng tài nguyên luồng nền khi đóng ứng dụng"""
         self.save_window_position()
         ProcessManager.instance().terminate_all()
+        for thread in self.findChildren(QtCore.QThread):
+            if thread.isRunning():
+                if hasattr(thread, "cancel"):
+                    try:
+                        thread.cancel()
+                    except Exception:
+                        pass
+                thread.requestInterruption()
+                thread.quit()
+                if not thread.wait(1500):
+                    thread.terminate()
+                    thread.wait(500)
         super().closeEvent(event)
 
     def _onThemeChangedFinished(self):
