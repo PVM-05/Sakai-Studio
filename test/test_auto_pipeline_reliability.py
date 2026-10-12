@@ -365,6 +365,209 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
         engine_auto = VideoOcrEngine(ocr_lang="auto")
         self.assertEqual(engine_auto._resolve_paddle_lang(), "ch")
 
+    # -------------------------------------------------------------------------
+    # 10. Kiểm thử P1 UI: OmniVoice xóa sạch video/phụ đề cũ khi nhận phiên mới
+    # -------------------------------------------------------------------------
+    def test_omnivoice_load_subtitle_and_video_clears_stale_session_data(self):
+        from PySide6.QtWidgets import QApplication
+        from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+
+        app = QApplication.instance() or QApplication([])
+        ui = OmniVoiceInterface()
+        old_vid = os.path.join(self.temp_dir, "old_task.mp4")
+        old_srt = os.path.join(self.temp_dir, "old_task.srt")
+        _create_dummy_video(old_vid)
+        Path(old_srt).write_text("1\n00:00:01,000 --> 00:00:02,000\nCâu cũ\n", encoding="utf-8")
+
+        # Phiên 1: Có cả phụ đề và video
+        ui.load_subtitle_and_video(srt_path=old_srt, video_path=old_vid)
+        self.assertEqual(ui.current_video_path, old_vid)
+        self.assertTrue(ui.btn_dub_merge_video.isEnabled())
+
+        # Phiên 2: Chuyển phụ đề mới từ tab Dịch sang mà không kèm video (video_path=None, srt_path=None)
+        new_blocks = [
+            SubtitleBlock(index=1, start_time="00:00:00,500", end_time="00:00:01,800", text="Hello", translated_text="Xin chào")
+        ]
+        ui.load_subtitle_and_video(srt_path=None, video_path=None, blocks=new_blocks)
+        self.assertEqual(ui.current_video_path, "", "Phải xóa đường dẫn video cũ khi nạp phiên phụ đề mới không kèm video!")
+        self.assertEqual(ui.current_subtitle_path, "", "Phải xóa đường dẫn phụ đề cũ khi nạp danh sách khối mới không kèm tệp!")
+        self.assertFalse(ui.btn_dub_merge_video.isEnabled(), "Nút Lồng Tiếng Và Xuất Video phải khóa khi không có video!")
+
+        # Kiểm thử nút Bỏ Chọn Video thủ công
+        ui.load_subtitle_and_video(srt_path=old_srt, video_path=old_vid)
+        self.assertTrue(hasattr(ui, "btn_clear_video"), "Phải có nút Bỏ Chọn Video (btn_clear_video)!")
+        ui._clear_selected_video()
+        self.assertEqual(ui.current_video_path, "")
+        self.assertFalse(ui.btn_dub_merge_video.isEnabled())
+
+    # -------------------------------------------------------------------------
+    # 11. Kiểm thử P1 UI: Khóa bảng & truyền bản sao độc lập cho OmniVoiceTaskWorker
+    # -------------------------------------------------------------------------
+    def test_omnivoice_locks_table_and_deepcopies_blocks_when_running(self):
+        from PySide6.QtWidgets import QApplication, QAbstractItemView
+        from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+
+        app = QApplication.instance() or QApplication([])
+        ui = OmniVoiceInterface()
+        blocks = [
+            SubtitleBlock(index=1, start_time="00:00:00,500", end_time="00:00:02,000", text="Orig", translated_text="Bản dịch gốc")
+        ]
+        ui.load_subtitle_and_video(blocks=blocks)
+
+        # Kiểm tra khóa bảng và các nút khi đang chạy
+        ui._set_task_running_state(True)
+        self.assertEqual(ui.sub_table.editTriggers(), QAbstractItemView.NoEditTriggers)
+        self.assertFalse(ui.btn_load_srt.isEnabled())
+        self.assertFalse(ui.btn_load_video.isEnabled())
+        self.assertFalse(ui.btn_apply_preset_to_speaker.isEnabled())
+        self.assertFalse(ui.btn_assign_speaker_to_rows.isEnabled())
+
+        ui._set_task_running_state(False)
+        self.assertNotEqual(ui.sub_table.editTriggers(), QAbstractItemView.NoEditTriggers)
+        self.assertTrue(ui.btn_load_srt.isEnabled())
+
+        # Kiểm tra _launch_worker tạo bản sao độc lập của subtitle_blocks
+        with mock.patch("src.desktop.ui.omnivoice_interface.OmniVoiceTaskWorker.start"):
+            ui.combo_mode.setCurrentIndex(1)  # Chế độ Thiết kế giọng nói
+            ui._launch_worker("subtitle_audio_only", output_path=os.path.join(self.temp_dir, "out.wav"), subtitle_blocks=ui.subtitle_blocks)
+            ui._set_task_running_state(False)
+
+        self.assertIsNotNone(ui._worker)
+        worker_blocks = ui._worker.subtitle_blocks
+        self.assertIsNot(worker_blocks, ui.subtitle_blocks, "Danh sách khối phụ đề truyền cho worker phải là bản sao độc lập!")
+        self.assertIsNot(worker_blocks[0], ui.subtitle_blocks[0], "Từng đối tượng SubtitleBlock trong worker phải độc lập với UI!")
+        ui.subtitle_blocks[0].translated_text = "Đã sửa trên UI"
+        self.assertEqual(worker_blocks[0].translated_text, "Bản dịch gốc")
+
+    # -------------------------------------------------------------------------
+    # 12. Kiểm thử P2 UI: Cột chỉ đọc và kiểm tra mốc thời gian trên bảng phụ đề
+    # -------------------------------------------------------------------------
+    def test_omnivoice_sub_table_readonly_columns_and_timestamp_validation(self):
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtCore import Qt
+        from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+
+        app = QApplication.instance() or QApplication([])
+        ui = OmniVoiceInterface()
+        blocks = [
+            SubtitleBlock(index=1, start_time="00:00:01,000", end_time="00:00:03,000", text="Hello", translated_text="Xin chào")
+        ]
+        ui.load_subtitle_and_video(blocks=blocks)
+
+        item_stt = ui.sub_table.item(0, 0)
+        item_source = ui.sub_table.item(0, 4)
+        self.assertFalse(bool(item_stt.flags() & Qt.ItemIsEditable), "Cột STT (0) phải ở chế độ chỉ đọc!")
+        self.assertFalse(bool(item_source.flags() & Qt.ItemIsEditable), "Cột Nguồn Giọng Nhân Vật (4) phải ở chế độ chỉ đọc!")
+
+        # Thử nhập mốc Kết Thúc nhỏ hơn mốc Bắt Đầu -> phải khôi phục giá trị cũ
+        item_end = ui.sub_table.item(0, 2)
+        item_end.setText("00:00:00,500")
+        self.assertEqual(ui.subtitle_blocks[0].end_time, "00:00:03,000", "Mốc kết thúc không hợp lệ phải bị từ chối và khôi phục!")
+
+        # Nhập mốc Kết Thúc hợp lệ -> phải cập nhật
+        item_end.setText("00:00:04,500")
+        self.assertEqual(ui.subtitle_blocks[0].end_time, "00:00:04,500")
+
+    # -------------------------------------------------------------------------
+    # 13. Kiểm thử P2 UI: SubtitleReviewDialog lưu cả mốc thời gian & chỉ đọc cột STT
+    # -------------------------------------------------------------------------
+    def test_subtitle_review_dialog_saves_timestamps_and_locks_index_col(self):
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtCore import Qt
+        from src.desktop.ui.auto_pipeline_interface import SubtitleReviewDialog
+
+        app = QApplication.instance() or QApplication([])
+        blocks = [
+            SubtitleBlock(index=1, start_time="00:00:01,000", end_time="00:00:02,500", text="Orig", translated_text="Bản dịch cũ")
+        ]
+        dlg = SubtitleReviewDialog(blocks)
+        self.assertFalse(bool(dlg.table.item(0, 0).flags() & Qt.ItemIsEditable), "Cột STT trong SubtitleReviewDialog phải chỉ đọc!")
+
+        # Sửa mốc bắt đầu, kết thúc và văn bản hợp lệ
+        dlg.table.item(0, 1).setText("00:00:01,200")
+        dlg.table.item(0, 2).setText("00:00:03,800")
+        dlg.table.item(0, 3).setText("Bản dịch mới")
+        dlg._save_and_accept()
+
+        self.assertEqual(blocks[0].start_time, "00:00:01,200")
+        self.assertEqual(blocks[0].end_time, "00:00:03,800")
+        self.assertEqual(blocks[0].translated_text, "Bản dịch mới")
+        self.assertEqual(blocks[0].text, "Orig", "Không được ghi đè văn bản gốc blk.text khi đã có sẵn!")
+
+    # -------------------------------------------------------------------------
+    # 14. Kiểm thử P2 UI: Thư mục trống xóa hàng đợi cũ & 0 câu OCR báo hoàn thành một phần
+    # -------------------------------------------------------------------------
+    def test_empty_folder_clears_queue_and_zero_ocr_warns_partial(self):
+        from PySide6.QtWidgets import QApplication
+        from src.core.config import config
+        from src.desktop.ui.auto_pipeline_interface import (
+            AutoPipelineInterface,
+            AutoPipelineWorker,
+            PIPELINE_PARTIAL,
+        )
+
+        app = QApplication.instance() or QApplication([])
+        ui = AutoPipelineInterface()
+        vid1 = os.path.join(self.temp_dir, "queued.mp4")
+        _create_dummy_video(vid1)
+        ui.video_queue = [vid1]
+        ui.current_video_path = vid1
+
+        empty_dir = os.path.join(self.temp_dir, "empty_folder")
+        os.makedirs(empty_dir, exist_ok=True)
+        with mock.patch("src.core.tools.folder_memory.FolderMemoryDialog.getExistingDirectory", return_value=empty_dir):
+            ui._select_video_folder()
+
+        self.assertEqual(ui.video_queue, [], "Chọn thư mục trống phải xóa sạch hàng đợi video cũ!")
+        self.assertIsNone(ui.current_video_path, "Chọn thư mục trống phải xóa đường dẫn video hiện tại!")
+
+        # Kiểm tra 0 câu OCR trả về PIPELINE_PARTIAL thay vì báo thành công dịch hoàn toàn
+        out_vid = os.path.join(self.temp_dir, "zero_ocr_out.mp4")
+        worker = AutoPipelineWorker(
+            video_path=vid1,
+            output_path=out_vid,
+            ocr_lang="zh",
+            target_lang="vi",
+            engine_type="google",
+            api_config={},
+            inpaint_mode="sttn_auto",
+            sub_areas=[],
+            style_type="tiktok_yellow",
+        )
+        old_enable_tts = config.mmoEnableTTS.value
+        try:
+            config.mmoEnableTTS.value = False
+            with mock.patch.object(worker, "_extract_ocr_subtitles", return_value=[]), \
+                 mock.patch.object(worker, "_run_subtitle_remover", side_effect=lambda p: _create_dummy_video(p)):
+                worker.run()
+        finally:
+            config.mmoEnableTTS.value = old_enable_tts
+
+        self.assertEqual(worker.final_status, PIPELINE_PARTIAL, "Khi OCR tìm thấy 0 câu phụ đề, trạng thái phải là PARTIAL_SUCCESS!")
+
+    # -------------------------------------------------------------------------
+    # 15. Kiểm thử P2 UI: Hiển thị hộp chọn kiểu phụ đề, nút Hàng đợi & co giãn 960x600
+    # -------------------------------------------------------------------------
+    def test_auto_pipeline_visible_style_combo_and_responsive_resize(self):
+        from PySide6.QtWidgets import QApplication
+        from src.desktop.ui.auto_pipeline_interface import AutoPipelineInterface
+        from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+
+        app = QApplication.instance() or QApplication([])
+        auto_ui = AutoPipelineInterface()
+        omni_ui = OmniVoiceInterface()
+
+        self.assertFalse(auto_ui.style_combo.isHidden(), "Hộp chọn kiểu phụ đề (style_combo) phải hiển thị trực tiếp trên tab Tự Động!")
+        self.assertTrue(hasattr(auto_ui, "btn_view_queue"), "Tab Tự Động phải có nút xem Danh Sách Hàng Đợi (btn_view_queue)!")
+
+        for w, h in [(960, 600), (1280, 720)]:
+            auto_ui.resize(w, h)
+            omni_ui.resize(w, h)
+            app.processEvents()
+            self.assertEqual(auto_ui.width(), w)
+            self.assertEqual(omni_ui.width(), w)
+
 
 if __name__ == "__main__":
     unittest.main()
+

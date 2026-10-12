@@ -13,6 +13,8 @@ Cung cấp toàn bộ tính năng của mã nguồn OmniVoice chạy trực ti�
 from __future__ import annotations
 
 import os
+import copy
+import time
 import shutil
 from pathlib import Path
 from typing import List, Optional, Dict, Any
@@ -538,7 +540,7 @@ class OmniVoiceInterface(ScrollArea):
         clone_layout.setSpacing(10)
 
         clone_title = SubtitleLabel("Thiết Lập Nhân Bản Giọng Nói Từ Mẫu", self.clone_card)
-        clone_layout.addWidget(clone_title, 0, 0, 1, 6)
+        clone_layout.addWidget(clone_title, 0, 0, 1, 3)
 
         self.btn_pick_ref_audio = PushButton("Chọn Tệp Âm Thanh Mẫu", self.clone_card)
         self.btn_pick_ref_audio.setIcon(FluentIcon.MUSIC)
@@ -554,33 +556,33 @@ class OmniVoiceInterface(ScrollArea):
 
         self.btn_load_prompt_pt = PushButton("Nạp Mẫu Giọng Đã Mã Hóa", self.clone_card)
         self.btn_load_prompt_pt.setIcon(FluentIcon.FOLDER)
-        clone_layout.addWidget(self.btn_load_prompt_pt, 1, 3)
+        clone_layout.addWidget(self.btn_load_prompt_pt, 2, 0)
 
         self.btn_save_prompt_pt = PushButton("Lưu Mẫu Giọng Đã Mã Hóa", self.clone_card)
         self.btn_save_prompt_pt.setIcon(FluentIcon.SAVE)
-        clone_layout.addWidget(self.btn_save_prompt_pt, 1, 4)
+        clone_layout.addWidget(self.btn_save_prompt_pt, 2, 1)
 
         self.chk_auto_extract_video = CheckBox("Tự động lấy giọng từ video khi lồng tiếng phụ đề", self.clone_card)
-        clone_layout.addWidget(self.chk_auto_extract_video, 1, 5)
+        clone_layout.addWidget(self.chk_auto_extract_video, 2, 2)
 
         self.lbl_ref_status = CaptionLabel(
             "Tệp giọng mẫu hiện tại: Chưa chọn tệp âm thanh mẫu, khuyến nghị đoạn thu âm từ 3 đến 10 giây.",
             self.clone_card,
         )
         self.lbl_ref_status.setWordWrap(True)
-        clone_layout.addWidget(self.lbl_ref_status, 2, 0, 1, 6)
+        clone_layout.addWidget(self.lbl_ref_status, 3, 0, 1, 3)
 
         lbl_ref_text = BodyLabel("Lời thoại của giọng mẫu:", self.clone_card)
-        clone_layout.addWidget(lbl_ref_text, 3, 0)
+        clone_layout.addWidget(lbl_ref_text, 4, 0)
 
         self.edit_ref_text = LineEdit(self.clone_card)
         self.edit_ref_text.setPlaceholderText("Nhập lời thoại của tệp giọng mẫu hoặc bấm nút bên cạnh để nhận diện tự động...")
         self.edit_ref_text.setClearButtonEnabled(True)
-        clone_layout.addWidget(self.edit_ref_text, 3, 1, 1, 4)
+        clone_layout.addWidget(self.edit_ref_text, 4, 1)
 
         self.btn_transcribe_ref = PushButton("Nhận Diện Lời Thoại Mẫu", self.clone_card)
         self.btn_transcribe_ref.setIcon(FluentIcon.MICROPHONE)
-        clone_layout.addWidget(self.btn_transcribe_ref, 3, 5)
+        clone_layout.addWidget(self.btn_transcribe_ref, 4, 2)
 
         self.voice_source_stack.addWidget(self.clone_card)
 
@@ -729,11 +731,16 @@ class OmniVoiceInterface(ScrollArea):
         self.btn_load_video = PushButton("Chọn Video Nguồn Để Ghép", self.sub_dub_page)
         self.btn_load_video.setIcon(FluentIcon.VIDEO)
 
+        self.btn_clear_video = PushButton("Bỏ Chọn Video", self.sub_dub_page)
+        self.btn_clear_video.setIcon(FluentIcon.DELETE)
+        self.btn_clear_video.setEnabled(False)
+
         self.lbl_sub_video_info = CaptionLabel("Chưa nạp tệp phụ đề và video nguồn.", self.sub_dub_page)
         self.lbl_sub_video_info.setWordWrap(True)
 
         sub_file_row.addWidget(self.btn_load_srt)
         sub_file_row.addWidget(self.btn_load_video)
+        sub_file_row.addWidget(self.btn_clear_video)
         sub_file_row.addWidget(self.lbl_sub_video_info, 1)
         sub_dub_layout.addLayout(sub_file_row)
 
@@ -768,10 +775,10 @@ class OmniVoiceInterface(ScrollArea):
         diarize_top_row.addWidget(self.btn_auto_detect_speakers)
         diarize_layout.addLayout(diarize_top_row)
 
-        # Hàng cấu hình giọng riêng cho từng nhân vật
-        spk_assign_row = QHBoxLayout()
-        spk_assign_row.setSpacing(8)
-        spk_assign_row.addWidget(BodyLabel("Nhân vật:", diarize_card))
+        # Cấu hình giọng riêng cho từng nhân vật chia làm 2 hàng gọn gàng
+        spk_assign_row1 = QHBoxLayout()
+        spk_assign_row1.setSpacing(8)
+        spk_assign_row1.addWidget(BodyLabel("Nhân vật:", diarize_card))
         self.combo_target_speaker = ComboBox(diarize_card)
         self.combo_target_speaker.addItems([f"Người nói {i}" for i in range(1, 7)])
 
@@ -780,6 +787,14 @@ class OmniVoiceInterface(ScrollArea):
 
         self.btn_preview_speaker_preset_vi = PushButton("Nghe Thử Giọng Nhân Vật", diarize_card)
         self.btn_preview_speaker_preset_vi.setIcon(FluentIcon.VOLUME)
+
+        spk_assign_row1.addWidget(self.combo_target_speaker)
+        spk_assign_row1.addWidget(self.combo_speaker_voice_preset, 1)
+        spk_assign_row1.addWidget(self.btn_preview_speaker_preset_vi)
+        diarize_layout.addLayout(spk_assign_row1)
+
+        spk_assign_row2 = QHBoxLayout()
+        spk_assign_row2.setSpacing(8)
 
         self.btn_apply_preset_to_speaker = PushButton("Áp Dụng Thiết Kế Giọng Cho Nhân Vật", diarize_card)
         self.btn_apply_preset_to_speaker.setIcon(FluentIcon.ACCEPT)
@@ -793,14 +808,11 @@ class OmniVoiceInterface(ScrollArea):
         self.btn_reset_speaker_voice = PushButton("Tạo Lại Mẫu Giọng", diarize_card)
         self.btn_reset_speaker_voice.setIcon(FluentIcon.SYNC)
 
-        spk_assign_row.addWidget(self.combo_target_speaker)
-        spk_assign_row.addWidget(self.combo_speaker_voice_preset, 1)
-        spk_assign_row.addWidget(self.btn_preview_speaker_preset_vi)
-        spk_assign_row.addWidget(self.btn_apply_preset_to_speaker)
-        spk_assign_row.addWidget(self.btn_pick_audio_for_speaker)
-        spk_assign_row.addWidget(self.btn_assign_speaker_to_rows)
-        spk_assign_row.addWidget(self.btn_reset_speaker_voice)
-        diarize_layout.addLayout(spk_assign_row)
+        spk_assign_row2.addWidget(self.btn_apply_preset_to_speaker)
+        spk_assign_row2.addWidget(self.btn_pick_audio_for_speaker)
+        spk_assign_row2.addWidget(self.btn_assign_speaker_to_rows)
+        spk_assign_row2.addWidget(self.btn_reset_speaker_voice)
+        diarize_layout.addLayout(spk_assign_row2)
 
         # Hàng chèn thẻ biểu cảm nhanh vào dòng phụ đề đang chọn
         sub_tag_row = QHBoxLayout()
@@ -1117,6 +1129,7 @@ class OmniVoiceInterface(ScrollArea):
         # Tín hiệu Lồng tiếng phụ đề đa nhân vật & video
         self.btn_load_srt.clicked.connect(self._select_subtitle_file)
         self.btn_load_video.clicked.connect(self._select_video_file)
+        self.btn_clear_video.clicked.connect(self._clear_selected_video)
         self.combo_multi_speaker_mode.currentIndexChanged.connect(self._update_control_states)
         self.btn_auto_detect_speakers.clicked.connect(self._run_auto_detect_speakers)
         self.btn_preview_speaker_preset_vi.clicked.connect(self._preview_speaker_preset_vi)
@@ -1516,10 +1529,19 @@ class OmniVoiceInterface(ScrollArea):
         video_path: Optional[str] = None,
         blocks: Optional[List[SubtitleBlock]] = None,
     ):
-        """Phương thức liên kết cho phép các thẻ khác chuyển thẳng dữ liệu phụ đề và video sang thẻ Lồng Tiếng."""
+        """
+        Khởi tạo một phiên làm việc lồng tiếng phụ đề mới khi nhận dữ liệu từ các thẻ khác.
+        Đồng bộ trạng thái phụ đề và video nguồn, tránh giữ lại tệp cũ từ phiên trước.
+        """
         self.workspace_pivot.setCurrentItem("sub_dub_page")
         self.workspace_stack.setCurrentIndex(1)
-        if blocks:
+
+        # Đặt lại trạng thái phiên để không âm thầm giữ tệp video hoặc phụ đề cũ
+        self.current_subtitle_path = srt_path if (srt_path and os.path.exists(srt_path)) else ""
+        self.current_video_path = video_path if (video_path and os.path.exists(video_path)) else ""
+        self.speaker_profiles = {}
+
+        if blocks is not None:
             self.subtitle_blocks = [
                 SubtitleBlock(
                     index=b.index,
@@ -1533,15 +1555,22 @@ class OmniVoiceInterface(ScrollArea):
                 )
                 for b in blocks
             ]
-            if srt_path:
-                self.current_subtitle_path = srt_path
             self._populate_subtitle_table()
-        elif srt_path and os.path.exists(srt_path):
-            self._load_subtitle_file_internal(srt_path)
-        if video_path and os.path.exists(video_path):
-            self.current_video_path = video_path
+        elif self.current_subtitle_path:
+            self._load_subtitle_file_internal(self.current_subtitle_path)
+        else:
+            self.subtitle_blocks = []
+            self._populate_subtitle_table()
+
         self._update_sub_video_status_label()
         self._update_subtitle_action_buttons()
+
+    def _clear_selected_video(self):
+        """Gỡ video nguồn hiện tại để chuyển về chế độ chỉ xuất tệp âm thanh lồng tiếng."""
+        self.current_video_path = ""
+        self._update_sub_video_status_label()
+        self._update_subtitle_action_buttons()
+        InfoBar.success("Đã bỏ chọn video", "Đã gỡ video nguồn khỏi phiên lồng tiếng hiện tại.", parent=self, duration=2500)
 
     def _select_subtitle_file(self):
         filepath, _ = FolderMemoryDialog.getOpenFileName(
@@ -1629,12 +1658,19 @@ class OmniVoiceInterface(ScrollArea):
         self.sub_table.blockSignals(True)
         self.sub_table.setRowCount(len(self.subtitle_blocks))
         for row, blk in enumerate(self.subtitle_blocks):
-            self.sub_table.setItem(row, 0, QTableWidgetItem(str(blk.index)))
+            item_stt = QTableWidgetItem(str(blk.index))
+            item_stt.setFlags(item_stt.flags() & ~Qt.ItemIsEditable)
+            self.sub_table.setItem(row, 0, item_stt)
+
             self.sub_table.setItem(row, 1, QTableWidgetItem(str(blk.start_time)))
             self.sub_table.setItem(row, 2, QTableWidgetItem(str(blk.end_time)))
             spk = getattr(blk, "speaker", "") or "Người nói 1"
             self.sub_table.setItem(row, 3, QTableWidgetItem(spk))
-            self.sub_table.setItem(row, 4, QTableWidgetItem(self._format_voice_source_display(blk)))
+
+            item_src = QTableWidgetItem(self._format_voice_source_display(blk))
+            item_src.setFlags(item_src.flags() & ~Qt.ItemIsEditable)
+            self.sub_table.setItem(row, 4, item_src)
+
             txt = blk.translated_text if blk.translated_text else blk.text
             self.sub_table.setItem(row, 5, QTableWidgetItem(txt))
         self.sub_table.blockSignals(False)
@@ -1644,10 +1680,27 @@ class OmniVoiceInterface(ScrollArea):
         col = item.column()
         if 0 <= row < len(self.subtitle_blocks):
             blk = self.subtitle_blocks[row]
-            if col == 1:
-                blk.start_time = item.text().strip()
-            elif col == 2:
-                blk.end_time = item.text().strip()
+            if col in (1, 2):
+                new_val = item.text().strip()
+                cand_start = new_val if col == 1 else blk.start_time
+                cand_end = new_val if col == 2 else blk.end_time
+                s_sec = parse_timestamp_to_seconds(cand_start)
+                e_sec = parse_timestamp_to_seconds(cand_end)
+                if not new_val or ":" not in new_val or s_sec < 0 or e_sec <= s_sec:
+                    self.sub_table.blockSignals(True)
+                    item.setText(str(blk.start_time if col == 1 else blk.end_time))
+                    self.sub_table.blockSignals(False)
+                    InfoBar.warning(
+                        "Mốc thời gian không hợp lệ",
+                        "Mốc kết thúc phải lớn hơn mốc bắt đầu và đúng định dạng HH:MM:SS,mmm.",
+                        parent=self,
+                        duration=3000,
+                    )
+                    return
+                if col == 1:
+                    blk.start_time = new_val
+                else:
+                    blk.end_time = new_val
             elif col == 3:
                 blk.speaker = item.text().strip()
             elif col == 5:
@@ -1659,6 +1712,7 @@ class OmniVoiceInterface(ScrollArea):
         has_subs = len(self.subtitle_blocks) > 0
         has_video = bool(self.current_video_path and os.path.exists(self.current_video_path))
         has_selection = len(self.sub_table.selectedItems()) > 0
+        self.btn_clear_video.setEnabled(has_video)
         self.btn_auto_detect_speakers.setEnabled(has_subs)
         self.btn_preview_selected_row.setEnabled(has_subs and has_selection)
         self.btn_export_dub_wav.setEnabled(has_subs)
@@ -1683,6 +1737,12 @@ class OmniVoiceInterface(ScrollArea):
 
     def _on_speakers_detected(self, profiles: dict):
         self.speaker_profiles = dict(profiles)
+        # Đồng bộ lại thông tin phân vai từ bản sao phụ đề của worker về danh sách UI
+        if self._worker and self._worker.subtitle_blocks and len(self._worker.subtitle_blocks) == len(self.subtitle_blocks):
+            for ui_blk, w_blk in zip(self.subtitle_blocks, self._worker.subtitle_blocks):
+                ui_blk.speaker = getattr(w_blk, "speaker", ui_blk.speaker)
+                ui_blk.voice_ref_path = getattr(w_blk, "voice_ref_path", ui_blk.voice_ref_path)
+                ui_blk.voice_instruct = getattr(w_blk, "voice_instruct", ui_blk.voice_instruct)
         self._populate_subtitle_table()
         summary_parts = [
             f"{spk}: {info.get('description', '')} ({info.get('count', 0)} câu)"
@@ -1896,18 +1956,45 @@ class OmniVoiceInterface(ScrollArea):
     # ĐIỀU PHỐI LUỒNG NỀN & TRÌNH PHÁT ÂM THANH
     # =========================================================================
     def _set_task_running_state(self, running: bool):
-        """Quản lý tập trung trạng thái khóa/mở khóa các nút tác vụ khi luồng nền hoạt động."""
+        """Quản lý tập trung trạng thái khóa/mở khóa bảng phụ đề và các điều khiển khi luồng nền hoạt động."""
         self.btn_studio_synth.setEnabled(not running)
         self.btn_preview_vn_voice.setEnabled(not running)
         self.btn_preview_speaker_preset_vi.setEnabled(not running)
         self.btn_cancel_task.setEnabled(running)
+
+        # Khóa chỉnh sửa bảng phụ đề và các nút nạp/sửa dữ liệu trong lúc worker đang chạy
+        self.sub_table.setEditTriggers(
+            QAbstractItemView.NoEditTriggers
+            if running
+            else (QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
+        )
+        for ctrl in [
+            self.btn_load_srt,
+            self.btn_load_video,
+            self.btn_apply_preset_to_speaker,
+            self.btn_pick_audio_for_speaker,
+            self.btn_assign_speaker_to_rows,
+            self.btn_reset_speaker_voice,
+            self.btn_insert_tag_to_sub,
+            self.combo_mode,
+            self.combo_multi_speaker_mode,
+            self.btn_pick_ref_audio,
+            self.btn_extract_ref_video,
+            self.btn_load_prompt_pt,
+        ]:
+            ctrl.setEnabled(not running)
+
         if not running:
             has_subs = len(self.subtitle_blocks) > 0
             self.btn_export_dub_wav.setEnabled(has_subs)
             self.btn_dub_merge_video.setEnabled(has_subs and bool(self.current_video_path))
             self.btn_auto_detect_speakers.setEnabled(has_subs or bool(self.current_video_path))
+            self._update_control_states()
             self._update_subtitle_action_buttons()
         else:
+            self.btn_clear_video.setEnabled(False)
+            self.btn_save_prompt_pt.setEnabled(False)
+            self.btn_transcribe_ref.setEnabled(False)
             self.btn_export_dub_wav.setEnabled(False)
             self.btn_dub_merge_video.setEnabled(False)
             self.btn_auto_detect_speakers.setEnabled(False)
@@ -1936,7 +2023,7 @@ class OmniVoiceInterface(ScrollArea):
             InfoBar.warning("Đang bận", "Hệ thống đang xử lý tác vụ trước đó, vui lòng đợi...", parent=self, duration=2500)
             return
 
-        params = self._collect_engine_params()
+        params = copy.deepcopy(self._collect_engine_params())
         ms_mode = params.get("multi_speaker_mode", "single")
 
         # Kiểm tra giọng mẫu khi ở chế độ nhân bản 1 giọng đơn lẻ
@@ -1961,13 +2048,15 @@ class OmniVoiceInterface(ScrollArea):
         self.lbl_status.setText("Đang thực thi trên GPU NVIDIA...")
         self._set_task_running_state(True)
 
+        isolated_blocks = copy.deepcopy(subtitle_blocks) if subtitle_blocks is not None else None
+
         self._worker = OmniVoiceTaskWorker(
             task_type=task_type,
             engine_params=params,
             text=text,
             output_path=output_path,
             video_path=video_path or self.current_video_path,
-            subtitle_blocks=subtitle_blocks,
+            subtitle_blocks=isolated_blocks,
             original_volume=original_volume,
             fixed_duration=fixed_duration,
             override_ref_audio=override_ref_audio,
@@ -2026,8 +2115,19 @@ class OmniVoiceInterface(ScrollArea):
         try:
             self._media_player.stop()
             if self._worker and self._worker.isRunning():
+                self.lbl_status.setText("Đang giải phóng tài nguyên GPU trước khi đóng...")
                 self._worker.request_cancel()
-                self._worker.wait(2500)
+                for sig in (
+                    self._worker.progressSignal,
+                    self._worker.logSignal,
+                    self._worker.speakersDetectedSignal,
+                    self._worker.finishedSignal,
+                ):
+                    try:
+                        sig.disconnect()
+                    except Exception:
+                        pass
+                self._worker.wait(5000)
         except Exception:
             pass
         super().closeEvent(event)

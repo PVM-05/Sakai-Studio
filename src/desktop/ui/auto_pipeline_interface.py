@@ -111,7 +111,7 @@ class SubtitleReviewDialog(QDialog):
         layout.setSpacing(10)
         layout.setContentsMargins(14, 14, 14, 14)
 
-        layout.addWidget(SubtitleLabel("Duyệt câu chữ phụ đề đã dịch trước khi ghép video:", self))
+        layout.addWidget(SubtitleLabel("Duyệt câu chữ và mốc thời gian phụ đề trước khi ghép video:", self))
 
         self.table = QTableWidget(len(blocks), 4, self)
         self.table.setHorizontalHeaderLabels(["STT", "Bắt Đầu", "Kết Thúc", "Văn Bản Phụ Đề Dịch"])
@@ -121,7 +121,9 @@ class SubtitleReviewDialog(QDialog):
         self.table.horizontalHeader().setStretchLastSection(True)
 
         for row, blk in enumerate(blocks):
-            self.table.setItem(row, 0, QTableWidgetItem(str(blk.index)))
+            item_stt = QTableWidgetItem(str(blk.index))
+            item_stt.setFlags(item_stt.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 0, item_stt)
             self.table.setItem(row, 1, QTableWidgetItem(str(blk.start_time)))
             self.table.setItem(row, 2, QTableWidgetItem(str(blk.end_time)))
             txt_item = QTableWidgetItem(blk.translated_text or blk.text)
@@ -139,14 +141,106 @@ class SubtitleReviewDialog(QDialog):
         layout.addLayout(btn_box)
 
     def _save_and_accept(self):
+        validated_updates = []
         for row, blk in enumerate(self.blocks):
-            item = self.table.item(row, 3)
-            if item:
-                txt = item.text()
-                blk.translated_text = txt
-                if not blk.text:
-                    blk.text = txt
+            item_start = self.table.item(row, 1)
+            item_end = self.table.item(row, 2)
+            item_txt = self.table.item(row, 3)
+
+            start_str = item_start.text().strip() if item_start else str(blk.start_time)
+            end_str = item_end.text().strip() if item_end else str(blk.end_time)
+            txt = item_txt.text() if item_txt else (blk.translated_text or blk.text)
+
+            s_sec = parse_timestamp_to_seconds(start_str)
+            e_sec = parse_timestamp_to_seconds(end_str)
+            if not start_str or not end_str or ":" not in start_str or ":" not in end_str or s_sec < 0 or e_sec <= s_sec:
+                InfoBar.warning(
+                    "Mốc thời gian không hợp lệ",
+                    f"Dòng {row + 1}: Mốc kết thúc phải lớn hơn mốc bắt đầu và đúng định dạng HH:MM:SS,mmm.",
+                    parent=self,
+                    duration=3500,
+                )
+                return
+            validated_updates.append((blk, start_str, end_str, txt))
+
+        for blk, start_str, end_str, txt in validated_updates:
+            blk.start_time = start_str
+            blk.end_time = end_str
+            blk.translated_text = txt
+            if not blk.text:
+                blk.text = txt
         self.accept()
+
+
+class VideoQueueDialog(QDialog):
+    """Hộp thoại kiểm tra, sắp xếp và loại bớt video trong hàng đợi xử lý hàng loạt."""
+
+    def __init__(self, video_queue: list[str], parent=None):
+        super().__init__(parent=parent)
+        self.setWindowTitle("Danh Sách Hàng Đợi Video")
+        self.resize(720, 440)
+        self.video_queue = list(video_queue)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(14, 14, 14, 14)
+
+        layout.addWidget(SubtitleLabel("Danh sách các tệp video trong hàng đợi xử lý tuần tự:", self))
+
+        self.table = QTableWidget(0, 3, self)
+        self.table.setHorizontalHeaderLabels(["STT", "Tên Tệp Video", "Trạng Thái Kiểm Tra"])
+        self.table.setColumnWidth(0, 50)
+        self.table.setColumnWidth(1, 360)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.table, 1)
+
+        btn_row = QHBoxLayout()
+        self.btn_remove_selected = PushButton("Xóa Video Đang Chọn", self)
+        self.btn_remove_selected.setIcon(FluentIcon.DELETE)
+        self.btn_remove_selected.clicked.connect(self._remove_selected_row)
+
+        self.btn_close = PrimaryPushButton("Đồng Ý", self)
+        self.btn_close.setIcon(FluentIcon.ACCEPT)
+        self.btn_close.clicked.connect(self.accept)
+
+        btn_row.addWidget(self.btn_remove_selected)
+        btn_row.addStretch(1)
+        btn_row.addWidget(self.btn_close)
+        layout.addLayout(btn_row)
+
+        self._refresh_table()
+
+    def _refresh_table(self):
+        self.table.setRowCount(len(self.video_queue))
+        seen_outputs = set()
+        for row, v_path in enumerate(self.video_queue):
+            item_idx = QTableWidgetItem(str(row + 1))
+            item_idx.setFlags(item_idx.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 0, item_idx)
+
+            item_name = QTableWidgetItem(os.path.basename(v_path))
+            item_name.setToolTip(v_path)
+            item_name.setFlags(item_name.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 1, item_name)
+
+            out_candidate = str(Path(v_path).parent / f"{Path(v_path).stem}_MMO_Auto.mp4")
+            if not os.path.exists(v_path):
+                status_txt = "Không tìm thấy tệp nguồn"
+            elif out_candidate in seen_outputs:
+                status_txt = "Cảnh báo: Trùng tên tệp đầu ra"
+            else:
+                status_txt = "Hợp lệ, sẵn sàng xử lý"
+            seen_outputs.add(out_candidate)
+
+            item_st = QTableWidgetItem(status_txt)
+            item_st.setFlags(item_st.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 2, item_st)
+
+    def _remove_selected_row(self):
+        row = self.table.currentRow()
+        if 0 <= row < len(self.video_queue):
+            self.video_queue.pop(row)
+            self._refresh_table()
 
 
 class AutoPipelineWorker(QThread):
@@ -193,6 +287,16 @@ class AutoPipelineWorker(QThread):
         self._active_remover_process: Optional[multiprocessing.Process] = None
         self._active_review_event: Optional[threading.Event] = None
         self._current_run_temp_dir: Optional[str] = None
+        self._current_batch_idx: int = 1
+        self._current_batch_total: int = 1
+
+    def _emit_scaled_progress(self, video_pct: int, msg: str):
+        """Quy đổi phần trăm tiến độ của từng video sang phần trăm tổng thể của toàn bộ hàng đợi."""
+        total = max(1, self._current_batch_total)
+        idx = max(1, self._current_batch_idx)
+        clamped = max(0, min(100, int(video_pct)))
+        overall_pct = int(((idx - 1) * 100.0 + clamped) / total)
+        self.progress_signal.emit(max(0, min(99, overall_pct)), msg)
 
     def _is_stopped_requested(self) -> bool:
         return self._is_stopped or self._stop_event.is_set() or self.isInterruptionRequested()
@@ -233,6 +337,8 @@ class AutoPipelineWorker(QThread):
         """
         self.video_path = current_video_path
         self.output_path = current_output_path
+        self._current_batch_idx = batch_idx
+        self._current_batch_total = batch_total
         prefix_tag = f"[Video {batch_idx}/{batch_total}] " if batch_total > 1 else ""
         stage_warnings: List[str] = []
 
@@ -246,7 +352,7 @@ class AutoPipelineWorker(QThread):
             # BƯỚC 1: TRÍCH XUẤT OCR TỪ VIDEO
             # =============================================================
             self.step_signal.emit(1)
-            self.progress_signal.emit(5, f"{prefix_tag}Bước 1/3: Đang trích xuất phụ đề OCR...")
+            self._emit_scaled_progress(5, f"{prefix_tag}Bước 1/3: Đang trích xuất phụ đề OCR...")
             self.log_signal.emit(f"{prefix_tag}BẮT ĐẦU TRÍCH XUẤT OCR: {os.path.basename(current_video_path)}")
 
             extracted_blocks = self._extract_ocr_subtitles()
@@ -254,12 +360,17 @@ class AutoPipelineWorker(QThread):
                 return PIPELINE_CANCELLED, "Đã hủy tác vụ theo yêu cầu người dùng."
 
             self.log_signal.emit(f"{prefix_tag}Đã phát hiện {len(extracted_blocks)} câu phụ đề.")
+            if not extracted_blocks:
+                stage_warnings.append("Không phát hiện được phụ đề trong video (0 câu OCR); chỉ xuất video đã xử lý nền.")
+                self.log_signal.emit(
+                    f"{prefix_tag}Cảnh báo: Không tìm thấy câu phụ đề nào từ OCR. Sẽ chỉ thực hiện xóa nền và xuất video."
+                )
 
             # =============================================================
             # BƯỚC 2: CHẠY SONG SONG (Dịch Phụ Đề AI || Xóa Phụ Đề Gốc)
             # =============================================================
             self.step_signal.emit(2)
-            self.progress_signal.emit(30, f"{prefix_tag}Bước 2/3: Chạy song song Dịch AI và Xóa phụ đề gốc...")
+            self._emit_scaled_progress(30, f"{prefix_tag}Bước 2/3: Chạy song song Dịch AI và Xóa phụ đề gốc...")
             self.log_signal.emit(f"{prefix_tag}KHỞI CHẠY 2 NHÁNH SONG SONG: [Dịch phụ đề AI] || [Xóa phụ đề gốc]")
 
             cleaned_video_path = os.path.join(run_temp_dir, "cleaned_video.mp4")
@@ -365,7 +476,7 @@ class AutoPipelineWorker(QThread):
             # BƯỚC 3: GHÉP PHỤ ĐỀ MỚI VÀ LỒNG TIẾNG OMNIVOICE
             # =============================================================
             self.step_signal.emit(3)
-            self.progress_signal.emit(85, f"{prefix_tag}Bước 3/3: Đang ghép phụ đề mới và kết xuất video...")
+            self._emit_scaled_progress(85, f"{prefix_tag}Bước 3/3: Đang ghép phụ đề mới và kết xuất video...")
             self.log_signal.emit(f"{prefix_tag}BẮT ĐẦU QUÁ TRÌNH GHÉP PHỤ ĐỀ VÀ XUẤT VIDEO...")
 
             ass_path = os.path.join(run_temp_dir, "translated_subtitles.ass")
@@ -580,7 +691,7 @@ class AutoPipelineWorker(QThread):
         captured_errors: List[str] = []
         remote_call = SubtitleRemoverRemoteCall()
         remote_call.register_update_progress_callback(
-            lambda p, is_fin, f_no: self.progress_signal.emit(
+            lambda p, is_fin, f_no: self._emit_scaled_progress(
                 int(30 + (p / 100.0) * 50), f"Bước 2/3: Đang xóa phụ đề khung hình {f_no}..."
             )
         )
@@ -698,12 +809,16 @@ class AutoPipelineInterface(QWidget):
         config_layout.setContentsMargins(16, 14, 16, 14)
         config_layout.setSpacing(10)
 
-        # Hàng 1: Chọn Video / Thư mục & Chuyển sang Tải Video
+        # Hàng 1: Chọn Video / Thư mục, Danh sách hàng đợi & Chuyển sang Tải Video
         row1 = QHBoxLayout()
         self.btn_select_video = PushButton("Chọn Video Nguồn", self)
         self.btn_select_video.setIcon(FluentIcon.VIDEO)
         self.btn_select_folder = PushButton("Chọn Thư Mục Video", self)
         self.btn_select_folder.setIcon(FluentIcon.FOLDER)
+
+        self.btn_view_queue = PushButton("Danh Sách Hàng Đợi", self)
+        self.btn_view_queue.setIcon(FluentIcon.VIEW)
+        self.btn_view_queue.setEnabled(False)
 
         self.lbl_video_status = BodyLabel("Đã nạp: Chưa chọn video nào", self)
         self.lbl_video_status.setWordWrap(True)
@@ -714,6 +829,7 @@ class AutoPipelineInterface(QWidget):
 
         row1.addWidget(self.btn_select_video)
         row1.addWidget(self.btn_select_folder)
+        row1.addWidget(self.btn_view_queue)
         row1.addWidget(self.lbl_video_status, 1)
         row1.addWidget(self.btn_nav_ytdlp)
         config_layout.addLayout(row1)
@@ -746,7 +862,7 @@ class AutoPipelineInterface(QWidget):
         div2.setStyleSheet("background-color: rgba(0,0,0,0.08);")
         config_layout.addWidget(div2)
 
-        # Hàng 3: Trạng thái Xóa phụ đề & Phần cứng
+        # Hàng 3: Trạng thái Xóa phụ đề, Phần cứng & Kiểu phụ đề hiển thị trực tiếp
         row3 = QHBoxLayout()
         lbl_remove_title = BodyLabel("Xóa Phụ Đề Video:", self)
         lbl_remove_title.setStyleSheet("font-weight: bold;")
@@ -756,11 +872,18 @@ class AutoPipelineInterface(QWidget):
             "background: rgba(16,124,65,0.1); padding: 4px 10px; border-radius: 6px; color: #107c41;"
         )
 
+        lbl_style_title = BodyLabel("Kiểu phụ đề:", self)
+        lbl_style_title.setStyleSheet("font-weight: bold;")
+        self.style_combo = ComboBox(self)
+        self.style_combo.addItems(["TikTok Vàng Nổi Bật", "Phụ Đề Trắng Viền Đen"])
+
         self.btn_nav_remover = PushButton("Chỉnh sửa chi tiết", self)
         self.btn_nav_remover.setIcon(FluentIcon.SETTING)
 
         row3.addWidget(lbl_remove_title)
         row3.addWidget(self.lbl_summary_remover, 1)
+        row3.addWidget(lbl_style_title)
+        row3.addWidget(self.style_combo)
         row3.addWidget(self.btn_nav_remover)
         config_layout.addLayout(row3)
 
@@ -775,15 +898,12 @@ class AutoPipelineInterface(QWidget):
         self.engine_combo.addItems(["Google Translate", "Mô hình AI tùy chỉnh"])
         self.inpaint_combo = ComboBox(self)
         self.inpaint_combo.addItems(["STTN Tự Động", "LaMa", "ProPainter", "OpenCV Nhanh"])
-        self.style_combo = ComboBox(self)
-        self.style_combo.addItems(["TikTok Vàng Nổi Bật", "Phụ Đề Trắng Viền Đen"])
 
         for hidden_w in [
             self.ocr_lang_combo,
             self.target_lang_combo,
             self.engine_combo,
             self.inpaint_combo,
-            self.style_combo,
         ]:
             hidden_w.setVisible(False)
 
@@ -820,36 +940,42 @@ class AutoPipelineInterface(QWidget):
         main_layout.addLayout(workspace_layout, 1)
 
         # -------------------------------------------------------------
-        # 4. Thanh Tác Vụ Cuối Trang
+        # 4. Thanh Tác Vụ Cuối Trang (Chia 2 hàng gọn gàng cho màn hình 960x600)
         # -------------------------------------------------------------
         action_card = CardWidget(self)
-        action_layout = QHBoxLayout(action_card)
+        action_layout = QVBoxLayout(action_card)
         action_layout.setContentsMargins(14, 10, 14, 10)
+        action_layout.setSpacing(8)
 
+        action_row1 = QHBoxLayout()
         self.progress_bar = ProgressBar(self)
         self.progress_bar.setValue(0)
-        action_layout.addWidget(self.progress_bar, 1)
-
-        self.pause_review_checkbox = CheckBox("Dừng duyệt và sửa phụ đề trước khi ghép video", self)
-        action_layout.addWidget(self.pause_review_checkbox)
-
         self.status_label = BodyLabel("Sẵn sàng chạy luồng tự động.", self)
-        action_layout.addWidget(self.status_label)
+        action_row1.addWidget(self.progress_bar, 1)
+        action_row1.addWidget(self.status_label)
+        action_layout.addLayout(action_row1)
+
+        action_row2 = QHBoxLayout()
+        self.pause_review_checkbox = CheckBox("Dừng duyệt và sửa phụ đề trước khi ghép video", self)
+        action_row2.addWidget(self.pause_review_checkbox)
+        action_row2.addStretch(1)
 
         self.btn_cancel_pipeline = PushButton("Hủy Tác Vụ", self)
         self.btn_cancel_pipeline.setIcon(FluentIcon.CLOSE)
         self.btn_cancel_pipeline.setEnabled(False)
-        action_layout.addWidget(self.btn_cancel_pipeline)
+        action_row2.addWidget(self.btn_cancel_pipeline)
 
         self.btn_run_pipeline = PrimaryPushButton("Bắt Đầu Luồng Tự Động", self)
         self.btn_run_pipeline.setIcon(FluentIcon.PLAY)
-        action_layout.addWidget(self.btn_run_pipeline)
+        action_row2.addWidget(self.btn_run_pipeline)
 
+        action_layout.addLayout(action_row2)
         main_layout.addWidget(action_card)
 
     def _connect_signals(self):
         self.btn_select_video.clicked.connect(self._select_video_file)
         self.btn_select_folder.clicked.connect(self._select_video_folder)
+        self.btn_view_queue.clicked.connect(self._open_video_queue_dialog)
         self.btn_run_pipeline.clicked.connect(self._start_pipeline)
         self.btn_cancel_pipeline.clicked.connect(self._cancel_pipeline)
 
@@ -862,6 +988,26 @@ class AutoPipelineInterface(QWidget):
         self.inpaint_combo.currentIndexChanged.connect(self._save_pipeline_config)
         self.style_combo.currentIndexChanged.connect(self._save_pipeline_config)
         self.pause_review_checkbox.stateChanged.connect(self._save_pipeline_config)
+
+    def _open_video_queue_dialog(self):
+        if not self.video_queue:
+            InfoBar.warning("Hàng đợi trống", "Chưa có tệp video nào trong hàng đợi.", parent=self, duration=2500)
+            return
+        dlg = VideoQueueDialog(self.video_queue, parent=self)
+        if dlg.exec():
+            self.video_queue = dlg.video_queue
+            if self.video_queue:
+                self._select_video_file_by_path(self.video_queue[0])
+                if len(self.video_queue) == 1:
+                    self.lbl_video_status.setText(f"Đã nạp Video: {os.path.basename(self.video_queue[0])}")
+                else:
+                    self.lbl_video_status.setText(f"Hàng đợi ({len(self.video_queue)} video)")
+                self.btn_view_queue.setEnabled(True)
+            else:
+                self.current_video_path = None
+                self.lbl_video_status.setText("Đã nạp: Chưa chọn video nào")
+                self.lbl_video_status.setStyleSheet("color: #666666; font-style: italic;")
+                self.btn_view_queue.setEnabled(False)
 
     def _jump_to_translate_tab(self):
         main_win = self.window()
@@ -996,7 +1142,7 @@ class AutoPipelineInterface(QWidget):
         self.inpaint_combo.blockSignals(False)
 
     def _select_video_file(self):
-        filepath, _ = FolderMemoryDialog.getSaveFileName if False else FolderMemoryDialog.getOpenFileName(
+        filepath, _ = FolderMemoryDialog.getOpenFileName(
             self,
             "Chọn tệp Video nguồn",
             filter_str="Tệp Video (*.mp4 *.mkv *.avi *.mov *.flv *.webm);;Tất cả tệp (*)",
@@ -1005,6 +1151,7 @@ class AutoPipelineInterface(QWidget):
         if filepath:
             self.video_queue = [filepath]
             self._select_video_file_by_path(filepath)
+            self.btn_view_queue.setEnabled(True)
             self.lbl_video_status.setText(f"Đã nạp Video: {os.path.basename(filepath)}")
             self.lbl_video_status.setStyleSheet("color: #107c41; font-weight: bold;")
             InfoBar.success("Đã nạp Video", f"Tệp: {os.path.basename(filepath)}", parent=self, duration=2500)
@@ -1020,6 +1167,7 @@ class AutoPipelineInterface(QWidget):
                 self.video_queue = [os.path.join(folder, f) for f in files]
                 first_video = self.video_queue[0]
                 self._select_video_file_by_path(first_video)
+                self.btn_view_queue.setEnabled(True)
                 self.lbl_video_status.setText(f"Hàng đợi thư mục ({len(self.video_queue)} video): {os.path.basename(folder)}")
                 self.lbl_video_status.setStyleSheet("color: #107c41; font-weight: bold;")
                 InfoBar.success(
@@ -1029,6 +1177,11 @@ class AutoPipelineInterface(QWidget):
                     duration=3000,
                 )
             else:
+                self.video_queue = []
+                self.current_video_path = None
+                self.btn_view_queue.setEnabled(False)
+                self.lbl_video_status.setText("Đã nạp: Chưa chọn video nào")
+                self.lbl_video_status.setStyleSheet("color: #666666; font-style: italic;")
                 InfoBar.warning("Thư mục trống", "Không tìm thấy tệp video hợp lệ trong thư mục đã chọn.", parent=self, duration=3000)
 
     def _select_video_file_by_path(self, filepath: str):

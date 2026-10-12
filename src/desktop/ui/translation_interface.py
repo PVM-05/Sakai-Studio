@@ -440,41 +440,48 @@ class TranslationInterface(QWidget):
 
         return "Google Gemini"
 
+    def _start_async_fetch_models(self, provider_name: str, key: str, show_toast: bool = False):
+        """Nạp danh sách mô hình bất đồng bộ trên luồng nền để không làm treo giao diện chính."""
+        self._pending_toast_provider = provider_name if show_toast else ""
+        self.model_combo.clear()
+        self.model_combo.setPlaceholderText("Đang kiểm tra khóa và nạp danh sách mô hình...")
+        self.model_combo.setEnabled(False)
+
+        def _fetch_worker():
+            try:
+                ok, models, msg = fetch_accessible_models(provider_name, key)
+                self._fetch_models_done_signal.emit(ok, models, msg)
+            except Exception as ex:
+                self._fetch_models_done_signal.emit(False, [], f"Lỗi kết nối: {ex}")
+
+        threading.Thread(target=_fetch_worker, daemon=True).start()
+
     def _verify_and_load_api_key_with_toast(self):
         key = self.api_key_edit.text().strip()
         if not key:
-            InfoBar.warning("Cảnh báo", "Vui lòng nhập API Key trước khi xác thực!", parent=self, duration=3000)
+            InfoBar.warning("Cảnh báo", "Vui lòng nhập khóa truy cập trước khi xác thực!", parent=self, duration=3000)
             self.model_combo.clear()
-            self.model_combo.setPlaceholderText("Vui lòng nhập API Key...")
+            self.model_combo.setPlaceholderText("Vui lòng nhập khóa truy cập...")
             self.model_combo.setEnabled(False)
             return
 
         detected = self._detect_provider_from_key(key)
         if not detected:
-            InfoBar.error("Lỗi API Key", "API Key không đúng định dạng nhận diện", parent=self, duration=3500)
+            InfoBar.error("Lỗi khóa truy cập", "Khóa truy cập không đúng định dạng nhận diện", parent=self, duration=3500)
             self.model_combo.clear()
-            self.model_combo.setPlaceholderText("API Key không đúng định dạng...")
+            self.model_combo.setPlaceholderText("Khóa truy cập không đúng định dạng...")
             self.model_combo.setEnabled(False)
             return
 
         provider_keys = list(PROVIDERS_INFO.keys())
         if detected in provider_keys:
             idx = provider_keys.index(detected)
+            self._is_updating_provider = True
             self.provider_combo.setCurrentIndex(idx)
-
-        ok, models, msg = fetch_accessible_models(detected, key)
-        self.model_combo.clear()
-        if ok and models:
-            self.model_combo.setEnabled(True)
-            self.model_combo.addItems(models)
-            self.model_combo.setCurrentIndex(0)
-            InfoBar.success("Xác thực thành công", f"Đã kết nối {detected}! Nạp thành công {len(models)} model.", parent=self, duration=3500)
-        else:
-            self.model_combo.setPlaceholderText(msg)
-            self.model_combo.setEnabled(False)
-            InfoBar.error("Xác thực thất bại", msg, parent=self, duration=4000)
+            self._is_updating_provider = False
 
         self._save_api_config()
+        self._start_async_fetch_models(detected, key, show_toast=True)
 
     def _on_provider_changed(self, index: int):
         if self._is_updating_provider:
@@ -507,20 +514,13 @@ class TranslationInterface(QWidget):
             else:
                 self.api_key_label.setVisible(True)
                 self.key_box_widget.setVisible(True)
-                self.api_key_edit.setPlaceholderText("Nhập API Key")
+                self.api_key_edit.setPlaceholderText("Nhập khóa truy cập")
                 key = self.api_key_edit.text().strip()
                 detected = self._detect_provider_from_key(key)
                 if key and (detected == p_key or p_key == "Custom Endpoint"):
-                    ok, models, msg = fetch_accessible_models(p_key, key)
-                    if ok and models:
-                        self.model_combo.setEnabled(True)
-                        self.model_combo.addItems(models)
-                        self.model_combo.setCurrentIndex(0)
-                    else:
-                        self.model_combo.setPlaceholderText(msg)
-                        self.model_combo.setEnabled(False)
+                    self._start_async_fetch_models(p_key, key, show_toast=False)
                 else:
-                    self.model_combo.setPlaceholderText("Vui lòng nhập API Key hợp lệ...")
+                    self.model_combo.setPlaceholderText("Vui lòng nhập khóa truy cập hợp lệ...")
                     self.model_combo.setEnabled(False)
 
             self._is_updating_provider = False
@@ -528,14 +528,26 @@ class TranslationInterface(QWidget):
 
     @Slot(bool, list, str)
     def _on_fetch_models_done(self, ok: bool, models: list, msg: str):
+        toast_provider = getattr(self, "_pending_toast_provider", "")
+        self._pending_toast_provider = ""
         self.model_combo.clear()
         if ok and models:
             self.model_combo.setEnabled(True)
             self.model_combo.addItems(models)
             self.model_combo.setCurrentIndex(0)
+            if toast_provider:
+                InfoBar.success(
+                    "Xác thực thành công",
+                    f"Đã kết nối {toast_provider}! Nạp thành công {len(models)} mô hình.",
+                    parent=self,
+                    duration=3500,
+                )
         else:
             self.model_combo.setPlaceholderText(msg)
             self.model_combo.setEnabled(False)
+            if toast_provider:
+                InfoBar.error("Xác thực thất bại", msg, parent=self, duration=4000)
+        self._save_api_config()
 
     def _on_api_key_typed(self, key_text: str):
         if hasattr(self, '_debounce_timer') and self._debounce_timer is not None:
@@ -546,7 +558,6 @@ class TranslationInterface(QWidget):
         if 0 <= curr_idx < len(provider_keys):
             curr_p_key = provider_keys[curr_idx]
             if PROVIDERS_INFO.get(curr_p_key, {}).get("is_local"):
-                # If currently selected provider is Local, do not auto-switch via API key
                 return
 
         key = key_text.strip()
@@ -554,7 +565,7 @@ class TranslationInterface(QWidget):
 
         if not detected_provider:
             self.model_combo.clear()
-            self.model_combo.setPlaceholderText("API Key không đúng định dạng...")
+            self.model_combo.setPlaceholderText("Khóa truy cập không đúng định dạng...")
             self.model_combo.setEnabled(False)
             return
 
@@ -564,21 +575,13 @@ class TranslationInterface(QWidget):
             if self.provider_combo.currentIndex() != idx:
                 self.provider_combo.setCurrentIndex(idx)
             else:
-                def _fetch_worker():
-                    try:
-                        ok, models, msg = fetch_accessible_models(detected_provider, key)
-                        self._fetch_models_done_signal.emit(ok, models, msg)
-                    except Exception:
-                        self._fetch_models_done_signal.emit(False, [], "Lỗi kết nối")
-
-                self.model_combo.clear()
-                self.model_combo.setPlaceholderText("Đang kiểm tra API Key...")
-                self.model_combo.setEnabled(False)
                 from PySide6.QtCore import QTimer
                 self._debounce_timer = QTimer(self)
                 self._debounce_timer.setSingleShot(True)
-                self._debounce_timer.timeout.connect(lambda: threading.Thread(target=_fetch_worker, daemon=True).start())
-                self._debounce_timer.start(500)  # 500ms debounce
+                self._debounce_timer.timeout.connect(
+                    lambda: self._start_async_fetch_models(detected_provider, key, show_toast=False)
+                )
+                self._debounce_timer.start(500)
 
     def _open_single_file(self):
         filepath, _ = FolderMemoryDialog.getOpenFileName(

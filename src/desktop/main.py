@@ -110,12 +110,23 @@ class SubtitleExtractorGUI(FluentWindow):
             except Exception as e:
                 print("Lỗi đổi nhãn Navigation:", e)
             
-            # 4. Gọi cập nhật giao diện nóng cho các component con
-            if hasattr(self.homeInterface, 'retranslateUi'):
-                self.homeInterface.retranslateUi()
-            if hasattr(self.ytdlpInterface, 'retranslateUi'):
-                self.ytdlpInterface.retranslateUi()
-            self.advancedSettingInterface.retranslateUi()
+            # 4. Gọi cập nhật giao diện nóng cho toàn bộ các thẻ thành phần
+            for sub_view in [
+                getattr(self, "autoPipelineInterface", None),
+                getattr(self, "toolsInterface", None),
+                getattr(self, "homeInterface", None),
+                getattr(self, "extractorInterface", None),
+                getattr(self, "translationInterface", None),
+                getattr(self, "ytdlpInterface", None),
+                getattr(self, "omnivoiceInterface", None),
+                getattr(self, "mmoSettingInterface", None),
+                getattr(self, "advancedSettingInterface", None),
+            ]:
+                if sub_view is not None and hasattr(sub_view, "retranslateUi"):
+                    try:
+                        sub_view.retranslateUi()
+                    except Exception:
+                        pass
             
             # 5. Hiển thị thông báo góc màn hình đổi thành công
             InfoBar.success(
@@ -181,9 +192,14 @@ class SubtitleExtractorGUI(FluentWindow):
         self.omnivoiceInterface.load_subtitle_and_video(srt_path=srt_path, video_path=video_path, blocks=blocks)
 
     def closeEvent(self, event):
-        """Lưu vị trí cửa sổ và giải phóng tài nguyên luồng nền khi đóng ứng dụng"""
+        """Lưu vị trí cửa sổ và giải phóng tài nguyên luồng nền an toàn khi đóng ứng dụng"""
         self.save_window_position()
         ProcessManager.instance().terminate_all()
+        if hasattr(self, "omnivoiceInterface") and self.omnivoiceInterface is not None:
+            try:
+                self.omnivoiceInterface.closeEvent(event)
+            except Exception:
+                pass
         for thread in self.findChildren(QtCore.QThread):
             if thread.isRunning():
                 for stop_method in ("stop", "cancel", "request_cancel"):
@@ -194,9 +210,7 @@ class SubtitleExtractorGUI(FluentWindow):
                             pass
                 thread.requestInterruption()
                 thread.quit()
-                if not thread.wait(1500):
-                    thread.terminate()
-                    thread.wait(500)
+                thread.wait(3500)
         super().closeEvent(event)
 
     def _onThemeChangedFinished(self):
