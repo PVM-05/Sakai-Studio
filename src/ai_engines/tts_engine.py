@@ -683,6 +683,17 @@ class TTSEngine:
         postprocess_output = getattr(app_config.mmoTTSPostprocessOutput, "value", True) if hasattr(app_config, "mmoTTSPostprocessOutput") else True
         normalize_text = getattr(app_config.mmoTTSNormalizeText, "value", True) if hasattr(app_config, "mmoTTSNormalizeText") else True
         enable_flashinfer = getattr(app_config.mmoTTSFlashInfer, "value", False) if hasattr(app_config, "mmoTTSFlashInfer") else False
+        multi_speaker_mode = getattr(app_config.mmoTTSMultiSpeakerMode, "value", "single") if hasattr(app_config, "mmoTTSMultiSpeakerMode") else "single"
+        max_speakers = getattr(app_config.mmoTTSMaxSpeakers, "value", 4) if hasattr(app_config, "mmoTTSMaxSpeakers") else 4
+        ducking_mode = getattr(app_config.mmoTTSDuckingMode, "value", "dynamic") if hasattr(app_config, "mmoTTSDuckingMode") else "dynamic"
+        t_shift = getattr(app_config.mmoTTSTShift, "value", 0.1) if hasattr(app_config, "mmoTTSTShift") else 0.1
+        layer_penalty = getattr(app_config.mmoTTSLayerPenalty, "value", 5.0) if hasattr(app_config, "mmoTTSLayerPenalty") else 5.0
+        pos_temp = getattr(app_config.mmoTTSPosTemp, "value", 5.0) if hasattr(app_config, "mmoTTSPosTemp") else 5.0
+        cls_temp = getattr(app_config.mmoTTSClsTemp, "value", 0.0) if hasattr(app_config, "mmoTTSClsTemp") else 0.0
+        chunk_dur = getattr(app_config.mmoTTSChunkDuration, "value", 8.0) if hasattr(app_config, "mmoTTSChunkDuration") else 8.0
+        chunk_thresh = getattr(app_config.mmoTTSChunkThreshold, "value", 12.0) if hasattr(app_config, "mmoTTSChunkThreshold") else 12.0
+        pad_dur = getattr(app_config.mmoTTSPadDuration, "value", 0.08) if hasattr(app_config, "mmoTTSPadDuration") else 0.08
+        fade_dur = getattr(app_config.mmoTTSFadeDuration, "value", 0.03) if hasattr(app_config, "mmoTTSFadeDuration") else 0.03
 
         target_lang = language or (getattr(app_config.targetLanguage, "value", "vi") if hasattr(app_config, "targetLanguage") else "vi")
         if target_lang == "zh-CN":
@@ -700,12 +711,23 @@ class TTSEngine:
             instruct=instruct,
             num_step=num_step,
             guidance_scale=guidance_scale,
+            t_shift=t_shift,
+            layer_penalty_factor=layer_penalty,
+            position_temperature=pos_temp,
+            class_temperature=cls_temp,
+            audio_chunk_duration=chunk_dur,
+            audio_chunk_threshold=chunk_thresh,
+            pad_duration=pad_dur,
+            fade_duration=fade_dur,
             denoise=denoise,
             preprocess_prompt=preprocess_prompt,
             postprocess_output=postprocess_output,
             normalize_text=normalize_text,
             enable_flashinfer=enable_flashinfer,
             voice_prompt_cache_dir=prompt_dir,
+            multi_speaker_mode=multi_speaker_mode,
+            max_speakers=max_speakers,
+            ducking_mode=ducking_mode,
         )
 
     def log(self, msg: str):

@@ -1,6 +1,8 @@
+import json
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -30,8 +32,10 @@ This is a test subtitle.
 
         reconstructed = blocks_to_srt(blocks, use_translated=True)
         self.assertIn("Xin chào thế giới!", reconstructed)
+        bilingual = blocks_to_bilingual_srt(blocks)
+        self.assertIn("Hello World!\nXin chào thế giới!", bilingual)
 
-    def test_free_google_translator(self):
+    def test_free_google_translator_mocked_offline(self):
         translator = FreeGoogleTranslator()
         block = SubtitleBlock(
             index=1,
@@ -39,9 +43,17 @@ This is a test subtitle.
             end_time="00:00:02,000",
             text="Thank you",
         )
-        res = translator.translate_blocks([block], source_lang="en", target_lang="vi")
+        fake_payload = [[["Cảm ơn bạn", "Thank you", None, None, 10]], None, "en"]
+        mock_resp = mock.MagicMock()
+        mock_resp.read.return_value = json.dumps(fake_payload).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.__exit__.return_value = False
+
+        with mock.patch("urllib.request.urlopen", return_value=mock_resp):
+            res = translator.translate_blocks([block], source_lang="en", target_lang="vi")
+
         self.assertEqual(len(res), 1)
-        self.assertTrue(len(res[0].translated_text) > 0)
+        self.assertEqual(res[0].translated_text, "Cảm ơn bạn")
 
 
 if __name__ == "__main__":

@@ -186,11 +186,12 @@ class SubtitleExtractorGUI(FluentWindow):
         ProcessManager.instance().terminate_all()
         for thread in self.findChildren(QtCore.QThread):
             if thread.isRunning():
-                if hasattr(thread, "cancel"):
-                    try:
-                        thread.cancel()
-                    except Exception:
-                        pass
+                for stop_method in ("stop", "cancel", "request_cancel"):
+                    if hasattr(thread, stop_method):
+                        try:
+                            getattr(thread, stop_method)()
+                        except Exception:
+                            pass
                 thread.requestInterruption()
                 thread.quit()
                 if not thread.wait(1500):

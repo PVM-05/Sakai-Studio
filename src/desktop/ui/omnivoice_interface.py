@@ -1164,6 +1164,32 @@ class OmniVoiceInterface(ScrollArea):
         self.chk_postprocess_output.setChecked(bool(config.mmoTTSPostprocessOutput.value))
         self.chk_normalize_text.setChecked(bool(config.mmoTTSNormalizeText.value))
         self.chk_flashinfer.setChecked(bool(config.mmoTTSFlashInfer.value))
+        if hasattr(config, "mmoTTSTShift"):
+            self.spin_t_shift.setValue(float(config.mmoTTSTShift.value))
+        if hasattr(config, "mmoTTSLayerPenalty"):
+            self.spin_layer_penalty.setValue(float(config.mmoTTSLayerPenalty.value))
+        if hasattr(config, "mmoTTSPosTemp"):
+            self.spin_pos_temp.setValue(float(config.mmoTTSPosTemp.value))
+        if hasattr(config, "mmoTTSClsTemp"):
+            self.spin_cls_temp.setValue(float(config.mmoTTSClsTemp.value))
+        if hasattr(config, "mmoTTSChunkDuration"):
+            self.spin_chunk_dur.setValue(float(config.mmoTTSChunkDuration.value))
+        if hasattr(config, "mmoTTSChunkThreshold"):
+            self.spin_chunk_thresh.setValue(float(config.mmoTTSChunkThreshold.value))
+        if hasattr(config, "mmoTTSPadDuration"):
+            self.spin_pad_dur.setValue(float(config.mmoTTSPadDuration.value))
+        if hasattr(config, "mmoTTSFadeDuration"):
+            self.spin_fade_dur.setValue(float(config.mmoTTSFadeDuration.value))
+        if hasattr(config, "mmoTTSMaxSpeakers"):
+            self.spin_max_speakers.setValue(int(config.mmoTTSMaxSpeakers.value))
+        if hasattr(config, "mmoTTSDuckingMode"):
+            self.combo_ducking_mode.setCurrentIndex(0 if config.mmoTTSDuckingMode.value == "dynamic" else 1)
+        if hasattr(config, "mmoTTSMultiSpeakerMode"):
+            saved_ms = str(config.mmoTTSMultiSpeakerMode.value)
+            for idx, (_, code) in enumerate(MULTI_SPEAKER_MODE_ITEMS):
+                if code == saved_ms:
+                    self.combo_multi_speaker_mode.setCurrentIndex(idx)
+                    break
         self._update_control_states()
 
     def _save_ui_to_config(self):
@@ -1183,6 +1209,30 @@ class OmniVoiceInterface(ScrollArea):
         config.set(config.mmoTTSPostprocessOutput, self.chk_postprocess_output.isChecked())
         config.set(config.mmoTTSNormalizeText, self.chk_normalize_text.isChecked())
         config.set(config.mmoTTSFlashInfer, self.chk_flashinfer.isChecked())
+        if hasattr(config, "mmoTTSMultiSpeakerMode"):
+            config.set(config.mmoTTSMultiSpeakerMode, self._get_selected_multi_speaker_mode())
+        if hasattr(config, "mmoTTSMaxSpeakers"):
+            config.set(config.mmoTTSMaxSpeakers, int(self.spin_max_speakers.value()))
+        if hasattr(config, "mmoTTSDuckingMode"):
+            config.set(config.mmoTTSDuckingMode, "dynamic" if self.combo_ducking_mode.currentIndex() == 0 else "fixed")
+        if hasattr(config, "mmoTTSTShift"):
+            config.set(config.mmoTTSTShift, float(self.spin_t_shift.value()))
+        if hasattr(config, "mmoTTSLayerPenalty"):
+            config.set(config.mmoTTSLayerPenalty, float(self.spin_layer_penalty.value()))
+        if hasattr(config, "mmoTTSPosTemp"):
+            config.set(config.mmoTTSPosTemp, float(self.spin_pos_temp.value()))
+        if hasattr(config, "mmoTTSClsTemp"):
+            config.set(config.mmoTTSClsTemp, float(self.spin_cls_temp.value()))
+        if hasattr(config, "mmoTTSChunkDuration"):
+            config.set(config.mmoTTSChunkDuration, float(self.spin_chunk_dur.value()))
+        if hasattr(config, "mmoTTSChunkThreshold"):
+            config.set(config.mmoTTSChunkThreshold, float(self.spin_chunk_thresh.value()))
+        if hasattr(config, "mmoTTSPadDuration"):
+            config.set(config.mmoTTSPadDuration, float(self.spin_pad_dur.value()))
+        if hasattr(config, "mmoTTSFadeDuration"):
+            config.set(config.mmoTTSFadeDuration, float(self.spin_fade_dur.value()))
+        if hasattr(config, "mmoTTSInstructCustom"):
+            config.set(config.mmoTTSInstructCustom, self.edit_instruct_preview.text().strip())
 
     def _on_mode_changed(self, index: int):
         self.voice_source_stack.setCurrentIndex(index)
@@ -1514,7 +1564,15 @@ class OmniVoiceInterface(ScrollArea):
             self._populate_subtitle_table()
             self._update_sub_video_status_label()
             self._update_subtitle_action_buttons()
-            InfoBar.success("Đã nạp phụ đề", f"{len(blocks)} câu thoại từ {os.path.basename(filepath)}", parent=self, duration=2500)
+            if not blocks:
+                InfoBar.error(
+                    "Không tìm thấy phụ đề hợp lệ",
+                    f"Tệp {os.path.basename(filepath)} không chứa câu thoại nào đúng định dạng SRT/VTT/ASS.",
+                    parent=self,
+                    duration=4000,
+                )
+            else:
+                InfoBar.success("Đã nạp phụ đề", f"{len(blocks)} câu thoại từ {os.path.basename(filepath)}", parent=self, duration=2500)
         except Exception as e:
             InfoBar.error("Lỗi đọc phụ đề", str(e), parent=self, duration=4000)
 
@@ -1594,7 +1652,8 @@ class OmniVoiceInterface(ScrollArea):
                 blk.speaker = item.text().strip()
             elif col == 5:
                 blk.translated_text = item.text()
-                blk.text = item.text()
+                if not blk.text:
+                    blk.text = item.text()
 
     def _update_subtitle_action_buttons(self):
         has_subs = len(self.subtitle_blocks) > 0
@@ -1759,7 +1818,8 @@ class OmniVoiceInterface(ScrollArea):
             cur_text = blk.translated_text if blk.translated_text else blk.text
             new_text = f"{tag_code} {cur_text}".strip()
             blk.translated_text = new_text
-            blk.text = new_text
+            if not blk.text:
+                blk.text = cur_text
             self._populate_subtitle_table()
             self.sub_table.selectRow(row)
 

@@ -22,10 +22,38 @@ from typing import List, Dict, Optional, Tuple, Callable, Any
 
 logger = logging.getLogger(__name__)
 
-# Standard SRT Timestamp regex: 00:01:20,000 --> 00:01:23,500
+# Standard SRT & WebVTT Timestamp regex: supports HH:MM:SS,mmm, HH:MM:SS.mmm, and MM:SS.mmm plus optional WebVTT cue settings
 SRT_TIMESTAMP_PATTERN = re.compile(
-    r"^(\d{2}:\d{2}:\d{2}[,\.]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,\.]\d{3})$"
+    r"^((?:\d{1,2}:)?\d{2}:\d{2}[,\.]\d{1,3})\s*-->\s*((?:\d{1,2}:)?\d{2}:\d{2}[,\.]\d{1,3})(?:\s+.*)?$"
 )
+
+
+def _normalize_timestamp_str(ts: str) -> str:
+    """Chuẩn hóa mốc thời gian (SRT / VTT / ASS) về định dạng chuẩn HH:MM:SS,mmm."""
+    raw = ts.strip().replace(",", ".")
+    parts = raw.split(":")
+    try:
+        if len(parts) == 3:
+            hrs = int(parts[0])
+            mins = int(parts[1])
+            sec_val = float(parts[2])
+        elif len(parts) == 2:
+            hrs = 0
+            mins = int(parts[0])
+            sec_val = float(parts[1])
+        else:
+            total = float(parts[0])
+            hrs = int(total // 3600)
+            mins = int((total % 3600) // 60)
+            sec_val = total % 60.0
+        secs = int(sec_val)
+        millis = int(round((sec_val - secs) * 1000))
+        if millis >= 1000:
+            secs += 1
+            millis -= 1000
+        return f"{hrs:02d}:{mins:02d}:{secs:02d},{millis:03d}"
+    except Exception:
+        return ts.replace(".", ",")
 
 
 @dataclass
@@ -55,13 +83,65 @@ class SubtitleBlock:
         return f"{self.index}\n{self.start_time} --> {self.end_time}\n{self.text}\n{translated}\n"
 
 
-def parse_srt(srt_content: str) -> List[SubtitleBlock]:
-    """Parse an SRT string content into a list of SubtitleBlock items."""
+def parse_ass_content(ass_content: str) -> List[SubtitleBlock]:
+    """Phân tích nội dung phụ đề định dạng ASS/SSA thành danh sách SubtitleBlock."""
     blocks: List[SubtitleBlock] = []
-    raw_blocks = re.split(r"\n\s*\n", srt_content.strip())
+    idx = 1
+    for raw_line in ass_content.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("Dialogue:"):
+            continue
+        payload = line[len("Dialogue:") :].lstrip()
+        parts = payload.split(",", 9)
+        if len(parts) < 10:
+            continue
+        start_t = _normalize_timestamp_str(parts[1])
+        end_t = _normalize_timestamp_str(parts[2])
+        speaker_col = parts[4].strip()
+        raw_text = parts[9]
+        # Loại bỏ các thẻ điều khiển ASS {\...} và chuyển đổi ký tự xuống dòng \N, \n
+        cleaned_text = re.sub(r"\{[^}]*\}", "", raw_text)
+        cleaned_text = cleaned_text.replace("\\N", "\n").replace("\\n", "\n").strip()
+        if not cleaned_text:
+            continue
+        blocks.append(
+            SubtitleBlock(
+                index=idx,
+                start_time=start_t,
+                end_time=end_t,
+                text=cleaned_text,
+                speaker=speaker_col,
+            )
+        )
+        idx += 1
+    return blocks
+
+
+def parse_srt(srt_content: str) -> List[SubtitleBlock]:
+    """Parse an SRT, WebVTT, or ASS/SSA string content into a list of SubtitleBlock items."""
+    if not srt_content or not srt_content.strip():
+        return []
+
+    cleaned_content = srt_content.lstrip("\ufeff").strip()
+    if "Dialogue:" in cleaned_content and ("[Events]" in cleaned_content or "[Script Info]" in cleaned_content):
+        ass_blocks = parse_ass_content(cleaned_content)
+        if ass_blocks:
+            return ass_blocks
+
+    blocks: List[SubtitleBlock] = []
+    raw_blocks = re.split(r"\r?\n\s*\r?\n", cleaned_content)
 
     for raw in raw_blocks:
         lines = [line.strip() for line in raw.strip().splitlines() if line.strip()]
+        if not lines:
+            continue
+        # Bỏ qua khối tiêu đề WEBVTT, NOTE hoặc STYLE
+        first_upper = lines[0].upper()
+        if first_upper.startswith("WEBVTT") or first_upper.startswith("NOTE") or first_upper.startswith("STYLE"):
+            # Nếu trong cùng khối WEBVTT không có dòng thời gian thì bỏ qua
+            if not any(SRT_TIMESTAMP_PATTERN.match(l) for l in lines):
+                continue
+
         if len(lines) < 2:
             continue
 
@@ -88,23 +168,28 @@ def parse_srt(srt_content: str) -> List[SubtitleBlock]:
         if not match:
             continue
 
-        start_time, end_time = match.group(1), match.group(2)
-        start_time = start_time.replace('.', ',')
-        end_time = end_time.replace('.', ',')
+        start_time = _normalize_timestamp_str(match.group(1))
+        end_time = _normalize_timestamp_str(match.group(2))
 
         text_lines = lines[time_line_idx + 1 :]
-        text = "\n".join(text_lines)
+        text = "\n".join(text_lines).strip()
+        if not text:
+            continue
 
         blocks.append(
             SubtitleBlock(
-                index=index,
+                index=len(blocks) + 1 if index <= 0 else index,
                 start_time=start_time,
                 end_time=end_time,
                 text=text,
             )
         )
 
+    if not blocks and "Dialogue:" in cleaned_content:
+        return parse_ass_content(cleaned_content)
+
     return blocks
+
 
 
 def blocks_to_srt(blocks: List[SubtitleBlock], use_translated: bool = True) -> str:

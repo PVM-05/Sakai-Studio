@@ -829,6 +829,22 @@ class Config(QConfig):
     mmoTTSPostprocessOutput = ConfigItem("MMO", "TTSPostprocessOutput", True, BoolValidator())  # Hậu xử lý cắt khoảng lặng âm thanh đầu ra
     mmoTTSNormalizeText = ConfigItem("MMO", "TTSNormalizeText", True, BoolValidator())  # Chuẩn hóa đọc chữ số và ngày tháng
     mmoTTSFlashInfer = ConfigItem("MMO", "TTSFlashInfer", False, BoolValidator())  # Tăng tốc phần cứng FlashInfer / CUDA Graph
+    mmoTTSMultiSpeakerMode = OptionsConfigItem(
+        "MMO",
+        "TTSMultiSpeakerMode",
+        "single",
+        OptionsValidator(["single", "auto_video_cluster", "per_line_video_clone", "auto_srt_text", "custom_table"]),
+    )
+    mmoTTSMaxSpeakers = RangeConfigItem("MMO", "TTSMaxSpeakers", 4, RangeValidator(1, 8))
+    mmoTTSDuckingMode = OptionsConfigItem("MMO", "TTSDuckingMode", "dynamic", OptionsValidator(["dynamic", "fixed"]))
+    mmoTTSTShift = ConfigItem("MMO", "TTSTShift", 0.1)
+    mmoTTSLayerPenalty = ConfigItem("MMO", "TTSLayerPenalty", 5.0)
+    mmoTTSPosTemp = ConfigItem("MMO", "TTSPosTemp", 5.0)
+    mmoTTSClsTemp = ConfigItem("MMO", "TTSClsTemp", 0.0)
+    mmoTTSChunkDuration = ConfigItem("MMO", "TTSChunkDuration", 8.0)
+    mmoTTSChunkThreshold = ConfigItem("MMO", "TTSChunkThreshold", 12.0)
+    mmoTTSPadDuration = ConfigItem("MMO", "TTSPadDuration", 0.08)
+    mmoTTSFadeDuration = ConfigItem("MMO", "TTSFadeDuration", 0.03)
 CONFIG_FILE = 'config/config.json'
 if not os.path.exists(CONFIG_FILE):
     os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)

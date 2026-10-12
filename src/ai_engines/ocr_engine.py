@@ -223,7 +223,7 @@ class VideoOcrEngine:
         Chuẩn hóa mọi format sub_areas thành (ymin, ymax, xmin, xmax) pixel.
         
         Xử lý an toàn:
-        - None / [] → Fallback vùng quét mặc định
+        - None / [] → Quét toàn bộ khung hình (0, height, 0, width) để không bỏ sót phụ đề
         - (y1, y2, x1, x2) → Single tuple
         - [(y1, y2, x1, x2)] → List of tuples
         - Normalized 0..1 → Convert sang pixel
@@ -271,22 +271,46 @@ class VideoOcrEngine:
     # PRIVATE: OCR Engine Loading
     # =========================================================================
 
+    def _resolve_paddle_lang(self) -> str:
+        """Ánh xạ mã ngôn ngữ người dùng chọn sang mã ngôn ngữ chuẩn của PaddleOCR."""
+        raw = str(self.ocr_lang or "auto").strip().lower()
+        lang_map = {
+            "auto": "ch",
+            "zh": "ch",
+            "zh-cn": "ch",
+            "zh-tw": "chinese_cht",
+            "ch": "ch",
+            "en": "en",
+            "vi": "vi",
+            "ja": "japan",
+            "japan": "japan",
+            "ko": "korean",
+            "korean": "korean",
+            "fr": "fr",
+            "de": "german",
+            "german": "german",
+            "ru": "ru",
+            "es": "es",
+        }
+        return lang_map.get(raw, "ch")
+
     def _load_ocr_engine(self):
         """Load OCR engine dựa trên cấu hình (RapidOCR, PaddleX hoặc PaddleOCR)."""
         from src.core.config import config
         from src.core.tools.constant import SubtitleDetectMode
         mode = config.subtitleDetectMode.value
         mode_val = mode.value if hasattr(mode, 'value') else str(mode)
+        paddle_lang = self._resolve_paddle_lang()
         
         if mode_val == SubtitleDetectMode.PADDLE_OCR.value:
             # PaddleOCR cổ điển: dùng build_paddleocr không truyền model dir
             from src.ai_engines.paddle_compat import build_paddleocr
             try:
                 paddle_engine = build_paddleocr(
-                    lang="ch",
+                    lang=paddle_lang,
                     device="gpu" if config.hardwareAcceleration.value else "cpu",
                 )
-                logger.info("Main OCR khởi tạo với PaddleOCR (cổ điển)")
+                logger.info(f"Main OCR khởi tạo với PaddleOCR (ngôn ngữ: {paddle_lang})")
                 return paddle_engine
             except Exception as e:
                 logger.error(f"Lỗi khởi tạo PaddleOCR: {e}. Đang chuyển sang RapidOCR.")
@@ -297,12 +321,12 @@ class VideoOcrEngine:
             model_config = ModelConfig()
             try:
                 paddle_engine = build_paddleocr(
-                    lang="ch",
+                    lang=paddle_lang,
                     device="gpu" if config.hardwareAcceleration.value else "cpu",
                     text_detection_model_dir=model_config.DET_MODEL_DIR,
                     text_recognition_model_dir=model_config.REC_MODEL_DIR,
                 )
-                logger.info("Main OCR khởi tạo với PaddleX")
+                logger.info(f"Main OCR khởi tạo với PaddleX (ngôn ngữ: {paddle_lang})")
                 return paddle_engine
             except Exception as e:
                 logger.error(f"Lỗi khởi tạo PaddleX: {e}. Đang chuyển sang RapidOCR.")

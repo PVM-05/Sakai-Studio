@@ -29,6 +29,51 @@ from src.core.tools.folder_memory import FolderMemoryDialog
 # File cấu hình lưu API Settings người dùng
 CONFIG_API_FILE = Path(__file__).parent.parent / "config" / "translation_api_config.json"
 
+_OBF_SECRET = b"SakaiStudio_LocalKeyProtection_v1"
+
+
+def obfuscate_api_key(plain_key: str) -> str:
+    """Mã hóa khóa API trước khi lưu xuống tệp cấu hình cục bộ để tránh lộ văn bản thuần."""
+    if not plain_key or not plain_key.strip():
+        return ""
+    raw = plain_key.strip()
+    if raw.startswith("obf:") or raw.startswith("dpapi:"):
+        return raw
+    import base64
+    raw_bytes = raw.encode("utf-8")
+    xored = bytes(b ^ _OBF_SECRET[i % len(_OBF_SECRET)] for i, b in enumerate(raw_bytes))
+    return "obf:" + base64.urlsafe_b64encode(xored).decode("ascii")
+
+
+def deobfuscate_api_key(stored_key: str) -> str:
+    """Giải mã khóa API đã lưu từ tệp cấu hình, tương thích ngược với khóa văn bản thuần cũ."""
+    if not stored_key or not stored_key.strip():
+        return ""
+    val = stored_key.strip()
+    if val.startswith("obf:"):
+        import base64
+        try:
+            payload = base64.urlsafe_b64decode(val[len("obf:") :].encode("ascii"))
+            plain_bytes = bytes(b ^ _OBF_SECRET[i % len(_OBF_SECRET)] for i, b in enumerate(payload))
+            return plain_bytes.decode("utf-8")
+        except Exception:
+            return ""
+    return val
+
+
+def load_translation_api_config() -> dict:
+    """Đọc và giải mã cấu hình dịch thuật thống nhất dùng chung cho cả Tab Dịch và Tab Tự Động."""
+    if not CONFIG_API_FILE.exists():
+        return {}
+    try:
+        data = json.loads(CONFIG_API_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and "api_key" in data:
+            data["api_key"] = deobfuscate_api_key(str(data.get("api_key", "")))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 LANG_MAP_SOURCE = {
     "Tự động phát hiện": "auto",
     "Tiếng Trung": "zh",
@@ -818,14 +863,22 @@ class TranslationInterface(QWidget):
                 engine_type = "llm"
 
             model_name = self.model_combo.currentText().strip()
+            src_label = self.src_lang_combo.currentText().strip()
+            tgt_label = self.tgt_lang_combo.currentText().strip()
+            base_url = PROVIDERS_INFO.get(provider_name, {}).get("base_url", "")
             data = {
                 "src_lang_index": self.src_lang_combo.currentIndex(),
                 "tgt_lang_index": self.tgt_lang_combo.currentIndex(),
+                "src_lang": LANG_MAP_SOURCE.get(src_label, "auto"),
+                "tgt_lang": LANG_MAP_TARGET.get(tgt_label, "vi"),
+                "src_lang_label": src_label,
+                "tgt_lang_label": tgt_label,
                 "engine_index": engine_idx,
                 "provider_index": provider_idx,
                 "engine_type": engine_type,
                 "provider_name": provider_name,
-                "api_key": self.api_key_edit.text().strip(),
+                "base_url": base_url,
+                "api_key": obfuscate_api_key(self.api_key_edit.text().strip()),
                 "model_name": model_name,
                 "custom_prompt": self.prompt_edit.text().strip(),
             }
@@ -850,7 +903,7 @@ class TranslationInterface(QWidget):
     def _load_saved_api_config(self):
         if CONFIG_API_FILE.exists():
             try:
-                data = json.loads(CONFIG_API_FILE.read_text(encoding="utf-8"))
+                data = load_translation_api_config()
                 if "src_lang_index" in data and 0 <= data["src_lang_index"] < self.src_lang_combo.count():
                     self.src_lang_combo.setCurrentIndex(data["src_lang_index"])
                 if "tgt_lang_index" in data and 0 <= data["tgt_lang_index"] < self.tgt_lang_combo.count():
