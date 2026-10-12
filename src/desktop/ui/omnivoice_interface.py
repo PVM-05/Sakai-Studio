@@ -62,6 +62,7 @@ from src.ai_engines.tts_engine import (
     VIETNAMESE_VOICE_CATALOG,
     DEFAULT_SPEAKER_PRESETS,
     parse_timestamp_to_seconds,
+    validate_audio_file,
 )
 
 # Ánh xạ ngôn ngữ phổ biến sang mã chuẩn của OmniVoice
@@ -210,13 +211,27 @@ class OmniVoiceTaskWorker(QThread):
         self.fixed_duration = fixed_duration
         self.override_ref_audio = override_ref_audio
         self.override_instruct = override_instruct
+        self._engine: Optional[TTSEngine] = None
+        self._did_emit_result: bool = False
 
     def _emit_log(self, msg: str):
         self.logSignal.emit(msg)
 
+    def _emit_result(self, ok: bool, task_type: str, result_path: str, message: str):
+        if not self._did_emit_result:
+            self._did_emit_result = True
+            self.finishedSignal.emit(ok, task_type, result_path, message)
+
+    def request_cancel(self):
+        """Yêu cầu hủy tác vụ đang chạy trên luồng nền một cách an toàn."""
+        self.requestInterruption()
+        if self._engine is not None:
+            self._engine.request_cancel()
+
     def run(self):
         try:
             engine = TTSEngine(parent_logger=self._emit_log, **self.engine_params)
+            self._engine = engine
 
             if self.task_type == "detect_speakers":
                 max_spk = int(self.engine_params.get("max_speakers", 4))
@@ -239,14 +254,14 @@ class OmniVoiceTaskWorker(QThread):
                 if profiles:
                     self.speakersDetectedSignal.emit(profiles)
                     self.progressSignal.emit(100, f"Đã nhận diện {len(profiles)} nhân vật {source_desc}.")
-                    self.finishedSignal.emit(
+                    self._emit_result(
                         True,
                         self.task_type,
                         "",
                         f"Đã tự động phân vai {len(profiles)} người nói {source_desc}.",
                     )
                 else:
-                    self.finishedSignal.emit(
+                    self._emit_result(
                         False,
                         self.task_type,
                         "",
@@ -259,14 +274,14 @@ class OmniVoiceTaskWorker(QThread):
                 ref_wav = engine.extract_reference_from_video(self.video_path)
                 if ref_wav and os.path.exists(ref_wav):
                     self.progressSignal.emit(100, "Đã trích xuất giọng mẫu từ video thành công.")
-                    self.finishedSignal.emit(
+                    self._emit_result(
                         True,
                         self.task_type,
                         ref_wav,
                         f"Đã trích xuất tệp giọng mẫu: {os.path.basename(ref_wav)}",
                     )
                 else:
-                    self.finishedSignal.emit(False, self.task_type, "", "Không thể tách giọng nói từ tệp video này.")
+                    self._emit_result(False, self.task_type, "", "Không thể tách giọng nói từ tệp video này.")
                 return
 
             if self.task_type == "transcribe_ref":
@@ -279,7 +294,7 @@ class OmniVoiceTaskWorker(QThread):
                         engine.model.load_asr_model()
                     transcript = engine.model.transcribe(ref_path)
                 self.progressSignal.emit(100, "Đã nhận diện lời thoại giọng mẫu.")
-                self.finishedSignal.emit(
+                self._emit_result(
                     bool(transcript),
                     self.task_type,
                     transcript or "",
@@ -291,7 +306,7 @@ class OmniVoiceTaskWorker(QThread):
                 self.progressSignal.emit(30, "Đang mã hóa đặc trưng giọng mẫu trên GPU...")
                 ok = engine.save_voice_prompt(self.output_path)
                 self.progressSignal.emit(100, "Hoàn tất lưu đặc trưng giọng.")
-                self.finishedSignal.emit(
+                self._emit_result(
                     ok,
                     self.task_type,
                     self.output_path if ok else "",
@@ -311,16 +326,17 @@ class OmniVoiceTaskWorker(QThread):
                     override_ref_audio=self.override_ref_audio if self.override_ref_audio else None,
                     override_instruct=self.override_instruct if self.override_instruct else None,
                 )
-                if os.path.exists(self.output_path) and os.path.getsize(self.output_path) > 0:
+                is_valid, wav_dur, _, _ = validate_audio_file(self.output_path)
+                if is_valid:
                     self.progressSignal.emit(100, "Đã tổng hợp giọng nói thành công.")
-                    self.finishedSignal.emit(
+                    self._emit_result(
                         True,
                         self.task_type,
                         self.output_path,
-                        f"Đã tạo tệp âm thanh: {os.path.basename(self.output_path)}",
+                        f"Đã tạo tệp âm thanh ({wav_dur:.1f}s): {os.path.basename(self.output_path)}",
                     )
                 else:
-                    self.finishedSignal.emit(False, self.task_type, "", "Tệp âm thanh đầu ra trống.")
+                    self._emit_result(False, self.task_type, "", "Tệp âm thanh đầu ra trống hoặc không đạt chuẩn âm lượng.")
                 return
 
             if self.task_type == "subtitle_audio_only":
@@ -331,7 +347,7 @@ class OmniVoiceTaskWorker(QThread):
                     if end_sec > max_end:
                         max_end = end_sec
                 total_dur = max(max_end, 5.0)
-                engine.synthesize_blocks(
+                report = engine.synthesize_blocks(
                     self.subtitle_blocks,
                     total_dur,
                     self.output_path,
@@ -340,13 +356,16 @@ class OmniVoiceTaskWorker(QThread):
                 self.species = engine.speaker_profiles
                 if engine.speaker_profiles:
                     self.speakersDetectedSignal.emit(engine.speaker_profiles)
-                self.progressSignal.emit(100, "Đã xuất tệp âm thanh lồng tiếng toàn bộ phụ đề.")
-                self.finishedSignal.emit(
-                    True,
-                    self.task_type,
-                    self.output_path,
-                    f"Đã lưu tệp âm thanh lồng tiếng tại: {self.output_path}",
-                )
+
+                if report.status == "success" and report.valid_audio_file:
+                    self.progressSignal.emit(100, report.message)
+                    self._emit_result(True, self.task_type, self.output_path, report.message)
+                elif report.status == "partial" and report.valid_audio_file:
+                    self.progressSignal.emit(100, report.message)
+                    self._emit_result(True, self.task_type, self.output_path, f"[PARTIAL] {report.message}")
+                else:
+                    self.progressSignal.emit(0, report.message)
+                    self._emit_result(False, self.task_type, "", report.message)
                 return
 
             if self.task_type == "dub_full_video":
@@ -359,18 +378,28 @@ class OmniVoiceTaskWorker(QThread):
                 )
                 if engine.speaker_profiles:
                     self.speakersDetectedSignal.emit(engine.speaker_profiles)
-                self.progressSignal.emit(100 if ok else 0, "Hoàn tất xuất video lồng tiếng." if ok else "Lỗi lồng tiếng video.")
-                self.finishedSignal.emit(
-                    ok,
-                    self.task_type,
-                    self.output_path if ok else "",
-                    f"Đã xuất video lồng tiếng thành công tại: {self.output_path}" if ok else "Quá trình ghép âm thanh vào video thất bại.",
-                )
+                rep = engine.last_report
+                if ok and rep and rep.status == "partial":
+                    msg = f"[PARTIAL] Đã xuất video ({rep.message}): {self.output_path}"
+                    self.progressSignal.emit(100, rep.message)
+                    self._emit_result(True, self.task_type, self.output_path, msg)
+                elif ok:
+                    msg = f"Đã xuất video lồng tiếng thành công tại: {self.output_path}"
+                    self.progressSignal.emit(100, "Hoàn tất xuất video lồng tiếng.")
+                    self._emit_result(True, self.task_type, self.output_path, msg)
+                else:
+                    err_msg = rep.message if (rep and rep.message) else "Quá trình ghép âm thanh vào video thất bại."
+                    self.progressSignal.emit(0, err_msg)
+                    self._emit_result(False, self.task_type, "", err_msg)
                 return
 
         except Exception as e:
             self.logSignal.emit(f"Lỗi thực thi: {str(e)}")
-            self.finishedSignal.emit(False, self.task_type, "", str(e))
+            self._emit_result(False, self.task_type, "", str(e))
+        finally:
+            if not self._did_emit_result:
+                self._emit_result(False, self.task_type, "", "Tác vụ kết thúc bất thường hoặc đã bị hủy.")
+            self._engine = None
 
 
 class OmniVoiceInterface(ScrollArea):
@@ -429,6 +458,11 @@ class OmniVoiceInterface(ScrollArea):
         title_box.addWidget(title_lbl)
         title_box.addWidget(desc_lbl)
         top_row.addLayout(title_box, 1)
+
+        self.btn_cancel_task = PushButton("Hủy Tác Vụ", header_card)
+        self.btn_cancel_task.setIcon(FluentIcon.CLOSE)
+        self.btn_cancel_task.setEnabled(False)
+        top_row.addWidget(self.btn_cancel_task, 0, Qt.AlignRight | Qt.AlignTop)
 
         self.btn_free_vram = PushButton("Giải Phóng Bộ Nhớ Card Đồ Họa", header_card)
         self.btn_free_vram.setIcon(FluentIcon.BROOM)
@@ -756,12 +790,16 @@ class OmniVoiceInterface(ScrollArea):
         self.btn_assign_speaker_to_rows = PushButton("Gán Nhân Vật Vào Câu Đang Chọn", diarize_card)
         self.btn_assign_speaker_to_rows.setIcon(FluentIcon.EDIT)
 
+        self.btn_reset_speaker_voice = PushButton("Tạo Lại Mẫu Giọng", diarize_card)
+        self.btn_reset_speaker_voice.setIcon(FluentIcon.SYNC)
+
         spk_assign_row.addWidget(self.combo_target_speaker)
         spk_assign_row.addWidget(self.combo_speaker_voice_preset, 1)
         spk_assign_row.addWidget(self.btn_preview_speaker_preset_vi)
         spk_assign_row.addWidget(self.btn_apply_preset_to_speaker)
         spk_assign_row.addWidget(self.btn_pick_audio_for_speaker)
         spk_assign_row.addWidget(self.btn_assign_speaker_to_rows)
+        spk_assign_row.addWidget(self.btn_reset_speaker_voice)
         diarize_layout.addLayout(spk_assign_row)
 
         # Hàng chèn thẻ biểu cảm nhanh vào dòng phụ đề đang chọn
@@ -969,6 +1007,14 @@ class OmniVoiceInterface(ScrollArea):
         self.spin_duck_vol.setValue(0.15)
         param_grid.addWidget(self.spin_duck_vol, 12, 1)
 
+        param_grid.addWidget(BodyLabel("Chế độ hòa trộn nhạc nền:", right_card), 13, 0)
+        self.combo_ducking_mode = ComboBox(right_card)
+        self.combo_ducking_mode.addItems([
+            "Tự động giảm nhạc nền khi có thoại",
+            "Giảm âm lượng nhạc nền cố định",
+        ])
+        param_grid.addWidget(self.combo_ducking_mode, 13, 1)
+
         right_layout.addLayout(param_grid)
 
         self.chk_sync_sub_duration = CheckBox("Tự động khớp thời lượng theo từng câu phụ đề", right_card)
@@ -1035,6 +1081,7 @@ class OmniVoiceInterface(ScrollArea):
 
     def _connect_signals(self):
         self.combo_mode.currentIndexChanged.connect(self._on_mode_changed)
+        self.btn_cancel_task.clicked.connect(self._cancel_running_task)
         self.btn_free_vram.clicked.connect(self._free_gpu_vram)
 
         # Tín hiệu Kho 22 Giọng Đọc Mẫu Tiếng Việt & Nghe Thử
@@ -1076,6 +1123,7 @@ class OmniVoiceInterface(ScrollArea):
         self.btn_apply_preset_to_speaker.clicked.connect(self._apply_preset_to_target_speaker)
         self.btn_pick_audio_for_speaker.clicked.connect(self._pick_audio_for_target_speaker)
         self.btn_assign_speaker_to_rows.clicked.connect(self._assign_target_speaker_to_selected_rows)
+        self.btn_reset_speaker_voice.clicked.connect(self._reset_target_speaker_locked_voice)
         self.btn_insert_tag_to_sub.clicked.connect(self._insert_expressive_tag_to_selected_sub)
 
         self.sub_table.itemSelectionChanged.connect(self._update_subtitle_action_buttons)
@@ -1233,6 +1281,8 @@ class OmniVoiceInterface(ScrollArea):
             "multi_speaker_mode": self._get_selected_multi_speaker_mode(),
             "max_speakers": int(self.spin_max_speakers.value()),
             "speaker_profiles": dict(self.speaker_profiles),
+            "ducking_mode": "dynamic" if self.combo_ducking_mode.currentIndex() == 0 else "fixed",
+            "resume_cache_dir": os.path.join(BASE_DIR, "output", "omnivoice_studio", "resume_cache"),
         }
 
     def _append_log(self, msg: str):
@@ -1674,6 +1724,29 @@ class OmniVoiceInterface(ScrollArea):
             duration=2500,
         )
 
+    def _reset_target_speaker_locked_voice(self):
+        """Xóa mẫu giọng tự động khóa của nhân vật đang chọn để hệ thống tạo lại mẫu mới sạch hơn."""
+        target_spk = self.combo_target_speaker.currentText().strip()
+        prof = self.speaker_profiles.get(target_spk)
+        if prof and "locked_" in str(prof.get("ref_audio_path", "")):
+            locked_path = prof.get("ref_audio_path", "")
+            prof["ref_audio_path"] = ""
+            if locked_path and os.path.exists(locked_path):
+                try:
+                    os.remove(locked_path)
+                except Exception:
+                    pass
+        for blk in self.subtitle_blocks:
+            if getattr(blk, "speaker", "") == target_spk and "locked_" in str(getattr(blk, "voice_ref_path", "")):
+                blk.voice_ref_path = ""
+        self._populate_subtitle_table()
+        InfoBar.success(
+            "Đã đặt lại mẫu giọng nhân vật",
+            f"Đã xóa mẫu giọng khóa tự động của {target_spk}. Lần tổng hợp tới sẽ tạo lại mẫu mới.",
+            parent=self,
+            duration=3000,
+        )
+
     def _insert_expressive_tag_to_selected_sub(self):
         row = self.sub_table.currentRow()
         if row < 0 or row >= len(self.subtitle_blocks):
@@ -1762,6 +1835,31 @@ class OmniVoiceInterface(ScrollArea):
     # =========================================================================
     # ĐIỀU PHỐI LUỒNG NỀN & TRÌNH PHÁT ÂM THANH
     # =========================================================================
+    def _set_task_running_state(self, running: bool):
+        """Quản lý tập trung trạng thái khóa/mở khóa các nút tác vụ khi luồng nền hoạt động."""
+        self.btn_studio_synth.setEnabled(not running)
+        self.btn_preview_vn_voice.setEnabled(not running)
+        self.btn_preview_speaker_preset_vi.setEnabled(not running)
+        self.btn_cancel_task.setEnabled(running)
+        if not running:
+            has_subs = len(self.subtitle_blocks) > 0
+            self.btn_export_dub_wav.setEnabled(has_subs)
+            self.btn_dub_merge_video.setEnabled(has_subs and bool(self.current_video_path))
+            self.btn_auto_detect_speakers.setEnabled(has_subs or bool(self.current_video_path))
+            self._update_subtitle_action_buttons()
+        else:
+            self.btn_export_dub_wav.setEnabled(False)
+            self.btn_dub_merge_video.setEnabled(False)
+            self.btn_auto_detect_speakers.setEnabled(False)
+            self.btn_preview_selected_row.setEnabled(False)
+
+    def _cancel_running_task(self):
+        """Gửi tín hiệu yêu cầu dừng tác vụ đang chạy trên GPU."""
+        if self._worker and self._worker.isRunning():
+            self._worker.request_cancel()
+            self.lbl_status.setText("Đang dừng tác vụ theo yêu cầu...")
+            InfoBar.warning("Đang hủy tác vụ", "Hệ thống sẽ dừng sau khi hoàn tất câu hiện tại.", parent=self, duration=2500)
+
     def _launch_worker(
         self,
         task_type: str,
@@ -1801,7 +1899,7 @@ class OmniVoiceInterface(ScrollArea):
 
         self.progress_bar.setValue(10)
         self.lbl_status.setText("Đang thực thi trên GPU NVIDIA...")
-        self.btn_studio_synth.setEnabled(False)
+        self._set_task_running_state(True)
 
         self._worker = OmniVoiceTaskWorker(
             task_type=task_type,
@@ -1820,22 +1918,32 @@ class OmniVoiceInterface(ScrollArea):
         self._worker.logSignal.connect(self._append_log)
         self._worker.speakersDetectedSignal.connect(self._on_speakers_detected)
         self._worker.finishedSignal.connect(self._on_worker_finished)
+        self._worker.finished.connect(self._on_worker_thread_terminated)
         self._worker.start()
 
     def _on_worker_progress(self, pct: int, msg: str):
         self.progress_bar.setValue(pct)
         self.lbl_status.setText(msg)
 
+    def _on_worker_thread_terminated(self):
+        """Bảo đảm mở khóa giao diện ngay cả khi luồng kết thúc bất thường."""
+        self._set_task_running_state(False)
+
     def _on_worker_finished(self, ok: bool, task_type: str, result_path: str, message: str):
-        self.btn_studio_synth.setEnabled(True)
-        self.lbl_status.setText(message)
+        self._set_task_running_state(False)
+        is_partial = message.startswith("[PARTIAL] ")
+        clean_msg = message[len("[PARTIAL] ") :].strip() if is_partial else message
+        self.lbl_status.setText(clean_msg)
         if not ok:
             self.progress_bar.setValue(0)
-            InfoBar.error("Không thành công", message, parent=self, duration=4500)
+            InfoBar.error("Không thành công", clean_msg, parent=self, duration=4500)
             return
 
         self.progress_bar.setValue(100)
-        InfoBar.success("Hoàn thành", message, parent=self, duration=3500)
+        if is_partial:
+            InfoBar.warning("Hoàn thành một phần", clean_msg, parent=self, duration=5500)
+        else:
+            InfoBar.success("Hoàn thành", clean_msg, parent=self, duration=3500)
 
         if task_type == "extract_ref_from_video" and result_path:
             self.current_ref_audio_path = result_path
@@ -1852,6 +1960,17 @@ class OmniVoiceInterface(ScrollArea):
             if task_type == "vn_catalog_preview":
                 self.btn_use_vn_voice_as_ref.setEnabled(True)
             self._play_audio_file(result_path)
+
+    def closeEvent(self, event):
+        """Dừng phát âm thanh và dọn dẹp luồng nền an toàn khi đóng cửa sổ."""
+        try:
+            self._media_player.stop()
+            if self._worker and self._worker.isRunning():
+                self._worker.request_cancel()
+                self._worker.wait(2500)
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     def _play_audio_file(self, filepath: str):
         if not os.path.exists(filepath):

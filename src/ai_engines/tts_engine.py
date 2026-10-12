@@ -19,8 +19,10 @@ import uuid
 import shutil
 import logging
 import subprocess
+import hashlib
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Any, Dict, Union
+from typing import List, Optional, Any, Dict, Union, Tuple
 
 import numpy as np
 import soundfile as sf
@@ -46,6 +48,30 @@ from src.core.tools.ffmpeg_cli import FFmpegCLI
 from src.core.config import BASE_DIR, config as app_config
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class DubbingReport:
+    """Báo cáo nghiệm thu chi tiết kết quả tổng hợp phụ đề và lồng tiếng OmniVoice."""
+
+    status: str = "failed"  # "success" | "partial" | "failed" | "cancelled"
+    output_path: str = ""
+    total_blocks: int = 0
+    succeeded_count: int = 0
+    failed_count: int = 0
+    skipped_empty_count: int = 0
+    truncated_count: int = 0
+    stretched_count: int = 0
+    resumed_from_cache_count: int = 0
+    failed_lines: List[int] = field(default_factory=list)
+    truncated_lines: List[int] = field(default_factory=list)
+    timestamp_issues: List[Dict[str, Any]] = field(default_factory=list)
+    audio_duration_sec: float = 0.0
+    rms_energy: float = 0.0
+    peak_amplitude: float = 0.0
+    valid_audio_file: bool = False
+    oom_detected: bool = False
+    message: str = ""
 
 
 def get_readable_path(path_str: str) -> str:
@@ -80,16 +106,259 @@ def parse_timestamp_to_seconds(time_val: Any) -> float:
     if isinstance(time_val, str):
         cleaned = time_val.strip().replace(",", ".")
         try:
+            neg = cleaned.startswith("-")
+            if neg:
+                cleaned = cleaned[1:].strip()
             parts = cleaned.split(":")
             if len(parts) == 3:
-                return float(parts[0]) * 3600.0 + float(parts[1]) * 60.0 + float(parts[2])
+                val = float(parts[0]) * 3600.0 + float(parts[1]) * 60.0 + float(parts[2])
             elif len(parts) == 2:
-                return float(parts[0]) * 60.0 + float(parts[1])
+                val = float(parts[0]) * 60.0 + float(parts[1])
             else:
-                return float(parts[0])
+                val = float(parts[0])
+            return -val if neg else val
         except Exception:
             return 0.0
     return 0.0
+
+
+def validate_and_normalize_subtitles(
+    blocks: List[SubtitleBlock],
+    video_duration: float = 0.0,
+    auto_fix: bool = True,
+) -> List[Dict[str, Any]]:
+    """
+    Giai đoạn 1: Kiểm tra và chuẩn hóa danh sách phụ đề trước khi tổng hợp giọng nói.
+    Phát hiện mốc thời gian âm, kết thúc <= bắt đầu, sai thứ tự thời gian, câu trống và vượt quá độ dài video.
+    """
+    issues: List[Dict[str, Any]] = []
+    prev_start = -1e9
+
+    for idx, blk in enumerate(blocks, start=1):
+        start_s = parse_timestamp_to_seconds(getattr(blk, "start_time", 0.0))
+        end_s = parse_timestamp_to_seconds(getattr(blk, "end_time", start_s))
+        raw_text = (getattr(blk, "translated_text", "") or getattr(blk, "text", "") or "").strip()
+
+        if not raw_text:
+            issues.append({
+                "line": idx,
+                "type": "empty_text",
+                "message": f"Dòng phụ đề {idx} không có nội dung văn bản.",
+            })
+
+        if start_s < 0.0 or end_s < 0.0:
+            issues.append({
+                "line": idx,
+                "type": "negative_timestamp",
+                "message": f"Dòng phụ đề {idx} có mốc thời gian âm ({start_s:.2f}s -> {end_s:.2f}s).",
+            })
+            if auto_fix:
+                start_s = max(0.0, start_s)
+                end_s = max(start_s + 1.0, end_s)
+                blk.start_time = start_s
+                blk.end_time = end_s
+
+        if end_s <= start_s:
+            issues.append({
+                "line": idx,
+                "type": "inverted_duration",
+                "message": f"Dòng phụ đề {idx} có thời gian kết thúc ({end_s:.2f}s) nhỏ hơn hoặc bằng thời gian bắt đầu ({start_s:.2f}s).",
+            })
+            if auto_fix:
+                end_s = start_s + 1.5
+                blk.end_time = end_s
+
+        if start_s < prev_start - 0.05:
+            issues.append({
+                "line": idx,
+                "type": "out_of_order",
+                "message": f"Dòng phụ đề {idx} bị sai thứ tự thời gian (bắt đầu ở {start_s:.2f}s, trước câu liền kề ở {prev_start:.2f}s).",
+            })
+        prev_start = max(prev_start, start_s)
+
+        if video_duration > 0.0 and (start_s > video_duration + 0.5 or end_s > video_duration + 2.0):
+            issues.append({
+                "line": idx,
+                "type": "exceeds_video_duration",
+                "message": f"Dòng phụ đề {idx} ({start_s:.2f}s -> {end_s:.2f}s) vượt ngoài thời lượng video ({video_duration:.2f}s).",
+            })
+
+    return issues
+
+
+def preprocess_vietnamese_tts_text(text: str) -> str:
+    """
+    Chuẩn hóa văn bản tiếng Việt trước khi đưa vào OmniVoice:
+    - Mở rộng các đơn vị đo lường, ký hiệu phần trăm, nhiệt độ, tiền tệ phổ biến theo ngữ cảnh.
+    - Giữ nguyên các thẻ biểu cảm phi ngôn từ ([laughter], [sigh]...).
+    """
+    if not text or not text.strip():
+        return ""
+    s = text.strip()
+    # Mở rộng đơn vị đo phổ biến khi đi kèm số hoặc độc lập
+    replacements = [
+        (r"(?<=\d)\s*%", " phần trăm"),
+        (r"%", " phần trăm "),
+        (r"\bkm/h\b", "ki lô mét trên giờ"),
+        (r"\bm/s\b", "mét trên giây"),
+        (r"\bkm2\b|\bkm²\b", "ki lô mét vuông"),
+        (r"\bm2\b|\bm²\b", "mét vuông"),
+        (r"°C\b", " độ C"),
+        (r"\bVNĐ\b|\bVND\b", "đồng"),
+        (r"\bUSD\b", "đô la Mỹ"),
+    ]
+    for pattern, repl in replacements:
+        s = re.sub(pattern, repl, s, flags=re.IGNORECASE)
+    s = re.sub(r"\s{2,}", " ", s).strip()
+    return s
+
+
+def split_long_vietnamese_clauses(text: str, max_chars: int = 220) -> List[str]:
+    """
+    Chia câu tiếng Việt quá dài theo dấu câu hoặc cụm ngữ nghĩa để tránh hụt hơi khi tổng hợp,
+    nhưng vẫn giữ nguyên thứ tự để ghép lại trong cùng mốc thời gian phụ đề.
+    """
+    cleaned = text.strip()
+    if len(cleaned) <= max_chars:
+        return [cleaned] if cleaned else []
+
+    raw_parts = re.split(r"(?<=[.!?;:…])\s+|(?<=,)\s+", cleaned)
+    clauses: List[str] = []
+    current = ""
+    for part in raw_parts:
+        part = part.strip()
+        if not part:
+            continue
+        if not current:
+            current = part
+        elif len(current) + 1 + len(part) <= max_chars:
+            current = f"{current} {part}"
+        else:
+            clauses.append(current)
+            current = part
+    if current:
+        clauses.append(current)
+    return clauses if clauses else [cleaned]
+
+
+def validate_audio_file(
+    filepath: str,
+    min_duration_sec: float = 0.05,
+    min_rms: float = 1e-4,
+) -> Tuple[bool, float, float, float]:
+    """
+    Giai đoạn 4: Kiểm định tệp âm thanh WAV đầu ra (tồn tại, đọc được, độ dài, năng lượng RMS, biên độ đỉnh).
+    Trả về: (is_valid, duration_sec, rms_energy, peak_amplitude).
+    """
+    if not filepath or not os.path.exists(filepath):
+        return False, 0.0, 0.0, 0.0
+    try:
+        if os.path.getsize(filepath) <= 44:
+            return False, 0.0, 0.0, 0.0
+        data, sr = sf.read(filepath, dtype="float32")
+        if data.size == 0 or sr <= 0:
+            return False, 0.0, 0.0, 0.0
+        if data.ndim > 1:
+            data = np.mean(data, axis=1)
+        if np.isnan(data).any() or np.isinf(data).any():
+            return False, 0.0, 0.0, 0.0
+        duration = float(len(data)) / float(sr)
+        rms = float(np.sqrt(np.mean(data ** 2)))
+        peak = float(np.max(np.abs(data)))
+        is_valid = (duration >= min_duration_sec) and (rms >= min_rms)
+        return is_valid, duration, rms, peak
+    except Exception:
+        return False, 0.0, 0.0, 0.0
+
+
+def is_audio_quality_acceptable_for_voice_lock(
+    audio_arr: np.ndarray,
+    sr: int = 24000,
+    min_duration_sec: float = 1.4,
+) -> Tuple[bool, str]:
+    """
+    Kiểm tra chất lượng âm thanh câu đầu tiên trước khi khóa làm VoiceClonePrompt cho nhân vật:
+    - Thời lượng >= 1.4 giây
+    - Không bị im lặng (RMS >= 0.012)
+    - Không bị vỡ tiếng / clipping nặng (peak <= 0.995)
+    - Không chứa NaN/Inf
+    """
+    if audio_arr is None or len(audio_arr) < int(min_duration_sec * sr):
+        return False, "Thời lượng câu quá ngắn để khóa làm mẫu giọng chuẩn."
+    if np.isnan(audio_arr).any() or np.isinf(audio_arr).any():
+        return False, "Dữ liệu âm thanh chứa giá trị không hợp lệ."
+    rms = float(np.sqrt(np.mean(audio_arr ** 2)))
+    peak = float(np.max(np.abs(audio_arr)))
+    if rms < 0.012:
+        return False, f"Năng lượng âm thanh quá thấp (RMS={rms:.4f})."
+    if peak > 0.995:
+        return False, f"Âm thanh có dấu hiệu vượt ngưỡng đỉnh (Peak={peak:.3f})."
+    return True, "Đạt chuẩn chất lượng giọng mẫu."
+
+
+def apply_dynamic_ducking(
+    bg_audio: np.ndarray,
+    tts_audio: np.ndarray,
+    sr: int = 24000,
+    duck_gain: float = 0.15,
+    speech_threshold: float = 0.018,
+    attack_ms: float = 35.0,
+    release_ms: float = 280.0,
+) -> np.ndarray:
+    """
+    Giai đoạn 5: Hòa trộn âm thanh với cơ chế Ducking động theo đường bao lời thoại (Envelope Ducking)
+    kết hợp giới hạn đỉnh âm thanh (Soft Limiter) chống vỡ tiếng (clipping).
+    - Khi không có tiếng thoại TTS: âm thanh nền giữ nguyên mức 1.0.
+    - Khi xuất hiện tiếng thoại TTS: âm thanh nền tự động hạ mượt xuống mức duck_gain.
+    """
+    bg = np.asarray(bg_audio, dtype=np.float32)
+    tts = np.asarray(tts_audio, dtype=np.float32)
+
+    if bg.ndim > 1:
+        bg = np.mean(bg, axis=1)
+    if tts.ndim > 1:
+        tts = np.mean(tts, axis=1)
+
+    max_len = max(len(bg), len(tts))
+    if max_len == 0:
+        return np.zeros(0, dtype=np.float32)
+
+    if len(bg) < max_len:
+        bg = np.pad(bg, (0, max_len - len(bg)))
+    if len(tts) < max_len:
+        tts = np.pad(tts, (0, max_len - len(tts)))
+
+    # Tính đường bao năng lượng theo từng khung 20ms để tốc độ xử lý cực nhanh bằng NumPy
+    hop = max(1, int(0.02 * sr))
+    num_frames = (max_len + hop - 1) // hop
+    pad_len = num_frames * hop - max_len
+    tts_padded = np.pad(tts, (0, pad_len)) if pad_len > 0 else tts
+    frames = tts_padded.reshape(num_frames, hop)
+    frame_rms = np.sqrt(np.mean(frames ** 2, axis=1))
+
+    target_gains = np.where(frame_rms >= speech_threshold, float(duck_gain), 1.0).astype(np.float32)
+
+    # Làm mượt đường bao gain với hệ số attack nhanh và release mượt
+    attack_coeff = float(np.exp(-hop / max(1.0, (attack_ms / 1000.0) * sr)))
+    release_coeff = float(np.exp(-hop / max(1.0, (release_ms / 1000.0) * sr)))
+    smoothed_gains = np.empty_like(target_gains)
+    cur_g = 1.0
+    for idx in range(num_frames):
+        tg = float(target_gains[idx])
+        if tg < cur_g:
+            cur_g = attack_coeff * cur_g + (1.0 - attack_coeff) * tg
+        else:
+            cur_g = release_coeff * cur_g + (1.0 - release_coeff) * tg
+        smoothed_gains[idx] = cur_g
+
+    sample_gains = np.repeat(smoothed_gains, hop)[:max_len]
+    mixed = bg * sample_gains + tts
+
+    # Giới hạn đỉnh mềm (Soft knee limiter) bảo đảm không bao giờ vượt 0.98
+    peak = float(np.max(np.abs(mixed)))
+    if peak > 0.95:
+        mixed = 0.96 * np.tanh(mixed / 0.96)
+    return np.clip(mixed, -0.98, 0.98).astype(np.float32)
 
 
 def build_voice_design_instruct(
@@ -306,6 +575,8 @@ class TTSEngine:
         multi_speaker_mode: str = "single",
         max_speakers: int = 4,
         speaker_profiles: Optional[Dict[str, Dict[str, Any]]] = None,
+        resume_cache_dir: Optional[str] = None,
+        ducking_mode: str = "dynamic",
     ):
         self.model: Optional[OmniVoice] = None
         self.parent_logger = parent_logger
@@ -344,6 +615,10 @@ class TTSEngine:
         self.max_speakers = max(1, min(8, int(max_speakers)))
         self.speaker_profiles: Dict[str, Dict[str, Any]] = speaker_profiles or {}
         self._speaker_prompt_cache: Dict[str, VoiceClonePrompt] = {}
+        self.resume_cache_dir = str(resume_cache_dir).strip() if resume_cache_dir else None
+        self.ducking_mode = ducking_mode if ducking_mode in ("dynamic", "fixed") else "dynamic"
+        self._cancel_requested: bool = False
+        self.last_report: Optional[DubbingReport] = None
 
         self.sample_rate = 24000
         self.current_prompt: Optional[VoiceClonePrompt] = None
@@ -353,6 +628,33 @@ class TTSEngine:
         else:
             self.voice_prompt_cache_dir = os.path.join(BASE_DIR, "output", "voice_prompts")
         os.makedirs(self.voice_prompt_cache_dir, exist_ok=True)
+        if self.resume_cache_dir:
+            os.makedirs(self.resume_cache_dir, exist_ok=True)
+
+    def request_cancel(self):
+        """Yêu cầu dừng sớm quá trình tổng hợp phụ đề đang chạy."""
+        self._cancel_requested = True
+
+    def reset_cancel(self):
+        """Đặt lại cờ hủy tác vụ trước khi chạy lượt tổng hợp mới."""
+        self._cancel_requested = False
+
+    def reset_speaker_locked_prompt(self, speaker_id: Optional[str] = None):
+        """
+        Xóa mẫu giọng tự động khóa (consistent_{speaker_id}) của một nhân vật hoặc toàn bộ nhân vật
+        để tạo lại mẫu giọng mới sạch hơn ở lần tổng hợp tiếp theo.
+        """
+        if speaker_id:
+            self._speaker_prompt_cache.pop(f"consistent_{speaker_id}", None)
+            prof = self.speaker_profiles.get(speaker_id)
+            if prof and str(prof.get("ref_audio_path", "")).find("locked_") != -1:
+                prof["ref_audio_path"] = ""
+            self.log(f"Đã đặt lại mẫu giọng khóa tự động của {speaker_id}.")
+        else:
+            keys_to_remove = [k for k in self._speaker_prompt_cache if k.startswith("consistent_")]
+            for k in keys_to_remove:
+                self._speaker_prompt_cache.pop(k, None)
+            self.log("Đã đặt lại toàn bộ mẫu giọng khóa tự động của các nhân vật.")
 
     @classmethod
     def from_app_config(cls, parent_logger=None, language: Optional[str] = None) -> "TTSEngine":
@@ -1263,25 +1565,70 @@ class TTSEngine:
             self.log(f"Lỗi khi sinh âm thanh cho câu: {str(e)}")
             return False
 
+    @staticmethod
+    def _safe_time_stretch(audio_arr: np.ndarray, speed_factor: float) -> np.ndarray:
+        """
+        Co giãn thời lượng âm thanh trong ngưỡng an toàn (0.80x - 1.35x) bằng nội suy tuyến tính
+        kèm làm mượt biên độ hai đầu (fade-in/fade-out) để tránh chồng lấn sang câu tiếp theo mà không cắt cụt từ.
+        """
+        if audio_arr.size == 0 or abs(speed_factor - 1.0) < 0.02:
+            return audio_arr
+        clamped_factor = max(0.80, min(1.35, float(speed_factor)))
+        new_len = max(1, int(round(len(audio_arr) / clamped_factor)))
+        old_indices = np.linspace(0.0, len(audio_arr) - 1, num=new_len, dtype=np.float32)
+        base_idx = np.arange(len(audio_arr), dtype=np.float32)
+        stretched = np.interp(old_indices, base_idx, audio_arr).astype(np.float32)
+        fade_len = min(240, len(stretched) // 10)
+        if fade_len > 2:
+            ramp = np.linspace(0.0, 1.0, fade_len, dtype=np.float32)
+            stretched[:fade_len] *= ramp
+            stretched[-fade_len:] *= ramp[::-1]
+        return stretched
+
+    def _compute_block_cache_path(
+        self,
+        index: int,
+        text: str,
+        speaker: str,
+        ref_path: Optional[str],
+        instruct: Optional[str],
+        target_dur: Optional[float],
+    ) -> Optional[str]:
+        """Tính đường dẫn tệp WAV lưu tạm (checkpoint) cho từng câu để hỗ trợ tiếp tục khi gián đoạn."""
+        if not self.resume_cache_dir:
+            return None
+        raw_key = f"{index}|{text}|{speaker}|{ref_path or ''}|{instruct or ''}|{target_dur or 0.0:.2f}|{self.mode}|{self.speed:.2f}"
+        digest = hashlib.sha1(raw_key.encode("utf-8", errors="ignore")).hexdigest()[:16]
+        return os.path.join(self.resume_cache_dir, f"blk_{index + 1:04d}_{digest}.wav")
+
     def synthesize_blocks(
         self,
         blocks: List[SubtitleBlock],
         total_duration: float,
         output_path: str,
         video_path: Optional[str] = None,
-    ):
+    ) -> DubbingReport:
         """
-        Tổng hợp giọng nói cho toàn bộ danh sách khối phụ đề (SubtitleBlock).
-        Hỗ trợ đầy đủ:
-        1. Chế độ 1 giọng đồng nhất (single)
-        2. Tự động nhận diện & phân cụm nhiều người nói từ video (auto_video_cluster)
-        3. Nhái giọng trực tiếp theo từng câu trong video gốc (per_line_video_clone)
-        4. Tự động phân vai nhiều người nói từ văn bản phụ đề .srt (auto_srt_text)
-        5. Phân vai tùy chỉnh theo từng dòng trên bảng phụ đề (custom_table)
+        Tổng hợp giọng nói cho toàn bộ danh sách khối phụ đề theo kiến trúc 5 giai đoạn:
+        - Giai đoạn 1: Kiểm tra và chuẩn hóa mốc thời gian phụ đề.
+        - Giai đoạn 2: Chuẩn bị hồ sơ giọng nhân vật (đơn giọng, phân cụm từ video, phân vai từ phụ đề, hoặc nhái từng câu).
+        - Giai đoạn 3: Tổng hợp trên GPU kèm khôi phục checkpoint, chia câu dài tiếng Việt, thử lại khi lỗi và xử lý thiếu VRAM.
+        - Giai đoạn 4: Căn chỉnh chống chồng lấn, tự động mở rộng bộ đệm không cắt câu cuối và nghiệm thu tệp WAV đầu ra.
         """
+        self.reset_cancel()
+        report = DubbingReport(output_path=output_path, total_blocks=len(blocks))
+        self.last_report = report
+
+        # GIAI ĐOẠN 1: Chuẩn hóa và kiểm tra phụ đề
+        ts_issues = validate_and_normalize_subtitles(blocks, video_duration=total_duration, auto_fix=True)
+        report.timestamp_issues = ts_issues
+        for issue in ts_issues:
+            if issue["type"] != "empty_text":
+                self.log(f"Cảnh báo phụ đề: {issue['message']}")
+
         self.load_model()
 
-        # Tự động chạy phân tích đa người nói nếu được cấu hình
+        # GIAI ĐOẠN 2: Chuẩn bị hồ sơ giọng nhân vật
         vocals_waveform: Optional[np.ndarray] = None
         vocals_sr: int = 24000
 
@@ -1292,7 +1639,7 @@ class TTSEngine:
             if not any(getattr(b, "speaker", "") for b in blocks):
                 self.detect_speakers_from_srt_text(blocks, max_speakers=self.max_speakers)
         elif self.multi_speaker_mode == "per_line_video_clone" and video_path and os.path.exists(video_path):
-            self.log("Đang tách kênh giọng nói gốc của video để nhái giọng trực tiếp theo từng câu thoại...")
+            self.log("Đang tách kênh giọng nói gốc khỏi nhạc nền để nhái giọng theo từng câu thoại...")
             sep = VoiceSeparator()
             temp_voc = os.path.join(self.voice_prompt_cache_dir, f"perline_voc_{uuid.uuid4().hex[:8]}.wav")
             if sep.separate_from_video(video_path, temp_voc) and os.path.exists(temp_voc):
@@ -1307,7 +1654,6 @@ class TTSEngine:
                     except Exception:
                         pass
 
-        # Tự động chuẩn bị giọng mẫu mặc định nếu ở chế độ đơn giọng hoặc cần mẫu dự phòng
         if self.mode == "clone" and self.current_prompt is None and self.multi_speaker_mode == "single":
             if not self.auto_extract_ref and self.ref_audio_path and os.path.exists(self.ref_audio_path):
                 self.set_reference_voice(self.ref_audio_path, self.ref_text)
@@ -1319,13 +1665,28 @@ class TTSEngine:
         total_samples = int((max(total_duration, 1.0) + 5.0) * self.sample_rate)
         full_audio = np.zeros(total_samples, dtype=np.float32)
 
+        # GIAI ĐOẠN 3 & 4: Tổng hợp từng câu, kiểm tra chất lượng và căn chỉnh âm thanh
         for i, blk in enumerate(blocks):
-            text_to_speak = blk.translated_text if blk.translated_text else blk.text
-            if not text_to_speak or len(text_to_speak.strip()) == 0:
+            if self._cancel_requested:
+                self.log(f"Đã dừng tác vụ theo yêu cầu người dùng tại dòng phụ đề {i + 1}.")
+                report.status = "cancelled"
+                report.message = f"Đã hủy tác vụ sau khi xử lý {report.succeeded_count}/{len(blocks)} câu."
+                self.last_report = report
+                return report
+
+            raw_text = (blk.translated_text if blk.translated_text else blk.text) or ""
+            if not raw_text.strip():
+                report.skipped_empty_count += 1
                 continue
 
-            start_sec = parse_timestamp_to_seconds(blk.start_time)
-            end_sec = parse_timestamp_to_seconds(getattr(blk, "end_time", start_sec))
+            text_to_speak = (
+                preprocess_vietnamese_tts_text(raw_text)
+                if (self.language in (None, "vi") and self.normalize_text)
+                else raw_text.strip()
+            )
+
+            start_sec = max(0.0, parse_timestamp_to_seconds(blk.start_time))
+            end_sec = max(start_sec + 0.2, parse_timestamp_to_seconds(getattr(blk, "end_time", start_sec)))
             slot_duration = max(0.0, end_sec - start_sec)
 
             target_dur: Optional[float] = None
@@ -1335,30 +1696,34 @@ class TTSEngine:
             override_prompt: Optional[VoiceClonePrompt] = None
             override_ref: Optional[str] = None
             override_instruct: Optional[str] = None
-            spk_label = getattr(blk, "speaker", "") or "Mặc định"
+            spk_key = getattr(blk, "speaker", "")
+            spk_label = spk_key or "Mặc định"
 
-            # 1. Chế độ nhái giọng trực tiếp theo từng câu từ video gốc
+            # 1. Chế độ nhái giọng trực tiếp theo từng câu từ video gốc (có kiểm định chất lượng đoạn mẫu)
             if self.multi_speaker_mode == "per_line_video_clone" and vocals_waveform is not None:
                 s_idx = max(0, int(start_sec * vocals_sr))
                 e_idx = min(len(vocals_waveform), int(end_sec * vocals_sr))
-                # Nếu câu quá ngắn (< 1.8 giây), mở rộng cửa sổ lấy mẫu quanh câu đó để đủ ngữ cảnh âm sắc
                 if e_idx - s_idx < int(1.8 * vocals_sr):
-                    pad_half = int(1.0 * vocals_sr)
+                    pad_half = int(0.9 * vocals_sr)
                     s_idx = max(0, s_idx - pad_half)
                     e_idx = min(len(vocals_waveform), e_idx + pad_half)
                 seg_wav = vocals_waveform[s_idx:e_idx]
-                if len(seg_wav) >= int(0.8 * vocals_sr) and float(np.max(np.abs(seg_wav))) > 0.01:
+                ok_seg, _ = is_audio_quality_acceptable_for_voice_lock(seg_wav, vocals_sr, min_duration_sec=0.9)
+                if ok_seg:
+                    # Ưu tiên lấy câu gốc của phụ đề làm phiên âm nếu không rỗng, tránh dùng dấu chấm vô nghĩa
+                    line_ref_text = (getattr(blk, "text", "") or "").strip() or None
                     seg_tensor = torch.from_numpy(seg_wav).unsqueeze(0)
                     override_prompt = self._get_or_create_prompt_for_audio(
                         (seg_tensor, vocals_sr),
                         cache_key=f"line_{i}",
-                        ref_text=".",
+                        ref_text=line_ref_text,
                     )
                     spk_label = f"Giọng gốc câu {i + 1}"
+                else:
+                    self.log(f"Câu {i + 1}: Đoạn giọng gốc quá ngắn hoặc nhiễu, chuyển sang dùng mẫu giọng nhân vật dự phòng.")
 
-            # 2. Chế độ Đa nhân vật (từ video, từ văn bản .srt, hoặc gán trên bảng)
-            elif self.multi_speaker_mode != "single" or getattr(blk, "speaker", ""):
-                spk_key = getattr(blk, "speaker", "")
+            # 2. Chế độ Đa nhân vật hoặc dự phòng khi nhái giọng từng câu không đủ chất lượng
+            if override_prompt is None and (self.multi_speaker_mode != "single" or spk_key):
                 prof = self.speaker_profiles.get(spk_key, {}) if spk_key else {}
                 ref_cand = getattr(blk, "voice_ref_path", "") or prof.get("ref_audio_path", "")
                 ins_cand = getattr(blk, "voice_instruct", "") or prof.get("instruct", "")
@@ -1367,69 +1732,173 @@ class TTSEngine:
 
                 if ref_cand and os.path.exists(ref_cand):
                     override_prompt = self._get_or_create_prompt_for_audio(ref_cand, cache_key=f"spk_{spk_key}_{ref_cand}")
+                    override_ref = ref_cand
                 elif spk_key and f"consistent_{spk_key}" in self._speaker_prompt_cache:
                     override_prompt = self._speaker_prompt_cache[f"consistent_{spk_key}"]
                 elif ins_cand:
                     override_instruct = ins_cand
 
-            self.log(f"Đang tổng hợp [{i + 1}/{len(blocks)}] ({spk_label}): {text_to_speak}")
-            try:
-                audio_arr = self.generate_single(
-                    text_to_speak,
-                    target_duration=target_dur,
-                    override_prompt=override_prompt,
-                    override_ref_audio=override_ref,
-                    override_instruct=override_instruct,
-                )
-                if len(audio_arr) == 0:
+            # Kiểm tra bộ nhớ đệm khôi phục tác vụ (Checkpoint Resume)
+            cache_wav_path = self._compute_block_cache_path(
+                i, text_to_speak, spk_key, override_ref, override_instruct, target_dur
+            )
+            if cache_wav_path and os.path.exists(cache_wav_path):
+                ok_cache, _, _, _ = validate_audio_file(cache_wav_path)
+                if ok_cache:
+                    cached_arr, c_sr = sf.read(cache_wav_path, dtype="float32")
+                    if cached_arr.ndim > 1:
+                        cached_arr = np.mean(cached_arr, axis=1)
+                    start_sample = int(start_sec * self.sample_rate)
+                    end_sample = start_sample + len(cached_arr)
+                    if end_sample > len(full_audio):
+                        full_audio = np.pad(full_audio, (0, end_sample - len(full_audio) + int(0.5 * self.sample_rate)))
+                    full_audio[start_sample:end_sample] = np.clip(
+                        full_audio[start_sample:end_sample] + cached_arr, -1.0, 1.0
+                    )
+                    report.succeeded_count += 1
+                    report.resumed_from_cache_count += 1
+                    self.log(f"Khôi phục từ bộ nhớ đệm [{i + 1}/{len(blocks)}] ({spk_label}): {text_to_speak}")
                     continue
 
-                # Nếu nhân vật đang dùng thiết kế giọng (instruct) nhưng chưa có prompt cố định,
-                # trích xuất luôn giọng vừa sinh của câu đầu tiên làm VoiceClonePrompt cho nhân vật đó
-                # để giữ âm sắc nhân vật nhất quán tuyệt đối ở tất cả các câu tiếp theo!
-                spk_key = getattr(blk, "speaker", "")
+            self.log(f"Đang tổng hợp [{i + 1}/{len(blocks)}] ({spk_label}): {text_to_speak}")
+            try:
+                clauses = split_long_vietnamese_clauses(text_to_speak, max_chars=220)
+                if len(clauses) == 1:
+                    audio_arr = self.generate_single(
+                        clauses[0],
+                        target_duration=target_dur,
+                        override_prompt=override_prompt,
+                        override_ref_audio=override_ref,
+                        override_instruct=override_instruct,
+                    )
+                else:
+                    total_chars = max(1, sum(len(c) for c in clauses))
+                    clause_waves: List[np.ndarray] = []
+                    pause_samples = np.zeros(int(0.06 * self.sample_rate), dtype=np.float32)
+                    for c_idx, clause in enumerate(clauses):
+                        c_dur = (target_dur * (len(clause) / total_chars)) if target_dur else None
+                        c_wav = self.generate_single(
+                            clause,
+                            target_duration=c_dur,
+                            override_prompt=override_prompt,
+                            override_ref_audio=override_ref,
+                            override_instruct=override_instruct,
+                        )
+                        if len(c_wav) > 0:
+                            clause_waves.append(c_wav)
+                            if c_idx < len(clauses) - 1:
+                                clause_waves.append(pause_samples)
+                    audio_arr = np.concatenate(clause_waves) if clause_waves else np.zeros(0, dtype=np.float32)
+
+                audio_arr = np.squeeze(np.asarray(audio_arr, dtype=np.float32))
+                if audio_arr.size == 0 or float(np.max(np.abs(audio_arr))) < 1e-5:
+                    raise RuntimeError("Âm thanh sinh ra trống hoặc hoàn toàn im lặng.")
+
+                # Khóa giọng nhân vật tự động có kiểm định chất lượng (tránh khóa nhầm câu lỗi/ngắn)
                 if (
                     spk_key
                     and override_prompt is None
                     and f"consistent_{spk_key}" not in self._speaker_prompt_cache
-                    and len(audio_arr) >= int(1.2 * self.sample_rate)
                 ):
+                    ok_lock, lock_reason = is_audio_quality_acceptable_for_voice_lock(audio_arr, self.sample_rate)
+                    if ok_lock and self.model is not None and hasattr(self.model, "create_voice_clone_prompt"):
+                        try:
+                            wav_t = torch.from_numpy(audio_arr).unsqueeze(0)
+                            locked_prompt = self.model.create_voice_clone_prompt(
+                                ref_audio=(wav_t, self.sample_rate),
+                                ref_text=text_to_speak,
+                                preprocess_prompt=False,
+                            )
+                            self._speaker_prompt_cache[f"consistent_{spk_key}"] = locked_prompt
+                            if spk_key in self.speaker_profiles and not self.speaker_profiles[spk_key].get("ref_audio_path"):
+                                auto_ref_file = os.path.join(self.voice_prompt_cache_dir, f"locked_{spk_key.replace(' ', '_')}.wav")
+                                sf.write(auto_ref_file, audio_arr, self.sample_rate)
+                                self.speaker_profiles[spk_key]["ref_audio_path"] = auto_ref_file
+                                for b_other in blocks:
+                                    if getattr(b_other, "speaker", "") == spk_key and not getattr(b_other, "voice_ref_path", ""):
+                                        b_other.voice_ref_path = auto_ref_file
+                        except Exception as lock_err:
+                            self.log(f"Cảnh báo: Không thể khóa mẫu giọng tự động cho {spk_key} tại câu {i + 1}: {lock_err}")
+                    else:
+                        self.log(f"Chưa khóa mẫu giọng cho {spk_key} ở câu {i + 1} ({lock_reason}), sẽ thử ở câu tiếp theo.")
+
+                # Kiểm tra chồng lấn với câu phụ đề kế tiếp và co giãn thời lượng trong ngưỡng an toàn
+                if i + 1 < len(blocks):
+                    next_start_sec = parse_timestamp_to_seconds(blocks[i + 1].start_time)
+                    avail_before_next = next_start_sec - start_sec
+                    cur_dur_sec = len(audio_arr) / float(self.sample_rate)
+                    if avail_before_next > 0.4 and cur_dur_sec > avail_before_next * 1.03:
+                        needed_speed = cur_dur_sec / avail_before_next
+                        if needed_speed <= 1.35:
+                            audio_arr = self._safe_time_stretch(audio_arr, needed_speed)
+                            report.stretched_count += 1
+
+                # Lưu vào bộ nhớ đệm khôi phục tác vụ nếu được bật
+                if cache_wav_path:
                     try:
-                        wav_t = torch.from_numpy(audio_arr).unsqueeze(0)
-                        locked_prompt = self.model.create_voice_clone_prompt(
-                            ref_audio=(wav_t, self.sample_rate),
-                            ref_text=text_to_speak,
-                            preprocess_prompt=False,
-                        )
-                        self._speaker_prompt_cache[f"consistent_{spk_key}"] = locked_prompt
-                        if spk_key in self.speaker_profiles and not self.speaker_profiles[spk_key].get("ref_audio_path"):
-                            auto_ref_file = os.path.join(self.voice_prompt_cache_dir, f"locked_{spk_key.replace(' ', '_')}.wav")
-                            sf.write(auto_ref_file, audio_arr, self.sample_rate)
-                            self.speaker_profiles[spk_key]["ref_audio_path"] = auto_ref_file
-                            for b_other in blocks:
-                                if getattr(b_other, "speaker", "") == spk_key and not getattr(b_other, "voice_ref_path", ""):
-                                    b_other.voice_ref_path = auto_ref_file
+                        sf.write(cache_wav_path, audio_arr, self.sample_rate)
                     except Exception:
                         pass
 
                 start_sample = int(start_sec * self.sample_rate)
                 end_sample = start_sample + len(audio_arr)
 
-                if end_sample <= total_samples:
-                    existing = full_audio[start_sample:end_sample]
-                    full_audio[start_sample:end_sample] = np.clip(existing + audio_arr, -1.0, 1.0)
-                elif start_sample < total_samples:
-                    avail = total_samples - start_sample
-                    existing = full_audio[start_sample:total_samples]
-                    full_audio[start_sample:total_samples] = np.clip(existing + audio_arr[:avail], -1.0, 1.0)
+                # Tự động mở rộng bộ đệm âm thanh nếu câu cuối (hoặc câu dài) vượt quá độ dài dự kiến ban đầu
+                if end_sample > len(full_audio):
+                    pad_extra = (end_sample - len(full_audio)) + int(0.5 * self.sample_rate)
+                    full_audio = np.pad(full_audio, (0, pad_extra))
+
+                existing = full_audio[start_sample:end_sample]
+                full_audio[start_sample:end_sample] = np.clip(existing + audio_arr, -1.0, 1.0)
+                report.succeeded_count += 1
 
             except Exception as e:
-                self.log(f"Lỗi khi tổng hợp khối phụ đề {i + 1}: {str(e)}")
+                err_str = str(e)
+                report.failed_count += 1
+                report.failed_lines.append(i + 1)
+                if "out of memory" in err_str.lower() or isinstance(e, getattr(torch.cuda, "OutOfMemoryError", RuntimeError)) and "cuda" in err_str.lower():
+                    report.oom_detected = True
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    self.log(
+                        f"Lỗi thiếu bộ nhớ VRAM trên GPU tại câu {i + 1}: Đã tự động giải phóng bộ nhớ đệm. "
+                        "Khuyến nghị giảm Số bước giải mã xuống 16, tắt Tăng tốc đồ họa chuyên sâu hoặc nhấn Giải phóng VRAM."
+                    )
+                else:
+                    self.log(f"Lỗi khi tổng hợp khối phụ đề {i + 1}: {err_str}")
 
         self.log(f"Đang lưu track lồng tiếng hoàn chỉnh vào: {output_path}")
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         sf.write(output_path, full_audio, self.sample_rate)
-        self.log("Đã hoàn thành và lưu track lồng tiếng thành công.")
+
+        is_valid, wav_dur, wav_rms, wav_peak = validate_audio_file(output_path)
+        report.valid_audio_file = is_valid
+        report.audio_duration_sec = wav_dur
+        report.rms_energy = wav_rms
+        report.peak_amplitude = wav_peak
+
+        if report.succeeded_count > 0 and report.failed_count == 0 and is_valid:
+            report.status = "success"
+            report.message = f"Đã tổng hợp thành công trọn vẹn {report.succeeded_count}/{report.total_blocks} câu thoại."
+            self.log(report.message)
+        elif report.succeeded_count > 0 and report.failed_count > 0 and is_valid:
+            report.status = "partial"
+            report.message = (
+                f"Hoàn thành một phần: thành công {report.succeeded_count} câu, "
+                f"lỗi {report.failed_count} câu (dòng: {', '.join(map(str, report.failed_lines))})."
+            )
+            self.log(report.message)
+        else:
+            report.status = "failed"
+            report.message = (
+                f"Tổng hợp thất bại: không tạo được tệp âm thanh hợp lệ "
+                f"(thành công {report.succeeded_count}, lỗi {report.failed_count} câu)."
+            )
+            self.log(report.message)
+
+        self.last_report = report
+        return report
 
     def _get_video_duration(self, video_path: str) -> float:
         """Lấy độ dài thời gian của video bằng FFmpeg."""
@@ -1453,31 +1922,43 @@ class TTSEngine:
         return 0.0
 
     @staticmethod
+    def _has_audio_stream(video_path: str) -> bool:
+        """Kiểm tra xem tệp video đầu vào có chứa luồng âm thanh (Audio stream) hay không."""
+        if not video_path or not os.path.exists(video_path):
+            return False
+        try:
+            ffmpeg_bin = FFmpegCLI.instance().ffmpeg_path
+            res = subprocess.run(
+                [ffmpeg_bin, "-i", video_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+            )
+            return bool(re.search(r"Stream\s+#\d+:\d+.*:\s+Audio:", res.stderr))
+        except Exception:
+            return False
+
+    @staticmethod
     def mix_audio_ducking(
         video_in: str,
         tts_audio_in: str,
         video_out: str,
         original_volume: float = 0.15,
-    ):
+        ducking_mode: str = "dynamic",
+    ) -> bool:
         """
-        Hòa trộn âm thanh lồng tiếng TTS với âm thanh gốc của video bằng FFmpeg.
-        Nếu video gốc không có kênh âm thanh, tự động ghép trực tiếp kênh âm thanh TTS vào video.
+        Giai đoạn 5: Hòa trộn âm thanh lồng tiếng TTS với âm thanh gốc của video bằng FFmpeg.
+        - Hỗ trợ chế độ Ducking động theo đường bao lời thoại (dynamic): chỉ giảm nhạc nền khi có tiếng nói,
+          giữ nguyên nhạc nền ở đoạn không thoại và chống clipping.
+        - Hỗ trợ chế độ âm lượng cố định (fixed) truyền thống.
+        - Nếu video gốc không có kênh âm thanh, tự động ghép trực tiếp kênh âm thanh TTS vào video.
         """
         ffmpeg_bin = FFmpegCLI.instance().ffmpeg_path
-        cmd = [
-            ffmpeg_bin, "-y",
-            "-i", video_in,
-            "-i", tts_audio_in,
-            "-filter_complex",
-            f"[0:a]volume={original_volume}[a0]; [1:a]volume=1.0[a1]; [a0][a1]amix=inputs=2:duration=first:dropout_transition=2[outa]",
-            "-map", "0:v", "-map", "[outa]",
-            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-            video_out,
-        ]
+        has_bg_audio = TTSEngine._has_audio_stream(video_in)
 
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if res.returncode != 0:
-            # Dự phòng trường hợp video đầu vào không có luồng âm thanh gốc (0:a)
+        if not has_bg_audio:
             fallback_cmd = [
                 ffmpeg_bin, "-y",
                 "-i", video_in,
@@ -1488,6 +1969,77 @@ class TTSEngine:
                 video_out,
             ]
             subprocess.run(fallback_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return os.path.exists(video_out) and os.path.getsize(video_out) > 0
+
+        if ducking_mode == "dynamic":
+            temp_bg_wav = f"{video_out}.temp_bg_{uuid.uuid4().hex[:6]}.wav"
+            temp_mix_wav = f"{video_out}.temp_mix_{uuid.uuid4().hex[:6]}.wav"
+            try:
+                tts_data, tts_sr = sf.read(tts_audio_in, dtype="float32")
+                if tts_data.ndim > 1:
+                    tts_data = np.mean(tts_data, axis=1)
+                extract_cmd = [
+                    ffmpeg_bin, "-y",
+                    "-i", video_in,
+                    "-vn", "-ac", "1", "-ar", str(tts_sr),
+                    temp_bg_wav,
+                ]
+                ext_res = subprocess.run(extract_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                if ext_res.returncode == 0 and os.path.exists(temp_bg_wav):
+                    bg_data, _ = sf.read(temp_bg_wav, dtype="float32")
+                    mixed_data = apply_dynamic_ducking(
+                        bg_audio=bg_data,
+                        tts_audio=tts_data,
+                        sr=tts_sr,
+                        duck_gain=original_volume,
+                    )
+                    sf.write(temp_mix_wav, mixed_data, tts_sr)
+                    mux_cmd = [
+                        ffmpeg_bin, "-y",
+                        "-i", video_in,
+                        "-i", temp_mix_wav,
+                        "-map", "0:v", "-map", "1:a",
+                        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+                        "-shortest",
+                        video_out,
+                    ]
+                    mux_res = subprocess.run(mux_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    if mux_res.returncode == 0 and os.path.exists(video_out) and os.path.getsize(video_out) > 0:
+                        return True
+            except Exception:
+                pass
+            finally:
+                for p in (temp_bg_wav, temp_mix_wav):
+                    if os.path.exists(p):
+                        try:
+                            os.remove(p)
+                        except Exception:
+                            pass
+
+        # Chế độ âm lượng cố định hoặc dự phòng FFmpeg filter
+        cmd = [
+            ffmpeg_bin, "-y",
+            "-i", video_in,
+            "-i", tts_audio_in,
+            "-filter_complex",
+            f"[0:a]volume={original_volume}[a0]; [1:a]volume=1.0[a1]; [a0][a1]amix=inputs=2:duration=first:dropout_transition=2,alimiter=limit=0.96[outa]",
+            "-map", "0:v", "-map", "[outa]",
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+            video_out,
+        ]
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if res.returncode != 0:
+            fallback_cmd = [
+                ffmpeg_bin, "-y",
+                "-i", video_in,
+                "-i", tts_audio_in,
+                "-map", "0:v", "-map", "1:a",
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+                "-shortest",
+                video_out,
+            ]
+            subprocess.run(fallback_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return os.path.exists(video_out) and os.path.getsize(video_out) > 0
 
     def dub_video(
         self,
@@ -1498,7 +2050,8 @@ class TTSEngine:
         original_volume: float = 0.15,
     ) -> bool:
         """
-        Lồng tiếng hoàn chỉnh cho video chạy trực tiếp trên GPU NVIDIA.
+        Lồng tiếng hoàn chỉnh cho video chạy trực tiếp trên GPU NVIDIA với kiểm định nghiêm ngặt từng giai đoạn.
+        Không báo thành công giả nếu toàn bộ câu thoại bị lỗi hoặc tệp đầu ra không hợp lệ.
         """
         video_path = get_readable_path(video_path)
         output_video_path = get_readable_path(output_video_path)
@@ -1529,20 +2082,30 @@ class TTSEngine:
 
         try:
             self.log("Bắt đầu quy trình tổng hợp giọng lồng tiếng OmniVoice trên GPU...")
-            self.synthesize_blocks(
+            report = self.synthesize_blocks(
                 subtitle_blocks,
                 total_duration,
                 temp_audio_path,
                 video_path=video_path,
             )
+            if report.status in ("failed", "cancelled") or not report.valid_audio_file:
+                self.log(f"Không thể ghép video do bước tổng hợp âm thanh không đạt yêu cầu: {report.message}")
+                return False
 
-            self.log(f"Đang hòa trộn âm thanh vào video với âm lượng gốc {original_volume}...")
-            self.mix_audio_ducking(
+            self.log(
+                f"Đang hòa trộn âm thanh vào video (chế độ: {self.ducking_mode}, mức nhạc nền khi có thoại: {original_volume})..."
+            )
+            mux_ok = self.mix_audio_ducking(
                 video_in=video_path,
                 tts_audio_in=temp_audio_path,
                 video_out=output_video_path,
                 original_volume=original_volume,
+                ducking_mode=self.ducking_mode,
             )
+            if not mux_ok or not os.path.exists(output_video_path) or os.path.getsize(output_video_path) == 0:
+                self.log("Lỗi: Tệp video xuất ra không tồn tại hoặc có dung lượng bằng 0.")
+                return False
+
             self.log(f"Đã xuất video lồng tiếng thành công: {output_video_path}")
             return True
         except Exception as e:

@@ -31,10 +31,10 @@ SRT_TIMESTAMP_PATTERN = re.compile(
 @dataclass
 class SubtitleBlock:
     """Represents a single subtitle block with index, timestamps, and text lines."""
-    index: int
-    start_time: str
-    end_time: str
-    text: str
+    index: int = 1
+    start_time: Any = "00:00:00,000"
+    end_time: Any = "00:00:01,000"
+    text: str = ""
     translated_text: str = ""
     # Smart ASS Override coordinates
     xmin: int = -1
