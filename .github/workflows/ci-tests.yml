@@ -32,4 +32,4 @@ jobs:
 
       - name: Chạy bộ kiểm thử tự động không cần GPU
         run: |
-          pytest test/test_auto_pipeline_reliability.py test/test_omnivoice_pipeline.py test/test_srt_translator.py -v
+          pytest test/test_auto_pipeline_reliability.py test/test_omnivoice_pipeline.py test/test_srt_translator.py test/test_subtitle_and_logo_remover.py -v

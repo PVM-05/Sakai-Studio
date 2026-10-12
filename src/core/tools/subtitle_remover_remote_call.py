@@ -9,6 +9,7 @@ class Command(Enum):
     MANAGE_PROCESS = 3,
     ERROR = 4,
     UPDATE_PREVIEW_WITH_COMP = 5,
+    RESULT = 6,
 
 class SubtitleRemoverRemoteCall:
     """
@@ -50,6 +51,9 @@ class SubtitleRemoverRemoteCall:
     def register_error_callback(self, callback):
         self.callbacks[Command.ERROR] = callback
 
+    def register_result_callback(self, callback):
+        self.callbacks[Command.RESULT] = callback
+
     @staticmethod
     def remote_call_update_progress(queue, progress, isFinished, frame_no=0):
         queue.put((Command.PROGRESS, (progress, isFinished, frame_no)))
@@ -73,3 +77,7 @@ class SubtitleRemoverRemoteCall:
     @staticmethod
     def remote_call_update_preview_with_comp(queue, *args):
         queue.put((Command.UPDATE_PREVIEW_WITH_COMP, (*args,)))
+
+    @staticmethod
+    def remote_call_report_result(queue, status, output_path="", detail=""):
+        queue.put((Command.RESULT, (status, output_path, detail)))

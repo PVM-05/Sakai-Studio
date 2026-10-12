@@ -465,9 +465,12 @@ class HomeInterface(QWidget):
             # Hủy bám đuổi
             self._is_tracked = False
             self._tracked_sub_list = {}
+            if hasattr(self.video_display_component, 'set_tracked_dict'):
+                self.video_display_component.set_tracked_dict({})
             get_current_task_index = self.task_list_component.get_current_task_index()
             if get_current_task_index >= 0:
-                self.task_list_component.update_task_option(get_current_task_index, 'tracked_sub_list', {})
+                self.task_list_component.update_task_option(get_current_task_index, TaskOptions.TRACKED_SUB_LIST, {})
+                self.task_list_component.update_task_option(get_current_task_index, TaskOptions.MOVING_TRACKING, False)
             config.set(config.movingSubtitleTracking, False)
             if hasattr(self.setting_interface, 'moving_subtitle_card'):
                 self.setting_interface.moving_subtitle_card.setText("Nhận Diện Logo")
@@ -531,6 +534,7 @@ class HomeInterface(QWidget):
                 from src.core.tools.object_tracker import ObjectTracker
                 tracker = ObjectTracker(self.video_path, self.sub_areas, start_frame=current_frame)
                 tracked_dict = tracker.find_subtitle_frame_no(sub_remover=self)
+                self._last_tracking_report = getattr(tracker, 'last_tracking_report', None)
                 self.track_motion_finished_signal.emit(tracked_dict)
             except Exception as e:
                 import traceback
@@ -555,7 +559,8 @@ class HomeInterface(QWidget):
 
             get_current_task_index = self.task_list_component.get_current_task_index()
             if get_current_task_index >= 0:
-                self.task_list_component.update_task_option(get_current_task_index, 'tracked_sub_list', tracked_dict)
+                self.task_list_component.update_task_option(get_current_task_index, TaskOptions.TRACKED_SUB_LIST, tracked_dict)
+                self.task_list_component.update_task_option(get_current_task_index, TaskOptions.MOVING_TRACKING, True)
 
             InfoBar.success(
                 title="Nhận diện chuyển động hoàn tất!",
@@ -566,6 +571,9 @@ class HomeInterface(QWidget):
         else:
             self._is_tracked = False
             config.set(config.movingSubtitleTracking, False)
+            get_current_task_index = self.task_list_component.get_current_task_index()
+            if get_current_task_index >= 0:
+                self.task_list_component.update_task_option(get_current_task_index, TaskOptions.MOVING_TRACKING, False)
             if hasattr(self.setting_interface, 'moving_subtitle_card'):
                 self.setting_interface.moving_subtitle_card.setEnabled(True)
                 self.setting_interface.moving_subtitle_card.setText("Nhận Diện Logo")
@@ -838,10 +846,10 @@ class HomeInterface(QWidget):
             # Cập nhật khung vẽ trực quan trên giao diện
             self.video_display_component.update_preview_with_rect()
             
-            # Đồng bộ vào options của task hiện tại
+            # Đồng bộ vào options của task hiện tại theo chuẩn tỷ lệ preview (0..1)
             current_idx = self.task_list_component.get_current_task_index()
             if current_idx >= 0:
-                self.task_list_component.update_task_option(current_idx, TaskOptions.SUB_AREAS, detected_rects)
+                self.task_list_component.update_task_option(current_idx, TaskOptions.SUB_AREAS, widget_rects)
 
         InfoBar.success(
             title="Nhận diện thành công",
@@ -873,6 +881,8 @@ class HomeInterface(QWidget):
                 self._is_tightening = False
                 
         self.task_list_component.update_task_option(get_current_task_index, TaskOptions.SUB_AREAS, selections)
+        strokes = list(getattr(self.video_display_component, 'freehand_strokes', []))
+        self.task_list_component.update_task_option(get_current_task_index, TaskOptions.FREEHAND_STROKES, strokes)
 
 
     def on_task_selected(self, index, file_path):
@@ -890,22 +900,32 @@ class HomeInterface(QWidget):
         if len(selections) <= 0:
             self.video_display_component.load_selections_from_config()
         else:
-            self.video_display_component.set_selection_rects(selections)
+            norm_selections = self.video_display_component.video_coordinates_to_preview_coordinates(selections)
+            self.video_display_component.set_selection_rects(norm_selections)
+
+        freehand_strokes = self.task_list_component.get_task_option(index, TaskOptions.FREEHAND_STROKES, [])
+        self.video_display_component.freehand_strokes = list(freehand_strokes) if freehand_strokes else []
             
-        tracked_list = self.task_list_component.get_task_option(index, 'tracked_sub_list', {})
-        if tracked_list and len(tracked_list) > 0:
+        tracked_list = self.task_list_component.get_task_option(index, TaskOptions.TRACKED_SUB_LIST, {})
+        moving_opt = self.task_list_component.get_task_option(index, TaskOptions.MOVING_TRACKING, None)
+        if tracked_list and len(tracked_list) > 0 and moving_opt is not False:
             self._is_tracked = True
             # Chuyển đổi key sang kiểu int để đảm bảo lấy đúng index khung hình từ timeline khi đã bị convert sang string bởi JSON
             self._tracked_sub_list = {int(k): v for k, v in tracked_list.items()}
+            if hasattr(self.video_display_component, 'set_tracked_dict'):
+                self.video_display_component.set_tracked_dict(self._tracked_sub_list)
             config.set(config.movingSubtitleTracking, True)
             if hasattr(self.setting_interface, 'moving_subtitle_card'):
                 self.setting_interface.moving_subtitle_card.setText("Đã Nhận Diện (Hủy)")
         else:
             self._is_tracked = False
             self._tracked_sub_list = {}
-            config.set(config.movingSubtitleTracking, False)
+            if hasattr(self.video_display_component, 'set_tracked_dict'):
+                self.video_display_component.set_tracked_dict({})
+            config.set(config.movingSubtitleTracking, bool(moving_opt) if moving_opt is not None else False)
             if hasattr(self.setting_interface, 'moving_subtitle_card'):
                 self.setting_interface.moving_subtitle_card.setText("Nhận Diện Logo")
+        self.video_display_component.update_preview_with_rect()
     
     def on_task_deleted(self, index):
         """处理任务被删除事件
@@ -924,18 +944,22 @@ class HomeInterface(QWidget):
 
     def update_preview(self, frame):
         self.current_frame = frame
-        # 先缩放图像
-        resized_frame = self._img_resize(frame)
-
-        # 设置视频参数
+        # Thiết lập kích thước và tỷ lệ khung hình video trước khi resize để khung xem trước khớp ngay từ frame đầu tiên
         self.video_display_component.set_video_parameters(
-            self.frame_width, self.frame_height, 
+            self.frame_width, self.frame_height,
             self.scaled_width if hasattr(self, 'scaled_width') else None,
             self.scaled_height if hasattr(self, 'scaled_height') else None,
             self.border_left if hasattr(self, 'border_left') else 0,
             self.border_top if hasattr(self, 'border_top') else 0,
             self.fps if self.fps is not None else 30,
         )
+        # Co giãn khung hình theo kích thước preview vừa cập nhật
+        resized_frame = self._img_resize(frame)
+        # Đồng bộ lại thông số viền sau khi _img_resize tính toán xong
+        self.video_display_component.border_left = getattr(self, 'border_left', 0)
+        self.video_display_component.border_top = getattr(self, 'border_top', 0)
+        self.video_display_component.scaled_width = getattr(self, 'scaled_width', None)
+        self.video_display_component.scaled_height = getattr(self, 'scaled_height', None)
         
         # 更新视频显示（这会同时保存current_pixmap）
         self.video_display_component.update_video_display(resized_frame)
@@ -997,15 +1021,16 @@ class HomeInterface(QWidget):
             running_process = self.running_process
             if running_process:
                 ProcessManager.instance().terminate_by_process(running_process)
-            # Dọn dẹp file tạm chưa hoàn chỉnh nếu bị dừng giữa chừng
+            # Chỉ dọn dẹp tệp tạm đang xử lý dở (_current_temp_output_path), tuyệt đối không xóa output_path hợp lệ đã có từ trước
+            temp_out = getattr(self, '_current_temp_output_path', None)
+            if temp_out and os.path.exists(temp_out):
+                try:
+                    os.remove(temp_out)
+                except Exception:
+                    pass
+            self._current_temp_output_path = None
             if self.current_processing_task_index >= 0:
                 self.task_list_component.update_task_status(self.current_processing_task_index, TaskStatus.PENDING)
-                task_item = self.task_list_component.get_task(self.current_processing_task_index)
-                if task_item and getattr(task_item, 'output_path', None) and os.path.exists(task_item.output_path):
-                    try:
-                        os.remove(task_item.output_path)
-                    except Exception:
-                        pass
         finally:
             self.running_process = None
             self.run_button.setVisible(True)
@@ -1045,6 +1070,13 @@ class HomeInterface(QWidget):
             if not pending_tasks:
                 return
 
+            # Đồng bộ nét cọ vẽ tự do của task đang chọn trước khi chạy hàng đợi
+            selected_idx = self.task_list_component.get_current_task_index()
+            if selected_idx >= 0 and hasattr(self, 'video_display_component'):
+                cur_strokes = list(getattr(self.video_display_component, 'freehand_strokes', []))
+                if cur_strokes:
+                    self.task_list_component.update_task_option(selected_idx, TaskOptions.FREEHAND_STROKES, cur_strokes)
+
             self._stop_event.clear()
             self.toggle_buttons_signal.emit(False)
             # 开启后台线程处理视频
@@ -1082,36 +1114,38 @@ class HomeInterface(QWidget):
                                 self.task_status_signal.emit(self.current_processing_task_index, TaskStatus.FAILED)
                                 continue
 
-                            # Bỏ check chế độ Tự động nhận diện chữ theo từng frame vì OCR quét mặc định toàn màn hình nếu không có tọa độ.
                             self.append_log_signal.emit(["[Chế độ Xóa Phụ Đề] Đã bắt đầu xử lý xóa phụ đề."])
 
-                            # Kiểm tra chế độ Xóa phụ đề di chuyển (Moving Subtitle Tracking)
-                            is_moving_sub = getattr(config, 'movingSubtitleTracking', None) and config.movingSubtitleTracking.value
+                            # Cô lập cấu hình bám đuổi logo di chuyển theo từng tác vụ (không rò rỉ cờ toàn cục giữa các video trong hàng đợi)
                             subtitle_areas = self.task_list_component.get_task_option(self.current_processing_task_index, TaskOptions.SUB_AREAS, [])
-                            tracked_list = self.task_list_component.get_task_option(self.current_processing_task_index, 'tracked_sub_list', {})
+                            tracked_list = self.task_list_component.get_task_option(self.current_processing_task_index, TaskOptions.TRACKED_SUB_LIST, {})
+                            task_moving_opt = self.task_list_component.get_task_option(self.current_processing_task_index, TaskOptions.MOVING_TRACKING, None)
+                            if task_moving_opt is not None:
+                                is_moving_sub = bool(task_moving_opt)
+                            elif tracked_list:
+                                is_moving_sub = True
+                            elif len(self.task_list_component.get_all_tasks()) == 1:
+                                is_moving_sub = bool(getattr(config, 'movingSubtitleTracking', None) and config.movingSubtitleTracking.value)
+                            else:
+                                is_moving_sub = False
                             
                             if is_moving_sub:
+                                pixel_check_areas = self.video_display_component.preview_coordinates_to_video_coordinates(subtitle_areas)
                                 is_full_screen = False
-                                if subtitle_areas and len(subtitle_areas) == 1 and hasattr(self, 'frame_width') and self.frame_width:
-                                    ymin, ymax, xmin, xmax = subtitle_areas[0]
+                                if pixel_check_areas and len(pixel_check_areas) == 1 and hasattr(self, 'frame_width') and self.frame_width:
+                                    ymin, ymax, xmin, xmax = pixel_check_areas[0]
                                     if xmin == 0 and ymin == 0 and xmax >= self.frame_width - 1 and ymax >= self.frame_height - 1:
                                         is_full_screen = True
 
-                                if not subtitle_areas or len(subtitle_areas) == 0 or is_full_screen or not tracked_list:
+                                if not pixel_check_areas or len(pixel_check_areas) == 0 or is_full_screen or not tracked_list:
                                     self.append_log_signal.emit(["[Cảnh báo] Chưa xác định vùng logo di chuyển! Vui lòng dùng chuột khoanh vùng logo và bấm 'Nhận Diện' trước khi bắt đầu."])
-                                    InfoBar.warning(
-                                        title="Chưa xác định vùng logo di chuyển",
-                                        content="Bạn phải dùng chuột khoanh vùng chứa logo di chuyển và bấm 'Nhận Diện' trước khi bấm 'Bắt Đầu'!",
-                                        position=InfoBarPosition.TOP, parent=self,
-                                        duration=5000
-                                    )
-                                    self.task_status_signal.emit(self.current_processing_task_index, TaskStatus.IDLE)
-                                    break
+                                    self.task_status_signal.emit(self.current_processing_task_index, TaskStatus.FAILED)
+                                    continue
                                 else:
                                     self.append_log_signal.emit(["[Chế độ Xóa phụ đề di chuyển] AI đang bám đuổi và tự động cập nhật vị trí phụ đề động trên từng khung hình."])
                             else:
                                 if not subtitle_areas or len(subtitle_areas) <= 0:
-                                    subtitle_areas = [(0, self.frame_height, 0, self.frame_width)]
+                                    subtitle_areas = [(0.0, 1.0, 0.0, 1.0)]
                                     self.task_list_component.update_task_option(self.current_processing_task_index, TaskOptions.SUB_AREAS, subtitle_areas)
 
                             self.video_display_component.save_selections_to_config()
@@ -1135,8 +1169,16 @@ class HomeInterface(QWidget):
                                 if key == TaskOptions.SUB_AREAS.value:
                                     value = self.video_display_component.preview_coordinates_to_video_coordinates(value)
                                 options[key] = value
-                            if 'tracked_sub_list' not in options and hasattr(self, '_tracked_sub_list') and self._tracked_sub_list:
-                                options['tracked_sub_list'] = self._tracked_sub_list
+                            options['moving_tracking'] = is_moving_sub
+                            if is_moving_sub and tracked_list:
+                                options['tracked_sub_list'] = tracked_list
+                            else:
+                                options['tracked_sub_list'] = {}
+                            if TaskOptions.FREEHAND_STROKES.value in options:
+                                options['strokes'] = options[TaskOptions.FREEHAND_STROKES.value]
+                            elif hasattr(self.video_display_component, 'freehand_strokes') and self.video_display_component.freehand_strokes:
+                                options['strokes'] = list(self.video_display_component.freehand_strokes)
+
                             # Xác định output path trước để UI có thể track được
                             if not task_item.output_path:
                                 import pathlib
@@ -1149,15 +1191,28 @@ class HomeInterface(QWidget):
                                     out_path = os.path.abspath(os.path.join(os.path.dirname(task_item.path), f'{vd_name}_no_sub.mp4'))
                                 task_item.output_path = out_path
                             output_path = task_item.output_path
+                            self._last_process_result_status = None
                             process = self.run_subtitle_remover_process(task_item.path, output_path, options)
 
                             # 检查是否在处理过程中被停止
                             if self._stop_event.is_set():
                                 break
 
-                            # 更新任务状态为已完成
+                            # Xác minh đầu ra hợp lệ trước khi đánh dấu COMPLETED
+                            from src.core.main import verify_media_output
                             task_obj = self.task_list_component.get_task(self.current_processing_task_index)
-                            if process.exitcode == 0 and task_obj and task_obj.status == TaskStatus.PROCESSING:
+                            output_valid = verify_media_output(output_path, is_picture=is_image_file(task_item.path))
+                            if (
+                                process.exitcode == 0
+                                and output_valid
+                                and getattr(self, '_last_process_result_status', 'success') != 'failed'
+                                and task_obj
+                                and task_obj.status == TaskStatus.PROCESSING
+                            ):
+                                if getattr(self, '_last_process_result_status', '') == 'no_target_found':
+                                    self.append_log_signal.emit([
+                                        "[Thông báo] Không phát hiện phụ đề hoặc đối tượng cần xóa trong vùng chọn; đã giữ nguyên hình ảnh gốc."
+                                    ])
                                 self.progress_signal.emit(100, True, 0)
                                 task_obj.output_path = output_path
                                 self.task_status_signal.emit(self.current_processing_task_index, TaskStatus.COMPLETED)
@@ -1210,19 +1265,23 @@ class HomeInterface(QWidget):
             self.append_log_signal.emit([f"Error: {e}"])
             self.toggle_buttons_signal.emit(True)
 
+    def _on_process_result(self, status, output_path="", detail=""):
+        self._last_process_result_status = status
+        if detail and status == "failed":
+            self.append_log_signal.emit([f"[Lỗi xử lý] {detail}"])
+
     @staticmethod
-    def remover_process(queue, video_path, output_path, options):
+    def remover_process(queue, video_path, output_path, options, temp_output_path=None):
         """
-        在子进程中执行字幕提取的函数
-        
-        Args:
-            video_path: 视频文件路径
-            output_path: 输出文件路径
-            options: 选项
+        Thực thi xóa phụ đề trong tiến trình con với tệp tạm biệt lập, xác minh đầu ra trước khi ghi đè nguyên tử.
         """
         sr = None
+        exit_code = 0
+        if not temp_output_path:
+            base_no_ext, ext = os.path.splitext(output_path)
+            temp_output_path = f"{base_no_ext}.tmp_{os.getpid()}{ext or '.mp4'}"
         try:
-            from src.core.main import GUISubtitleRemover
+            from src.core.main import GUISubtitleRemover, verify_media_output
             from src.core.interface.worker_interface import ProcessCallback
 
             class RemoteCallback(ProcessCallback):
@@ -1237,40 +1296,60 @@ class HomeInterface(QWidget):
                 def update_preview(self, *args):
                     SubtitleRemoverRemoteCall.remote_call_update_preview_with_comp(queue, list(args))
 
+            os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
             sr = GUISubtitleRemover(video_path, True, callback=RemoteCallback())
-            sr.video_out_path = output_path
-            for key in options:
-                setattr(sr, key, options[key])
+            sr.video_out_path = temp_output_path
+            for key, val in options.items():
+                setattr(sr, key, val)
+            if 'freehand_strokes' in options and not getattr(sr, 'strokes', None):
+                sr.strokes = options['freehand_strokes']
 
             sr.run()
+
+            if not verify_media_output(temp_output_path, is_picture=sr.is_picture):
+                raise RuntimeError(f"Tệp kết quả tạm không hợp lệ: {temp_output_path}")
+
+            os.replace(temp_output_path, output_path)
+            run_status = getattr(sr, 'run_status', 'success')
+            SubtitleRemoverRemoteCall.remote_call_report_result(queue, run_status, output_path, "")
         except Exception as e:
+            exit_code = 1
             traceback.print_exc()
+            if temp_output_path and os.path.exists(temp_output_path):
+                try:
+                    os.remove(temp_output_path)
+                except Exception:
+                    pass
+            SubtitleRemoverRemoteCall.remote_call_report_result(queue, "failed", "", str(e))
             SubtitleRemoverRemoteCall.remote_call_catch_error(queue, e)
         finally:
             if sr:
                 sr.isFinished = True
                 sr.vsf_running = False
             SubtitleRemoverRemoteCall.remote_call_finish(queue)
+        if exit_code != 0:
+            sys.exit(exit_code)
             
 
     # 修改run_subtitle_remover_process方法
     def run_subtitle_remover_process(self, video_path, output_path, options):
         """
-        使用多进程执行字幕提取，并等待进程完成
-        
-        Args:
-            video_path: 视频文件路径
-            output_path: 输出文件路径
-            options: 任务选项
+        Sử dụng đa tiến trình để xóa phụ đề với tệp đầu ra tạm biệt lập.
         """
+        base_no_ext, ext = os.path.splitext(output_path)
+        temp_output_path = f"{base_no_ext}.tmp_{os.getpid()}_{int(time.time() * 1000)}{ext or '.mp4'}"
+        self._current_temp_output_path = temp_output_path
+
         subtitle_remover_remote_caller = SubtitleRemoverRemoteCall()
         subtitle_remover_remote_caller.register_update_progress_callback(self.progress_signal.emit)
         subtitle_remover_remote_caller.register_log_callback(self.append_log_signal.emit)
         subtitle_remover_remote_caller.register_update_preview_with_comp_callback(self.update_preview_with_comp_signal.emit)
         subtitle_remover_remote_caller.register_error_callback(self.task_error_signal.emit)
+        if hasattr(subtitle_remover_remote_caller, 'register_result_callback'):
+            subtitle_remover_remote_caller.register_result_callback(self._on_process_result)
         process = multiprocessing.Process(
             target=HomeInterface.remover_process,
-            args=(subtitle_remover_remote_caller.queue, video_path, output_path, options)
+            args=(subtitle_remover_remote_caller.queue, video_path, output_path, options, temp_output_path)
         )
         try:
             if self._stop_event.is_set():
@@ -1281,6 +1360,12 @@ class HomeInterface(QWidget):
             process.join()
             print(f"Process exited with code {process.exitcode}")
         finally:
+            if temp_output_path and os.path.exists(temp_output_path):
+                try:
+                    os.remove(temp_output_path)
+                except Exception:
+                    pass
+            self._current_temp_output_path = None
             subtitle_remover_remote_caller.stop()
         return process
 
@@ -1628,10 +1713,10 @@ class HomeInterface(QWidget):
         
         self.sub_areas = tightened_video_selections
 
-        # FIX BUG: Save absolute pixel selections back to task options for backend processing
+        # Lưu thống nhất theo chuẩn tỷ lệ preview (0..1) vào TaskOptions.SUB_AREAS
         get_current_task_index = self.task_list_component.get_current_task_index()
         if get_current_task_index >= 0:
-            self.task_list_component.update_task_option(get_current_task_index, TaskOptions.SUB_AREAS, tightened_video_selections)
+            self.task_list_component.update_task_option(get_current_task_index, TaskOptions.SUB_AREAS, new_widget_selections)
 
         InfoBar.success(
             title="Thành công",
@@ -1672,12 +1757,22 @@ class HomeInterface(QWidget):
         mask_size = (self.frame_height, self.frame_width)
         dilation = config.maskDilation.value
         feather = config.maskFeather.value
+        mask_type = getattr(config, 'maskType', None)
+        mask_type_val = mask_type.value if hasattr(mask_type, 'value') else (str(mask_type) if mask_type else 'stroke')
         
         # Chuyển đổi từ format UI (ymin, ymax, xmin, xmax) sang format mask (xmin, xmax, ymin, ymax)
         mask_coords = [(xmin, xmax, ymin, ymax) for (ymin, ymax, xmin, xmax) in selections]
         
-        # Luôn sử dụng mask tổng hợp kết hợp cả hình hộp và nét cọ
-        combined_mask = create_combined_mask(mask_size, coords_list=mask_coords, strokes_list=strokes, dilation=dilation, feather_pixels=feather, frame=self.current_frame)
+        # Luôn sử dụng mask tổng hợp kết hợp cả hình hộp và nét cọ theo đúng chế độ maskType đã chọn
+        combined_mask = create_combined_mask(
+            mask_size,
+            coords_list=mask_coords,
+            strokes_list=strokes,
+            dilation=dilation,
+            feather_pixels=feather,
+            frame=self.current_frame,
+            mask_type=mask_type_val,
+        )
             
         # 3. Sao chép các giá trị cần thiết trước khi vào thread
         preview_frame = self.current_frame.copy()

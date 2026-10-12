@@ -1407,8 +1407,11 @@ class VideoDisplayComponent(QWidget):
 
     def clear_brush_strokes(self):
         """Xóa tất cả các nét cọ vẽ"""
+        self.freehand_strokes = []
         self.brush_strokes = []
+        self.current_stroke = None
         self.update_preview_with_rect()
+        self.selections_changed.emit(self.selection_rects)
 
 
     def set_selection_rects(self, rects):
@@ -1476,25 +1479,32 @@ class VideoDisplayComponent(QWidget):
 
         for rect in preview_selection_rects:
             ymin_ratio, ymax_ratio, xmin_ratio, xmax_ratio = rect
-            
-            if w_scale > 0:
-                true_xmin_ratio = (xmin_ratio - border_left) / w_scale
-                true_xmax_ratio = (xmax_ratio - border_left) / w_scale
+
+            # Idempotent: nếu bất kỳ tọa độ nào > 1.0001, đầu vào đã là tọa độ pixel (ymin, ymax, xmin, xmax)
+            if max(abs(ymin_ratio), abs(ymax_ratio), abs(xmin_ratio), abs(xmax_ratio)) > 1.0001:
+                xmin = int(round(xmin_ratio))
+                xmax = int(round(xmax_ratio))
+                ymin = int(round(ymin_ratio))
+                ymax = int(round(ymax_ratio))
             else:
-                true_xmin_ratio = xmin_ratio
-                true_xmax_ratio = xmax_ratio
+                if w_scale > 0:
+                    true_xmin_ratio = (xmin_ratio - border_left) / w_scale
+                    true_xmax_ratio = (xmax_ratio - border_left) / w_scale
+                else:
+                    true_xmin_ratio = xmin_ratio
+                    true_xmax_ratio = xmax_ratio
+                    
+                if h_scale > 0:
+                    true_ymin_ratio = (ymin_ratio - border_top) / h_scale
+                    true_ymax_ratio = (ymax_ratio - border_top) / h_scale
+                else:
+                    true_ymin_ratio = ymin_ratio
+                    true_ymax_ratio = ymax_ratio
                 
-            if h_scale > 0:
-                true_ymin_ratio = (ymin_ratio - border_top) / h_scale
-                true_ymax_ratio = (ymax_ratio - border_top) / h_scale
-            else:
-                true_ymin_ratio = ymin_ratio
-                true_ymax_ratio = ymax_ratio
-            
-            xmin = round(true_xmin_ratio * self.frame_width)
-            xmax = round(true_xmax_ratio * self.frame_width)
-            ymin = round(true_ymin_ratio * self.frame_height)
-            ymax = round(true_ymax_ratio * self.frame_height)
+                xmin = round(true_xmin_ratio * self.frame_width)
+                xmax = round(true_xmax_ratio * self.frame_width)
+                ymin = round(true_ymin_ratio * self.frame_height)
+                ymax = round(true_ymax_ratio * self.frame_height)
             
             # Đảm bảo tọa độ nằm trong khoảng hợp lệ của video
             xmin = max(0, min(xmin, self.frame_width))
@@ -1523,6 +1533,19 @@ class VideoDisplayComponent(QWidget):
 
         for rect in video_selection_rects:
             pixel_ymin, pixel_ymax, pixel_xmin, pixel_xmax = rect
+
+            # Idempotent: nếu tất cả tọa độ đều nằm trong [0.0, 1.0001], đầu vào đã là tỷ lệ preview
+            if max(abs(pixel_ymin), abs(pixel_ymax), abs(pixel_xmin), abs(pixel_xmax)) <= 1.0001:
+                ymin_ratio = max(0.0, min(1.0, float(pixel_ymin)))
+                ymax_ratio = max(0.0, min(1.0, float(pixel_ymax)))
+                xmin_ratio = max(0.0, min(1.0, float(pixel_xmin)))
+                xmax_ratio = max(0.0, min(1.0, float(pixel_xmax)))
+                if xmin_ratio > xmax_ratio:
+                    xmin_ratio, xmax_ratio = xmax_ratio, xmin_ratio
+                if ymin_ratio > ymax_ratio:
+                    ymin_ratio, ymax_ratio = ymax_ratio, ymin_ratio
+                preview_rects.append((ymin_ratio, ymax_ratio, xmin_ratio, xmax_ratio))
+                continue
             
             true_xmin_ratio = pixel_xmin / self.frame_width
             true_xmax_ratio = pixel_xmax / self.frame_width
@@ -1566,7 +1589,9 @@ class VideoDisplayComponent(QWidget):
     def clear_selections(self):
         """清除所有选区与 cọ vẽ"""
         self.selection_rects = []
+        self.freehand_strokes = []
         self.brush_strokes = []
+        self.current_stroke = None
         self.selected_indices.clear()
         self.active_selection_index = -1
         self.tracked_dict = {}

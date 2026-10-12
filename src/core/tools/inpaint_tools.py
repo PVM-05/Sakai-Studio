@@ -29,217 +29,320 @@ def batch_generator(data, max_batch_size):
     if last_batch_start < n_samples:
         yield data[last_batch_start:]
 
-def create_mask(size, coords_list, dilation=8, feather_pixels=8, frame=None):
-    # Tạo mặt nạ nhị phân gốc
-    mask = np.zeros(size, dtype="uint8")
-    if coords_list:
-        for coords in coords_list:
-            if coords is None:
-                continue
-                
-            if len(coords) == 5:
-                xmin, xmax, ymin, ymax, sam2_data = coords
-                packed_mask, mask_shape = sam2_data
-                binary_mask = np.unpackbits(packed_mask)[:mask_shape[0] * mask_shape[1]].reshape(mask_shape)
-                binary_mask = binary_mask[:size[0], :size[1]] # Đảm bảo khớp kích thước frame
-                
-                # Áp dụng lề (dilation) cho SAM2 mask
-                if getattr(config, 'autoMaskDilation', None) and config.autoMaskDilation.value:
-                    box_height = abs(ymax - ymin)
-                    dynamic_dilation = max(dilation, int(box_height * 0.15))
-                else:
-                    dynamic_dilation = dilation
-                    
-                if dynamic_dilation > 0:
-                    kernel = np.ones((dynamic_dilation * 2 + 1, dynamic_dilation * 2 + 1), np.uint8)
-                    binary_mask_uint8 = binary_mask.astype(np.uint8) * 255
-                    dilated_mask = cv2.dilate(binary_mask_uint8, kernel, iterations=1)
-                    mask[dilated_mask > 0] = 255
-                else:
-                    mask[binary_mask] = 255
+def sub_area_to_box_coords(area: Tuple[int, int, int, int]) -> Tuple[int, int, int, int]:
+    """Chuyển đổi vùng phụ đề (ymin, ymax, xmin, xmax) sang hộp tọa độ mặt nạ (xmin, xmax, ymin, ymax)."""
+    ymin, ymax, xmin, xmax = area[:4]
+    return (int(xmin), int(xmax), int(ymin), int(ymax))
+
+
+def box_coords_to_sub_area(coords: Tuple[int, int, int, int]) -> Tuple[int, int, int, int]:
+    """Chuyển đổi hộp tọa độ mặt nạ (xmin, xmax, ymin, ymax) sang vùng phụ đề (ymin, ymax, xmin, xmax)."""
+    xmin, xmax, ymin, ymax = coords[:4]
+    return (int(ymin), int(ymax), int(xmin), int(xmax))
+
+
+def _unpack_sam2_mask(sam2_data, target_h: int, target_w: int) -> np.ndarray:
+    """Giải nén an toàn mặt nạ nhị phân SAM2 cho mọi kích thước khung hình (kể cả khi H*W không chia hết cho 8)."""
+    packed_mask, mask_shape = sam2_data
+    total_bits = int(mask_shape[0]) * int(mask_shape[1])
+    binary_mask = np.unpackbits(packed_mask)[:total_bits].reshape(mask_shape)
+    return binary_mask[:target_h, :target_w]
+
+
+def _is_stroke_dict_list(items) -> bool:
+    """Kiểm tra danh sách đầu vào có phải là danh sách nét cọ tự do (dict chứa 'points') hay không."""
+    if not items or not isinstance(items, (list, tuple)):
+        return False
+    for item in items:
+        if item is not None:
+            return isinstance(item, dict) and "points" in item
+    return False
+
+
+def _build_box_uint8_mask(size: Tuple[int, int], coords_list, dilation: int = 8, frame: np.ndarray = None) -> np.ndarray:
+    """Tạo mặt nạ nhị phân uint8 (0 hoặc 255) từ danh sách hộp tọa độ 4 phần tử hoặc 5 phần tử SAM2."""
+    h, w = int(size[0]), int(size[1])
+    mask = np.zeros((h, w), dtype=np.uint8)
+    if not coords_list:
+        return mask
+
+    for coords in coords_list:
+        if coords is None or isinstance(coords, dict):
+            continue
+        if len(coords) == 5 and coords[4] is not None:
+            xmin, xmax, ymin, ymax, sam2_data = coords
+            binary_mask = _unpack_sam2_mask(sam2_data, h, w)
+            if getattr(config, 'autoMaskDilation', None) and config.autoMaskDilation.value:
+                box_height = abs(ymax - ymin)
+                dynamic_dilation = max(dilation, int(box_height * 0.15))
             else:
-                xmin, xmax, ymin, ymax = coords
-                
-                # Tự động chọn thuật toán lề:
-                # - Tự động (autoMaskDilation = True): Tính lề lùi linh hoạt theo font chữ
-                # - Thủ công (autoMaskDilation = False): Dùng chính xác 100% tham số dilation người dùng cài đặt
-                if getattr(config, 'autoMaskDilation', None) and config.autoMaskDilation.value:
-                    box_height = abs(ymax - ymin)
-                    dynamic_dilation = max(dilation, int(box_height * 0.15))
-                else:
-                    dynamic_dilation = dilation
-                
-                x1 = max(0, xmin - dynamic_dilation)
-                y1 = max(0, ymin - dynamic_dilation)
-                x2 = min(size[1], xmax + dynamic_dilation)
-                y2 = min(size[0], ymax + dynamic_dilation)
-                
-                if frame is not None and getattr(config, 'mmoSmartTextMask', None) and config.mmoSmartTextMask.value:
-                    try:
-                        roi = frame[y1:y2, x1:x2]
-                        if roi.size > 0:
-                            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-                            grad_x = cv2.Scharr(gray, cv2.CV_32F, 1, 0)
-                            grad_y = cv2.Scharr(gray, cv2.CV_32F, 0, 1)
-                            grad = cv2.magnitude(grad_x, grad_y)
-                            grad = np.uint8(np.clip(grad, 0, 255))
-                            _, text_mask = cv2.threshold(grad, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-                            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 3))
-                            text_mask = cv2.morphologyEx(text_mask, cv2.MORPH_CLOSE, kernel)
-                            if dynamic_dilation > 0:
-                                d_kernel = np.ones((dynamic_dilation, dynamic_dilation), np.uint8)
-                                text_mask = cv2.dilate(text_mask, d_kernel, iterations=1)
+                dynamic_dilation = dilation
+
+            if dynamic_dilation > 0:
+                kernel = np.ones((dynamic_dilation * 2 + 1, dynamic_dilation * 2 + 1), np.uint8)
+                binary_mask_uint8 = (binary_mask > 0).astype(np.uint8) * 255
+                dilated_mask = cv2.dilate(binary_mask_uint8, kernel, iterations=1)
+                mask[dilated_mask > 0] = 255
+            else:
+                mask[binary_mask > 0] = 255
+        elif len(coords) >= 4:
+            xmin, xmax, ymin, ymax = [int(v) for v in coords[:4]]
+            if getattr(config, 'autoMaskDilation', None) and config.autoMaskDilation.value:
+                box_height = abs(ymax - ymin)
+                dynamic_dilation = max(dilation, int(box_height * 0.15))
+            else:
+                dynamic_dilation = dilation
+
+            x1 = max(0, xmin - dynamic_dilation)
+            y1 = max(0, ymin - dynamic_dilation)
+            x2 = min(w, xmax + dynamic_dilation)
+            y2 = min(h, ymax + dynamic_dilation)
+            if x2 <= x1 or y2 <= y1:
+                continue
+
+            if frame is not None and getattr(config, 'mmoSmartTextMask', None) and config.mmoSmartTextMask.value:
+                try:
+                    roi = frame[y1:y2, x1:x2]
+                    if roi.size > 0:
+                        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                        grad_x = cv2.Scharr(gray, cv2.CV_32F, 1, 0)
+                        grad_y = cv2.Scharr(gray, cv2.CV_32F, 0, 1)
+                        grad = cv2.magnitude(grad_x, grad_y)
+                        grad = np.uint8(np.clip(grad, 0, 255))
+                        _, text_mask = cv2.threshold(grad, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+                        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 3))
+                        text_mask = cv2.morphologyEx(text_mask, cv2.MORPH_CLOSE, kernel)
+                        if dynamic_dilation > 0:
+                            d_kernel = np.ones((dynamic_dilation, dynamic_dilation), np.uint8)
+                            text_mask = cv2.dilate(text_mask, d_kernel, iterations=1)
+                        if np.any(text_mask > 0):
                             mask[y1:y2, x1:x2] = cv2.bitwise_or(mask[y1:y2, x1:x2], text_mask)
                         else:
                             cv2.rectangle(mask, (x1, y1), (x2, y2), 255, thickness=-1)
-                    except Exception as e:
-                        print(f"Smart Text Mask error: {e}")
+                    else:
                         cv2.rectangle(mask, (x1, y1), (x2, y2), 255, thickness=-1)
-                else:
+                except Exception as e:
+                    print(f"Smart Text Mask error: {e}")
                     cv2.rectangle(mask, (x1, y1), (x2, y2), 255, thickness=-1)
-    
-    # SAM 2 mask refinement
-    has_sam2_mask_already = any(c is not None and len(c) == 5 for c in coords_list)
+            else:
+                cv2.rectangle(mask, (x1, y1), (x2, y2), 255, thickness=-1)
+
+    has_sam2_mask_already = any(c is not None and not isinstance(c, dict) and len(c) == 5 for c in coords_list)
     is_smart_mask_on = getattr(config, 'mmoSmartTextMask', None) and config.mmoSmartTextMask.value
     if frame is not None and not has_sam2_mask_already and not is_smart_mask_on and getattr(config, 'sam2Refine', None) and config.sam2Refine.value:
         try:
             from src.ai_engines.segmentation import refine_mask_with_sam2
-            # refine_mask_with_sam2 expects (frame, boxes, mask, device)
-            # boxes should be list of [x1, y1, x2, y2]
-            # coords_list element c is [xmin, xmax, ymin, ymax]
-            boxes = [[max(0, c[0]-dilation), max(0, c[2]-dilation), min(size[1], c[1]+dilation), min(size[0], c[3]+dilation)] for c in coords_list]
-            mask = refine_mask_with_sam2(frame, boxes, mask, "cuda" if getattr(config, 'hardwareAcceleration', None) and config.hardwareAcceleration.value else "cpu")
+            valid_boxes = [c[:4] for c in coords_list if c is not None and not isinstance(c, dict) and len(c) >= 4]
+            if valid_boxes:
+                boxes = [[max(0, c[0] - dilation), max(0, c[2] - dilation), min(w, c[1] + dilation), min(h, c[3] + dilation)] for c in valid_boxes]
+                mask = refine_mask_with_sam2(
+                    frame,
+                    boxes,
+                    mask,
+                    "cuda" if getattr(config, 'hardwareAcceleration', None) and config.hardwareAcceleration.value else "cpu",
+                )
         except Exception as exc:
             print(f"SAM 2 refinement skipped: {exc}")
 
-    # Gaussian Alpha Feathering: Làm mịn mượt biên mask
+    return mask
+
+
+def _build_text_stroke_uint8_mask(frame: np.ndarray, size: Tuple[int, int], coords_list, dilation: int = 8) -> np.ndarray:
+    """Tạo mặt nạ nhị phân uint8 bám sát nét chữ (Canny + Otsu), hỗ trợ cả hộp 4 phần tử và 5 phần tử SAM2, có fallback an toàn về hộp nếu vùng chọn đồng màu."""
+    h_frame, w_frame = (frame.shape[:2] if frame is not None else (int(size[0]), int(size[1])))
+    mask = np.zeros((h_frame, w_frame), dtype=np.uint8)
+    if not coords_list:
+        return mask
+    if frame is None:
+        return _build_box_uint8_mask((h_frame, w_frame), coords_list, dilation=dilation, frame=None)
+
+    for coords in coords_list:
+        if coords is None or isinstance(coords, dict):
+            continue
+        if len(coords) == 5 and coords[4] is not None:
+            xmin, xmax, ymin, ymax, sam2_data = coords
+            binary_mask = _unpack_sam2_mask(sam2_data, h_frame, w_frame)
+            if dilation > 0:
+                kernel = np.ones((dilation * 2 + 1, dilation * 2 + 1), np.uint8)
+                dilated = cv2.dilate((binary_mask > 0).astype(np.uint8) * 255, kernel, iterations=1)
+                mask[dilated > 0] = 255
+            else:
+                mask[binary_mask > 0] = 255
+            continue
+
+        if len(coords) < 4:
+            continue
+        xmin, xmax, ymin, ymax = [int(v) for v in coords[:4]]
+        pad = max(4, dilation)
+        x1 = max(0, xmin - pad)
+        y1 = max(0, ymin - pad)
+        x2 = min(w_frame, xmax + pad)
+        y2 = min(h_frame, ymax + pad)
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        crop = frame[y1:y2, x1:x2]
+        if crop.size == 0:
+            continue
+
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+        crop_mask = np.zeros_like(gray)
+
+        # Chỉ phân tách Canny + Otsu khi vùng chọn có độ biến thiên sáng tối thực sự
+        if float(gray.std()) >= 2.0:
+            blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+            edges = cv2.Canny(blurred, 30, 120)
+            _, otsu = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            if np.mean(otsu) > 127:
+                otsu = cv2.bitwise_not(otsu)
+            combined = cv2.bitwise_or(edges, otsu)
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+            closed = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel)
+            contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for cnt in contours:
+                area = cv2.contourArea(cnt)
+                cx, cy, cw, ch = cv2.boundingRect(cnt)
+                if area < 3 and (cw < 2 or ch < 2):
+                    continue
+                cv2.drawContours(crop_mask, [cnt], -1, 255, thickness=-1)
+
+        # Fallback an toàn: nếu không bắt được contour nào trên vùng chọn hợp lệ, tô kín hộp vùng chọn
+        if not np.any(crop_mask > 0):
+            bx1 = max(0, xmin - x1)
+            by1 = max(0, ymin - y1)
+            bx2 = min(x2 - x1, xmax - x1)
+            by2 = min(y2 - y1, ymax - y1)
+            if bx2 > bx1 and by2 > by1:
+                crop_mask[by1:by2, bx1:bx2] = 255
+            else:
+                crop_mask[:, :] = 255
+
+        if dilation > 0:
+            kernel_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (dilation * 2 + 1, dilation * 2 + 1))
+            crop_mask = cv2.dilate(crop_mask, kernel_dilate)
+
+        mask[y1:y2, x1:x2] = np.maximum(mask[y1:y2, x1:x2], crop_mask)
+
+    return mask
+
+
+def _apply_freehand_strokes_uint8(mask: np.ndarray, strokes_list, dilation: int = 8) -> np.ndarray:
+    """Áp dụng tuần tự các nét cọ (cộng 255) và nét tẩy (trừ về 0) lên mặt nạ uint8."""
+    if not strokes_list:
+        return mask
+    h, w = mask.shape[:2]
+    for stroke in strokes_list:
+        if stroke is None:
+            continue
+        if isinstance(stroke, dict):
+            pts = stroke.get('points', [])
+            r_val = stroke.get('radius', 0.02)
+            is_eraser = bool(stroke.get('is_eraser', False))
+        else:
+            pts = stroke
+            r_val = 0.02
+            is_eraser = False
+
+        if not pts:
+            continue
+
+        if isinstance(r_val, (int, float)) and 0 < r_val <= 1.0:
+            base_thick = max(4, int(r_val * w * 2))
+        else:
+            base_thick = max(4, int(r_val))
+
+        thickness = base_thick if is_eraser else (base_thick + max(0, int(dilation)))
+        stroke_layer = np.zeros((h, w), dtype=np.uint8)
+
+        if len(pts) == 1:
+            px = int(pts[0][0] * w) if pts[0][0] <= 1.0 else int(pts[0][0])
+            py = int(pts[0][1] * h) if pts[0][1] <= 1.0 else int(pts[0][1])
+            cv2.circle(stroke_layer, (px, py), max(1, thickness // 2), 255, thickness=-1)
+        else:
+            int_pts = []
+            for p in pts:
+                px = int(p[0] * w) if p[0] <= 1.0 else int(p[0])
+                py = int(p[1] * h) if p[1] <= 1.0 else int(p[1])
+                int_pts.append([px, py])
+            int_pts_arr = np.array(int_pts, dtype=np.int32)
+            cv2.polylines(stroke_layer, [int_pts_arr], isClosed=False, color=255, thickness=thickness, lineType=cv2.LINE_AA)
+            for pt in int_pts_arr:
+                cv2.circle(stroke_layer, (int(pt[0]), int(pt[1])), max(1, thickness // 2), 255, thickness=-1)
+
+        if is_eraser:
+            mask[stroke_layer > 0] = 0
+        else:
+            mask[stroke_layer > 0] = 255
+
+    return mask
+
+
+def _finalize_float_mask(mask: np.ndarray, feather_pixels: int = 8) -> np.ndarray:
+    """Làm mềm biên Gaussian và chuẩn hóa mặt nạ sang float32 trong khoảng [0.0, 1.0]."""
     if feather_pixels > 0 and np.any(mask > 0):
-        # Đảm bảo kernel size là số lẻ
-        ksize = 2 * feather_pixels + 1
+        ksize = 2 * int(feather_pixels) + 1
         blurred = cv2.GaussianBlur(mask, (ksize, ksize), 0)
-        # Chuyển đổi về dạng float32 trong khoảng [0.0, 1.0] để nhân trộn điểm ảnh mềm
-        float_mask = blurred.astype(np.float32) / 255.0
-    else:
-        float_mask = (mask > 0).astype(np.float32)
-        
-    return float_mask
+        return blurred.astype(np.float32) / 255.0
+    return (mask > 0).astype(np.float32)
 
-def create_stroke_mask(frame, size, strokes, dilation=8, feather_pixels=8):
-    """
-    Tạo mặt nạ từ các nét cọ tự do (freehand strokes).
-    strokes: list các stroke dict {'radius': float_r, 'points': [(x_ratio, y_ratio), ...]}
-    """
-    return create_combined_mask(size, coords_list=None, strokes_list=strokes, dilation=dilation, feather_pixels=feather_pixels, frame=frame)
 
-def create_combined_mask(size, coords_list=None, strokes_list=None, dilation=8, feather_pixels=8, frame=None):
-    """
-    Tạo mặt nạ tổng hợp từ cả hộp chữ nhật (coords_list) và nét cọ vẽ tự do (strokes_list).
-    """
-    h, w = size[:2]
-    mask = np.zeros((h, w), dtype="uint8")
+def create_mask(size, coords_list, dilation=8, feather_pixels=8, frame=None):
+    """Tạo mặt nạ hộp vùng chọn (hoặc SAM2 5-tuple) trả về float32 [0.0, 1.0]."""
+    if _is_stroke_dict_list(coords_list):
+        return create_freehand_stroke_mask(size, coords_list, dilation=dilation, feather_pixels=feather_pixels)
+    mask = _build_box_uint8_mask(size, coords_list, dilation=dilation, frame=frame)
+    return _finalize_float_mask(mask, feather_pixels=feather_pixels)
 
-    # 1. Vẽ các hộp chữ nhật
+
+def create_freehand_stroke_mask(size, strokes_list, dilation=8, feather_pixels=8):
+    """Tạo mặt nạ từ danh sách nét cọ và cục tẩy tự do [{'radius': r, 'points': [...], 'is_eraser': bool}]."""
+    h, w = int(size[0]), int(size[1])
+    mask = np.zeros((h, w), dtype=np.uint8)
+    mask = _apply_freehand_strokes_uint8(mask, strokes_list, dilation=dilation)
+    return _finalize_float_mask(mask, feather_pixels=feather_pixels)
+
+
+def create_text_stroke_mask(frame: np.ndarray, size: Tuple[int, int], coords_list, dilation: int = 8, feather_pixels: int = 8) -> np.ndarray:
+    """Tạo mặt nạ cấp độ nét chữ (Canny + Otsu) từ danh sách hộp tọa độ, có fallback an toàn."""
+    if _is_stroke_dict_list(coords_list):
+        return create_freehand_stroke_mask(size, coords_list, dilation=dilation, feather_pixels=feather_pixels)
+    mask = _build_text_stroke_uint8_mask(frame, size, coords_list, dilation=dilation)
+    return _finalize_float_mask(mask, feather_pixels=feather_pixels)
+
+
+def create_stroke_mask(frame, size, coords_or_strokes, dilation=8, feather_pixels=8):
+    """Bộ điều phối tương thích ngược: tự động phân biệt danh sách nét cọ tự do (dict) và danh sách hộp tọa độ (tuple/list)."""
+    if _is_stroke_dict_list(coords_or_strokes):
+        return create_freehand_stroke_mask(size, coords_or_strokes, dilation=dilation, feather_pixels=feather_pixels)
+    return create_text_stroke_mask(frame, size, coords_or_strokes, dilation=dilation, feather_pixels=feather_pixels)
+
+
+def create_combined_mask(size, coords_list=None, strokes_list=None, dilation=8, feather_pixels=8, frame=None, mask_type=None):
+    """
+    Tạo mặt nạ tổng hợp thống nhất cho cả Xem Trước và Xuất Video:
+    1. Tạo lớp nền từ coords_list theo mask_type ('stroke' hoặc 'box', hỗ trợ cả 4-tuple và 5-tuple SAM2)
+    2. Áp dụng tuần tự strokes_list (nét cọ cộng vào mặt nạ, cục tẩy xóa khỏi mặt nạ)
+    3. Làm mềm biên Gaussian và trả về float32 [0.0, 1.0]
+    """
+    h, w = int(size[0]), int(size[1])
+    if mask_type is None:
+        mask_type = getattr(config, 'maskType', None).value if getattr(config, 'maskType', None) else "box"
+
     if coords_list:
-        for coords in coords_list:
-            if coords is None:
-                continue
-                
-            if len(coords) == 5:
-                xmin, xmax, ymin, ymax, sam2_data = coords
-                packed_mask, mask_shape = sam2_data
-                binary_mask = np.unpackbits(packed_mask).reshape(mask_shape)
-                binary_mask = binary_mask[:h, :w] # Đảm bảo khớp kích thước frame
-                
-                if getattr(config, 'autoMaskDilation', None) and config.autoMaskDilation.value:
-                    box_height = abs(ymax - ymin)
-                    dynamic_dilation = max(dilation, int(box_height * 0.15))
-                else:
-                    dynamic_dilation = dilation
-                    
-                if dynamic_dilation > 0:
-                    kernel = np.ones((dynamic_dilation * 2 + 1, dynamic_dilation * 2 + 1), np.uint8)
-                    binary_mask_uint8 = binary_mask.astype(np.uint8) * 255
-                    dilated_mask = cv2.dilate(binary_mask_uint8, kernel, iterations=1)
-                    mask[dilated_mask > 0] = 255
-                else:
-                    mask[binary_mask] = 255
-            else:
-                xmin, xmax, ymin, ymax = coords
-                if getattr(config, 'autoMaskDilation', None) and config.autoMaskDilation.value:
-                    box_height = abs(ymax - ymin)
-                    dynamic_dilation = max(dilation, int(box_height * 0.15))
-                else:
-                    dynamic_dilation = dilation
-                
-                x1 = max(0, xmin - dynamic_dilation)
-                y1 = max(0, ymin - dynamic_dilation)
-                x2 = min(w, xmax + dynamic_dilation)
-                y2 = min(h, ymax + dynamic_dilation)
-                
-                if frame is not None and getattr(config, 'mmoSmartTextMask', None) and config.mmoSmartTextMask.value:
-                    try:
-                        roi = frame[y1:y2, x1:x2]
-                        if roi.size > 0:
-                            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-                            grad_x = cv2.Scharr(gray, cv2.CV_32F, 1, 0)
-                            grad_y = cv2.Scharr(gray, cv2.CV_32F, 0, 1)
-                            grad = cv2.magnitude(grad_x, grad_y)
-                            grad = np.uint8(np.clip(grad, 0, 255))
-                            _, text_mask = cv2.threshold(grad, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-                            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 3))
-                            text_mask = cv2.morphologyEx(text_mask, cv2.MORPH_CLOSE, kernel)
-                            if dynamic_dilation > 0:
-                                d_kernel = np.ones((dynamic_dilation, dynamic_dilation), np.uint8)
-                                text_mask = cv2.dilate(text_mask, d_kernel, iterations=1)
-                            mask[y1:y2, x1:x2] = cv2.bitwise_or(mask[y1:y2, x1:x2], text_mask)
-                        else:
-                            cv2.rectangle(mask, (x1, y1), (x2, y2), 255, thickness=-1)
-                    except Exception as e:
-                        print(f"Smart Text Mask error: {e}")
-                        cv2.rectangle(mask, (x1, y1), (x2, y2), 255, thickness=-1)
-                else:
-                    cv2.rectangle(mask, (x1, y1), (x2, y2), 255, thickness=-1)
-
-    # 2. Vẽ các nét cọ tự do
-    if strokes_list:
-        for stroke in strokes_list:
-            if isinstance(stroke, dict):
-                pts = stroke.get('points', [])
-                r_val = stroke.get('radius', 0.02)
-            else:
-                pts = stroke
-                r_val = 0.02
-
-            # Nếu r_val là float 0..1 thì nhân với chiều rộng, nếu >1 thì xem như pixel
-            if isinstance(r_val, float) and r_val <= 1.0:
-                thickness = max(4, int(r_val * w * 2)) + dilation
-            else:
-                thickness = max(4, int(r_val)) + dilation
-
-            if len(pts) == 1:
-                px = int(pts[0][0] * w) if pts[0][0] <= 1.0 else int(pts[0][0])
-                py = int(pts[0][1] * h) if pts[0][1] <= 1.0 else int(pts[0][1])
-                cv2.circle(mask, (px, py), thickness // 2, 255, thickness=-1)
-            elif len(pts) > 1:
-                int_pts = []
-                for p in pts:
-                    px = int(p[0] * w) if p[0] <= 1.0 else int(p[0])
-                    py = int(p[1] * h) if p[1] <= 1.0 else int(p[1])
-                    int_pts.append([px, py])
-                int_pts = np.array(int_pts, dtype=np.int32)
-                cv2.polylines(mask, [int_pts], isClosed=False, color=255, thickness=thickness, lineType=cv2.LINE_AA)
-                for pt in int_pts:
-                    cv2.circle(mask, (pt[0], pt[1]), thickness // 2, 255, thickness=-1)
-
-    # 3. Gaussian Alpha Feathering: Làm mịn mượt biên mask
-    if feather_pixels > 0 and np.any(mask > 0):
-        ksize = 2 * feather_pixels + 1
-        blurred = cv2.GaussianBlur(mask, (ksize, ksize), 0)
-        float_mask = blurred.astype(np.float32) / 255.0
+        if _is_stroke_dict_list(coords_list) and not strokes_list:
+            strokes_list = coords_list
+            mask = np.zeros((h, w), dtype=np.uint8)
+        elif str(mask_type).lower() == "stroke" and frame is not None:
+            mask = _build_text_stroke_uint8_mask(frame, (h, w), coords_list, dilation=dilation)
+        else:
+            mask = _build_box_uint8_mask((h, w), coords_list, dilation=dilation, frame=frame)
     else:
-        float_mask = (mask > 0).astype(np.float32)
-        
-    return float_mask
+        mask = np.zeros((h, w), dtype=np.uint8)
+
+    if strokes_list:
+        mask = _apply_freehand_strokes_uint8(mask, strokes_list, dilation=dilation)
+
+    return _finalize_float_mask(mask, feather_pixels=feather_pixels)
 
 def get_inpaint_area_by_mask(W, H, h, mask, multiple=1):
     """
@@ -663,7 +766,11 @@ def apply_temporal_smoothing(original_frames: List[np.ndarray], inpainted_frames
     # Trích xuất các vùng crop gốc và inpaint để xử lý cho nhanh
     orig_crops = [f[y1_pad:y2_pad, x1_pad:x2_pad].astype(np.float32) for f in original_frames]
     inpaint_crops = [f[y1_pad:y2_pad, x1_pad:x2_pad].astype(np.float32) for f in inpainted_frames]
-    mask_crop = mask_2d[y1_pad:y2_pad, x1_pad:x2_pad][..., np.newaxis] / 255.0
+    raw_mask_crop = mask_2d[y1_pad:y2_pad, x1_pad:x2_pad].astype(np.float32)[..., np.newaxis]
+    if raw_mask_crop.max() > 1.0:
+        mask_crop = np.clip(raw_mask_crop / 255.0, 0.0, 1.0)
+    else:
+        mask_crop = np.clip(raw_mask_crop, 0.0, 1.0)
     
     for t in range(N):
         current_orig = orig_crops[t]
@@ -698,86 +805,7 @@ def apply_temporal_smoothing(original_frames: List[np.ndarray], inpainted_frames
             
     return smoothed_frames
 
-def create_stroke_mask(frame: np.ndarray, size: Tuple[int, int], coords_list: List[Tuple[int, int, int, int]], dilation: int = 8, feather_pixels: int = 8) -> np.ndarray:
-    """
-    Tạo mặt nạ ở cấp độ nét chữ (stroke-level mask) sử dụng kết hợp Canny Edge Detection và Otsu's Thresholding.
-    Giúp xóa phụ đề sạch nhất, bắt trọn bóng đổ (drop shadow) và viền chữ dày mà không bị bóng mờ (ghosting).
-    """
-    if frame is None or not coords_list:
-        return create_mask(size, coords_list, dilation=dilation, feather_pixels=feather_pixels)
-        
-    h_frame, w_frame = frame.shape[:2]
-    mask = np.zeros((h_frame, w_frame), dtype="uint8")
-    
-    for coords in coords_list:
-        xmin, xmax, ymin, ymax = coords
-        
-        # Mở rộng nhẹ hộp chữ nhật gốc để lấy biên chữ đầy đủ
-        pad = max(4, dilation)
-        x1 = max(0, xmin - pad)
-        y1 = max(0, ymin - pad)
-        x2 = min(w_frame, xmax + pad)
-        y2 = min(h_frame, ymax + pad)
-        
-        if x2 <= x1 or y2 <= y1:
-            continue
-            
-        crop = frame[y1:y2, x1:x2]
-        if crop.size == 0:
-            continue
-            
-        # Chuyển sang ảnh xám
-        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        
-        # Áp dụng Gaussian Blur để làm mượt giảm nhiễu biên
-        blurred = cv2.GaussianBlur(gray, (3, 3), 0)
-        
-        # 1. Phát hiện cạnh bằng Canny
-        edges = cv2.Canny(blurred, 30, 120)
-        
-        # 2. Phân ngưỡng thích ứng Otsu để bắt vùng có tương phản động cao (như nét chữ và viền đổ bóng dày)
-        _, otsu = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        
-        # Nếu phần lớn khung hình là màu trắng (nền sáng chữ tối), ta đảo ngược mặt nạ Otsu để chọn chữ tối
-        if np.mean(otsu) > 127:
-            otsu = cv2.bitwise_not(otsu)
-            
-        # Kết hợp hai mặt nạ Canny và Otsu
-        combined = cv2.bitwise_or(edges, otsu)
-        
-        # Nối các nét chữ rời rạc bằng toán tử đóng hình học MORPH_CLOSE
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        closed = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel)
-        
-        # Tìm đường viền Contour ngoài cùng
-        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        crop_mask = np.zeros_like(gray)
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            x, y, w, h = cv2.boundingRect(cnt)
-            # Loại bỏ nhiễu cực nhỏ
-            if area < 3 and (w < 2 or h < 2):
-                continue
-            # Vẽ lấp đầy (fill) toàn bộ vùng bao chữ
-            cv2.drawContours(crop_mask, [cnt], -1, 255, thickness=-1)
-            
-        # Giãn nở mặt nạ theo tham số cấu hình dilation
-        if dilation > 0:
-            kernel_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (dilation * 2 + 1, dilation * 2 + 1))
-            crop_mask = cv2.dilate(crop_mask, kernel_dilate)
-            
-        mask[y1:y2, x1:x2] = np.maximum(mask[y1:y2, x1:x2], crop_mask)
-        
-    # Gaussian Alpha Feathering làm mịn mượt biên mặt nạ tránh bị gãy răng cưa
-    if feather_pixels > 0 and np.any(mask > 0):
-        ksize = 2 * feather_pixels + 1
-        blurred_mask = cv2.GaussianBlur(mask, (ksize, ksize), 0)
-        float_mask = blurred_mask.astype(np.float32) / 255.0
-    else:
-        float_mask = (mask > 0).astype(np.float32)
-        
-    return float_mask
+
 def apply_temporal_mask_padding(masks: List[np.ndarray], pad_frames: int) -> List[np.ndarray]:
     """
     Áp dụng bù trừ khung hình mờ (Fade padding) bằng cách mở rộng mặt nạ 

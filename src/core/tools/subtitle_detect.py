@@ -30,16 +30,29 @@ class SubtitleDetect:
         self._init_sample_step()
 
     def _init_sample_step(self):
-        """Tăng SAMPLE_STEP lên gấp đôi để đẩy tốc độ tìm kiếm phụ đề nhanh gấp 2 lần"""
+        """Thiết lập bước nhảy lấy mẫu OCR dựa theo chế độ config.ocrMode và FPS của video."""
         cap = cv2.VideoCapture(get_readable_path(self.video_path))
-        fps = cap.get(cv2.CAP_PROP_FPS)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
         cap.release()
-        if fps >= 60:
-            self.SAMPLE_STEP = 8  # Cũ là 4
-        elif fps >= 30:
-            self.SAMPLE_STEP = 6  # Cũ là 3
+        ocr_mode = getattr(config, 'ocrMode', None)
+        mode_val = ocr_mode.value if hasattr(ocr_mode, 'value') else (str(ocr_mode) if ocr_mode else "auto")
+        if mode_val == "precise":
+            self.SAMPLE_STEP = 1
+        elif mode_val == "fast":
+            if fps >= 60:
+                self.SAMPLE_STEP = 8
+            elif fps >= 30:
+                self.SAMPLE_STEP = 6
+            else:
+                self.SAMPLE_STEP = 4
         else:
-            self.SAMPLE_STEP = 4  # Cũ là 2
+            # Mặc định chế độ cân bằng ("auto") để không bỏ sót phụ đề ngắn
+            if fps >= 60:
+                self.SAMPLE_STEP = 4
+            elif fps >= 30:
+                self.SAMPLE_STEP = 3
+            else:
+                self.SAMPLE_STEP = 2
 
     @cached_property
     def text_detector(self):

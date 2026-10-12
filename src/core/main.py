@@ -67,6 +67,37 @@ class ModelCacheManager:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+def verify_media_output(output_path: str, is_picture: bool = False) -> bool:
+    """
+    Xác minh tệp đầu ra hình ảnh hoặc video tồn tại, có dung lượng > 0 và có thể giải mã khung hình hợp lệ.
+    """
+    if not output_path or not os.path.exists(output_path):
+        return False
+    try:
+        if os.path.getsize(output_path) <= 0:
+            return False
+    except OSError:
+        return False
+
+    if is_picture:
+        try:
+            img = read_image(output_path)
+            return img is not None and img.size > 0
+        except Exception:
+            return False
+
+    cap = cv2.VideoCapture(get_readable_path(output_path))
+    try:
+        if not cap.isOpened():
+            return False
+        ret, frame = cap.read()
+        return bool(ret and frame is not None and frame.size > 0)
+    except Exception:
+        return False
+    finally:
+        cap.release()
+
+
 class GUISubtitleRemover:
     def __init__(self, vd_path, gui_mode=False, callback=None):
         self.callback = callback
@@ -75,6 +106,11 @@ class GUISubtitleRemover:
         self.lock = threading.RLock()
         # 用户指定的字幕区域位置
         self.sub_areas = []
+        self.strokes = []
+        self.tracked_sub_list = {}
+        self.moving_tracking = None
+        self.run_status = "pending"
+        self.tracking_report = None
         # 是否为gui运行，gui运行需要显示预览
         self.gui_mode = gui_mode
         self.hardware_accelerator = HardwareAccelerator.instance()
@@ -123,6 +159,19 @@ class GUISubtitleRemover:
         self.progress_listeners = []
         # inpaint的frame_no区域列表, 默认为inpaint所有帧
         self.ab_sections = None
+
+    def _is_moving_tracking_enabled(self) -> bool:
+        if getattr(self, 'tracked_sub_list', None):
+            return True
+        if getattr(self, 'moving_tracking', None) is not None:
+            return bool(self.moving_tracking)
+        return bool(getattr(config, 'movingSubtitleTracking', None) and config.movingSubtitleTracking.value)
+
+    def _has_positive_strokes(self) -> bool:
+        strokes = getattr(self, 'strokes', None)
+        if not strokes:
+            return False
+        return any(isinstance(s, dict) and not s.get('is_eraser', False) and s.get('points') for s in strokes)
 
     @staticmethod
     def is_current_frame_no_start(frame_no, continuous_frame_no_list):
@@ -203,38 +252,40 @@ class GUISubtitleRemover:
             self.callback.update_preview(frame_ori, frame_comp)
 
     def propainter_mode(self, tbar):
-        if getattr(self, 'tracked_sub_list', None):
-            sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
-            sub_list = self.tracked_sub_list
-            sub_list = {int(k): v for k, v in sub_list.items()}
-        elif getattr(config, 'movingSubtitleTracking', None) and config.movingSubtitleTracking.value:
-            from src.core.tools.object_tracker import ObjectTracker
-            sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
-            tracker = ObjectTracker(self.video_path, self.sub_areas)
-            sub_list = tracker.find_subtitle_frame_no(sub_remover=self)
-            if not sub_list:
-                sub_list = sub_detector.find_subtitle_frame_no(sub_remover=self)
-        else:
-            sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
-            sub_list = sub_detector.find_subtitle_frame_no(sub_remover=self)
-        if len(sub_list) == 0:
-            self.append_output("Không tìm thấy phụ đề nào trong video. Tiến hành sao chép trực tiếp video gốc...")
-            reader = FramePrefetcher(self.video_cap)
-            while True:
-                ret, frame = reader.read()
-                if not ret:
-                    break
-                self.video_writer.write(frame)
-                self.update_progress(tbar, increment=1)
-                if hasattr(self, 'callback') and self.callback:
-                    self.callback.update_preview(frame, frame)
-            reader.stop()
-            return
-        is_moving_tracking = getattr(self, 'tracked_sub_list', None) or (getattr(config, 'movingSubtitleTracking', None) and config.movingSubtitleTracking.value)
+        is_moving_tracking = self._is_moving_tracking_enabled()
         if is_moving_tracking:
             self.append_output("[Nhận Diện Chuyển Động] Tự động kích hoạt mô hình AI bám sát từng khung hình để xóa sạch logo di chuyển...")
             self.video_inpaint(tbar, self.lama_inpaint)
             return
+
+        sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
+        sub_list = sub_detector.find_subtitle_frame_no(sub_remover=self)
+        if len(sub_list) == 0:
+            if self._has_positive_strokes():
+                sub_list = {f: [] for f in range(1, max(1, self.frame_count) + 1)}
+            else:
+                self.run_status = "no_target_found"
+                self.append_output("Không tìm thấy phụ đề nào trong video. Tiến hành sao chép trực tiếp video gốc...")
+                reader = FramePrefetcher(self.video_cap)
+                while True:
+                    ret, frame = reader.read()
+                    if not ret:
+                        break
+                    self.video_writer.write(frame)
+                    self.update_progress(tbar, increment=1)
+                    if hasattr(self, 'callback') and self.callback:
+                        self.callback.update_preview(frame, frame)
+                reader.stop()
+                return
+        continuous_frame_no_list = sub_detector.find_continuous_ranges_with_same_mask(sub_list)
+        continuous_frame_no_list = expand_frame_ranges(
+            continuous_frame_no_list,
+            config.subtitleTimelineBackwardFrameCount.value,
+            config.subtitleTimelineForwardFrameCount.value,
+        )
+        continuous_frame_no_list = sub_detector.filter_and_merge_intervals(
+            continuous_frame_no_list, config.sttnReferenceLength.value
+        )
         scene_div_points = sub_detector.get_scene_div_frame_no(self.video_path)
         continuous_frame_no_list = sub_detector.split_range_by_scene(continuous_frame_no_list,
                                                                           scene_div_points)
@@ -317,7 +368,7 @@ class GUISubtitleRemover:
                                 # 2. Gọi batch inference (cho cả LaMa và ProPainter)
                                 if np.any(mask > 0):
                                     # Gọi __call__ của model (LaMa hoặc ProPainter đều hỗ trợ)
-                                    inpainted_frames = model(batch, mask)
+                                    inpainted_frames = propainter_inpaint(batch, mask)
                                     if config.temporalSmoothing.value:
                                         inpainted_frames = apply_temporal_smoothing(batch, inpainted_frames, mask, radius=config.temporalSmoothingRadius.value)
                                     for i, inpainted_frame in enumerate(inpainted_frames):
@@ -325,7 +376,9 @@ class GUISubtitleRemover:
                                         self.video_writer.write(inpainted_frame)
                                         inner_index += 1
                                         if hasattr(self, 'callback') and self.callback:
-                                            self.callback.update_preview(np.clip(batch[i]+mask[:,:,np.newaxis]*0.3,0,255).astype(np.uint8), inpainted_frame)
+                                            vis_m = mask[:, :, np.newaxis] if mask.ndim == 2 else mask
+                                            vis_scale = 76.5 if vis_m.max() <= 1.0 else 0.3
+                                            self.callback.update_preview(np.clip(batch[i] + vis_m * vis_scale, 0, 255).astype(np.uint8), inpainted_frame)
                                 else:
                                     for single_frame in batch:
                                         self.video_writer.write(single_frame)
@@ -338,18 +391,27 @@ class GUISubtitleRemover:
         dilation = config.maskDilation.value
         feather = config.maskFeather.value
         strokes = getattr(self, 'strokes', None)
-        if strokes:
-            return create_combined_mask(self.mask_size, coords_list=coords, strokes_list=strokes, dilation=dilation, feather_pixels=feather, frame=ref_frame)
-        if config.maskType.value == 'stroke':
-            return create_stroke_mask(ref_frame, self.mask_size, coords, dilation=dilation, feather_pixels=feather)
-        else:
-            return create_mask(self.mask_size, coords, dilation=dilation, feather_pixels=feather, frame=ref_frame)
+        mask_type = getattr(config, 'maskType', None)
+        mask_type_val = mask_type.value if hasattr(mask_type, 'value') else (str(mask_type) if mask_type else 'stroke')
+        return create_combined_mask(
+            self.mask_size,
+            coords_list=coords,
+            strokes_list=strokes,
+            dilation=dilation,
+            feather_pixels=feather,
+            frame=ref_frame,
+            mask_type=mask_type_val,
+        )
 
     def apply_sharpening_to_inpainted_frame(self, original_frame, inpainted_frame, mask):
         """Áp dụng bộ lọc làm nét bảo toàn cạnh (Bilateral Filter) và bổ sung vân bề mặt"""
         if getattr(config, 'sharpenInpaintedArea', None) and config.sharpenInpaintedArea.value:
-            # Chuyển đổi mask thành float 0.0 - 1.0
-            gray_mask = mask.astype(np.float32) / 255.0
+            # Chuyển đổi mask thành float 0.0 - 1.0 (không chia 255 hai lần nếu đã ở dải [0.0, 1.0])
+            raw_mask = np.asarray(mask, dtype=np.float32)
+            if raw_mask.size > 0 and raw_mask.max() > 1.0:
+                gray_mask = np.clip(raw_mask / 255.0, 0.0, 1.0)
+            else:
+                gray_mask = np.clip(raw_mask, 0.0, 1.0)
             if gray_mask.ndim == 2:
                 gray_mask = gray_mask[:, :, np.newaxis]
 
@@ -372,7 +434,7 @@ class GUISubtitleRemover:
             # Quét vùng ảnh không bị che (mask == 0) để đo lường độ lệch chuẩn (Standard Deviation)
             # Chọn một mẫu ảnh nhỏ không có mask để tính toán nhanh hơn (ví dụ: góc trên cùng bên trái)
             bg_sample = original_frame[0:min(200, h), 0:min(200, w)]
-            bg_mask_sample = mask[0:min(200, h), 0:min(200, w)]
+            bg_mask_sample = gray_mask[0:min(200, h), 0:min(200, w), 0]
             valid_bg = bg_sample[bg_mask_sample == 0]
             
             noise_scale = 1.8 # Giá trị mặc định
@@ -395,9 +457,9 @@ class GUISubtitleRemover:
         """
         self.append_output(tr['Main']['ProcessingStartRemovingSubtitles'])
         
-        is_moving = getattr(self, 'tracked_sub_list', None) or (getattr(config, 'movingSubtitleTracking', None) and config.movingSubtitleTracking.value)
+        is_moving = self._is_moving_tracking_enabled()
         
-        if is_moving:
+        if is_moving or self._has_positive_strokes():
             self.append_output("[Nhận Diện Chuyển Động] Tự động kích hoạt mô hình AI bám sát từng khung hình để xóa sạch logo di chuyển...")
             self.video_inpaint(tbar, self.lama_inpaint)
             return
@@ -407,6 +469,7 @@ class GUISubtitleRemover:
         sub_list = sub_detector.find_subtitle_frame_no(sub_remover=self)
         
         if len(sub_list) == 0:
+            self.run_status = "no_target_found"
             self.append_output("Không tìm thấy phụ đề nào trong video. Tiến hành sao chép trực tiếp video gốc...")
             reader = FramePrefetcher(self.video_cap)
             while True:
@@ -430,40 +493,43 @@ class GUISubtitleRemover:
         sttn_video_inpaint(input_mask=sub_list, input_sub_remover=self, tbar=tbar)
 
     def video_inpaint(self, tbar, model):
+        is_moving_tracking = self._is_moving_tracking_enabled()
         if getattr(self, 'tracked_sub_list', None):
             sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
-            sub_list = self.tracked_sub_list
-            sub_list = {int(k): v for k, v in sub_list.items()}
+            sub_list = {int(k): v for k, v in self.tracked_sub_list.items()}
         elif getattr(self, 'watermark_tracking', None):
             sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
-            sub_list = self.watermark_tracking
-            sub_list = {int(k): v for k, v in sub_list.items()}
-        elif getattr(config, 'movingSubtitleTracking', None) and config.movingSubtitleTracking.value:
+            sub_list = {int(k): v for k, v in self.watermark_tracking.items()}
+        elif is_moving_tracking:
             from src.core.tools.object_tracker import ObjectTracker
             sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
             tracker = ObjectTracker(self.video_path, self.sub_areas)
             sub_list = tracker.find_subtitle_frame_no(sub_remover=self)
+            self.tracking_report = getattr(tracker, 'last_tracking_report', None)
             if not sub_list:
                 sub_list = sub_detector.find_subtitle_frame_no(sub_remover=self)
         else:
             sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
             sub_list = sub_detector.find_subtitle_frame_no(sub_remover=self)
-            
-            
+
         if len(sub_list) == 0:
-            self.append_output("Không tìm thấy phụ đề nào trong video. Tiến hành sao chép trực tiếp video gốc...")
-            reader = FramePrefetcher(self.video_cap)
-            while True:
-                ret, frame = reader.read()
-                if not ret:
-                    break
-                self.video_writer.write(frame)
-                self.update_progress(tbar, increment=1)
-                if hasattr(self, 'callback') and self.callback:
-                    self.callback.update_preview(frame, frame)
-            reader.stop()
-            return
-        is_moving_tracking = getattr(self, 'tracked_sub_list', None) or (getattr(config, 'movingSubtitleTracking', None) and config.movingSubtitleTracking.value)
+            if self._has_positive_strokes():
+                sub_list = {f: [] for f in range(1, max(1, self.frame_count) + 1)}
+            else:
+                self.run_status = "no_target_found"
+                self.append_output("Không tìm thấy phụ đề nào trong video. Tiến hành sao chép trực tiếp video gốc...")
+                reader = FramePrefetcher(self.video_cap)
+                while True:
+                    ret, frame = reader.read()
+                    if not ret:
+                        break
+                    self.video_writer.write(frame)
+                    self.update_progress(tbar, increment=1)
+                    if hasattr(self, 'callback') and self.callback:
+                        self.callback.update_preview(frame, frame)
+                reader.stop()
+                return
+
         if is_moving_tracking:
             continuous_frame_no_list = sub_detector.find_continuous_ranges(sub_list)
         else:
@@ -485,6 +551,8 @@ class GUISubtitleRemover:
         tbar.reset(total=int(self.frame_count))
         # 使用帧预读取，I/O 与推理重叠
         reader = FramePrefetcher(self.video_cap)
+        sorted_sub_keys = sorted(sub_list.keys()) if is_moving_tracking and sub_list else []
+        max_hold_pad = max(5, config.subtitleTimelineBackwardFrameCount.value, config.subtitleTimelineForwardFrameCount.value)
         while True:
             ret, frame = reader.read()
             # 如果读取到为，则结束
@@ -519,6 +587,10 @@ class GUISubtitleRemover:
                     for idx, m_idx in enumerate(range(start_frame_index, end_frame_index + 1)):
                         if idx < len(frames_need_inpaint):
                             area_coords = sub_list.get(m_idx, [])
+                            if not area_coords and sorted_sub_keys:
+                                nearest_k = min(sorted_sub_keys, key=lambda k: abs(k - m_idx))
+                                if abs(nearest_k - m_idx) <= max_hold_pad:
+                                    area_coords = sub_list.get(nearest_k, [])
                             m_frame = self.get_mask(frames_need_inpaint[idx], area_coords)
                             frames_masks.append(m_frame)
                     mask = frames_masks
@@ -527,7 +599,9 @@ class GUISubtitleRemover:
                     for mask_index in range(start_frame_index, end_frame_index + 1):
                         if mask_index in sub_list.keys():
                             for area in sub_list[mask_index]:
-                                xmin, xmax, ymin, ymax = area
+                                if area is None or len(area) < 4:
+                                    continue
+                                xmin, xmax, ymin, ymax = area[:4]
                                 if (ymax - ymin) - (xmax - xmin) > config.subtitleYXAxisDifferencePixel.value:
                                     continue
                                 if area not in mask_area_coordinates:
@@ -554,7 +628,8 @@ class GUISubtitleRemover:
                             inner_index += 1
                             vis_m = cur_m[:,:,np.newaxis] if cur_m.ndim == 2 else cur_m
                             if hasattr(self, 'callback') and self.callback:
-                                self.callback.update_preview(np.clip(batch[i]+vis_m*0.3,0,255).astype(np.uint8), inpainted_frame)
+                                vis_scale = 76.5 if vis_m.max() <= 1.0 else 0.3
+                                self.callback.update_preview(np.clip(batch[i]+vis_m*vis_scale,0,255).astype(np.uint8), inpainted_frame)
                         batch_offset += batch_len
                     self.update_progress(tbar, increment=batch_len)
         reader.stop()
@@ -588,23 +663,29 @@ class GUISubtitleRemover:
         if self.is_picture:
             original_frame = read_image(self.video_path)
             if original_frame is None:
+                self.run_status = "failed"
                 self.append_output(tr['Main']['ReadImageFailed'].format(self.video_path))
-                return
+                raise RuntimeError(tr['Main']['ReadImageFailed'].format(self.video_path))
             sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
             sub_list = sub_detector.detect_subtitle(original_frame)
             del sub_detector
             gc.collect()
-            if len(sub_list):
-                mask = create_mask(original_frame.shape[0:2], sub_list, frame=original_frame)
+            if len(sub_list) or self._has_positive_strokes():
+                mask = self.get_mask(original_frame, sub_list)
                 if np.any(mask > 0):
                     inpainted_frame = self.lama_inpaint.inpaint(original_frame, mask)
+                    inpainted_frame = self.apply_sharpening_to_inpainted_frame(original_frame, inpainted_frame, mask)
                     if hasattr(self, 'callback') and self.callback:
-                        self.callback.update_preview(np.clip(original_frame+mask[:,:,np.newaxis]*0.3,0,255).astype(np.uint8), inpainted_frame)
+                        vis_m = mask[:, :, np.newaxis] if mask.ndim == 2 else mask
+                        vis_scale = 76.5 if vis_m.max() <= 1.0 else 0.3
+                        self.callback.update_preview(np.clip(original_frame+vis_m*vis_scale,0,255).astype(np.uint8), inpainted_frame)
                 else:
+                    self.run_status = "no_target_found"
                     inpainted_frame = original_frame
                     if hasattr(self, 'callback') and self.callback:
                         self.callback.update_preview(original_frame, inpainted_frame)
             else:
+                self.run_status = "no_target_found"
                 inpainted_frame = original_frame
                 if hasattr(self, 'callback') and self.callback:
                     self.callback.update_preview(original_frame, inpainted_frame)
@@ -613,7 +694,7 @@ class GUISubtitleRemover:
             self.progress_total = 100
         else:
             # 精准模式下，获取场景分割的帧号，进一步切割
-            is_moving = getattr(self, 'tracked_sub_list', None) or (getattr(config, 'movingSubtitleTracking', None) and config.movingSubtitleTracking.value)
+            is_moving = self._is_moving_tracking_enabled()
             if is_moving:
                 self.append_output("[Nhận Diện Chuyển Động] Tự động kích hoạt mô hình AI LaMa bám sát từng khung hình để xóa sạch 100% logo di chuyển...")
                 self.video_inpaint(tbar, self.lama_inpaint)
@@ -656,14 +737,23 @@ class GUISubtitleRemover:
                     else:
                         self.append_output("[MMO FX] Lỗi khi áp dụng bộ lọc MMO!")
 
-        self.append_output(tr['Main']['FinishedProcessing'].format(self.video_out_path))
-        self.append_output(tr['Main']['ProcessingTime'].format(round(time.time() - start_time)))
-        self.isFinished = True
         if os.path.exists(self.video_temp_file.name):
             try:
                 os.remove(self.video_temp_file.name)
             except Exception:
                 pass
+
+        if not verify_media_output(self.video_out_path, is_picture=self.is_picture):
+            self.run_status = "failed"
+            self.is_successful_merged = False
+            raise RuntimeError(f"Tệp kết quả đầu ra không hợp lệ hoặc bị hỏng: {self.video_out_path}")
+
+        if self.run_status == "pending":
+            self.run_status = "success"
+        self.is_successful_merged = True
+        self.append_output(tr['Main']['FinishedProcessing'].format(self.video_out_path))
+        self.append_output(tr['Main']['ProcessingTime'].format(round(time.time() - start_time)))
+        self.isFinished = True
 
     def log_model(self):
         model_friendly_name = list(tr['InpaintMode'].values())[list(InpaintMode).index(config.inpaintMode.value)]
@@ -704,7 +794,8 @@ class GUISubtitleRemover:
         ]
         try:
             subprocess.check_output(audio_merge_command, stdin=open(os.devnull), shell=use_shell, timeout=600)
-            self.is_successful_merged = True
+            if verify_media_output(self.video_out_path, is_picture=False):
+                self.is_successful_merged = True
         except Exception:
             pass
 
@@ -725,14 +816,17 @@ class GUISubtitleRemover:
             ]
             try:
                 subprocess.check_output(audio_encode_command, stdin=open(os.devnull), shell=use_shell, timeout=600)
-                self.is_successful_merged = True
+                if verify_media_output(self.video_out_path, is_picture=False):
+                    self.is_successful_merged = True
             except Exception:
                 pass
 
         # 3. Nếu video gốc không có âm thanh (hoặc ghép âm thanh thất bại), copy trực tiếp tệp video tạm sang tệp đầu ra
-        if not self.is_successful_merged or not os.path.exists(self.video_out_path):
+        if not self.is_successful_merged or not verify_media_output(self.video_out_path, is_picture=False):
             try:
                 shutil.copyfile(self.video_temp_file.name, self.video_out_path)
+                if verify_media_output(self.video_out_path, is_picture=False):
+                    self.is_successful_merged = True
             except Exception as e:
                 self.append_output(f"[Lỗi] Không thể sao chép tệp video đầu ra: {e}")
         if config.burnTranslatedSubtitles.value and hasattr(self, 'ass_file_path') and os.path.exists(self.ass_file_path):

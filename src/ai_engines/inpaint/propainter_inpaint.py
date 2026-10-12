@@ -29,6 +29,19 @@ def binary_mask(mask, th=0.1):
     return mask
 
 
+def _to_uint8_gray_mask(arr: np.ndarray) -> np.ndarray:
+    m = np.asarray(arr)
+    if m.ndim == 3 and m.shape[2] == 1:
+        m = m.squeeze(2)
+    elif m.ndim == 3 and m.shape[2] == 3:
+        if m.dtype != np.uint8:
+            m = np.clip(m * (255.0 if m.max() <= 1.0 else 1.0), 0, 255).astype(np.uint8)
+        m = cv2.cvtColor(m, cv2.COLOR_BGR2GRAY)
+    if m.dtype != np.uint8 or (m.size > 0 and m.max() <= 1.0):
+        m = ((m > 0.1) * 255).astype(np.uint8)
+    return m
+
+
 # read frame-wise masks
 def read_mask(mpath, length, size, flow_mask_dilates=8, mask_dilates=5):
     masks_img = []
@@ -36,12 +49,9 @@ def read_mask(mpath, length, size, flow_mask_dilates=8, mask_dilates=5):
     flow_masks = []
     # 如果传入的直接为numpy array
     if isinstance(mpath, np.ndarray):
-        if mpath.ndim == 3 and mpath.shape[2] == 1:
-            mpath = mpath.squeeze(2)  # 从 (H,W,1) 转为 (H,W)
-        elif mpath.ndim == 3 and mpath.shape[2] == 3:
-            # 如果是彩色图像，转为灰度
-            mpath = cv2.cvtColor(mpath, cv2.COLOR_BGR2GRAY)
-        masks_img = [Image.fromarray(mpath)]
+        masks_img = [Image.fromarray(_to_uint8_gray_mask(mpath))]
+    elif isinstance(mpath, (list, tuple)):
+        masks_img = [Image.fromarray(_to_uint8_gray_mask(m)) for m in mpath]
     # input single img path
     else:
         if isinstance(mpath, str):

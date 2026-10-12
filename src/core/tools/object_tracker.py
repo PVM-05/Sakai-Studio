@@ -234,6 +234,120 @@ class ObjectTracker:
         self.start_frame = start_frame
         self.trackers = []
         self.tracker_boxes = []
+        self.last_tracking_report = {
+            "tracked_frames": 0,
+            "raw_tracked_frames": 0,
+            "interpolated_frames": 0,
+            "total_frames": 0,
+            "coverage_ratio": 0.0,
+            "gap_ranges": [],
+        }
+
+    @staticmethod
+    def interpolate_and_analyze_tracks(
+        subtitle_frame_no_box_dict: dict,
+        total_frames: int,
+        max_interp_gap: int = 15,
+        max_jump_ratio: float = 0.35,
+        frame_size: tuple = None,
+    ):
+        """
+        Nội suy tuyến tính các khoảng mất dấu ngắn giữa hai đoạn bám đuổi hợp lệ
+        và tổng hợp báo cáo độ phủ khung hình cùng danh sách các khoảng đứt quãng.
+        """
+        if not subtitle_frame_no_box_dict:
+            eff_total = max(1, int(total_frames or 1))
+            gap_list = [(1, eff_total)] if total_frames and total_frames > 0 else []
+            return {}, {
+                "tracked_frames": 0,
+                "raw_tracked_frames": 0,
+                "interpolated_frames": 0,
+                "total_frames": eff_total,
+                "coverage_ratio": 0.0,
+                "gap_ranges": gap_list,
+            }
+
+        sorted_frames = sorted(int(f) for f, boxes in subtitle_frame_no_box_dict.items() if boxes)
+        if not sorted_frames:
+            eff_total = max(1, int(total_frames or 1))
+            return {}, {
+                "tracked_frames": 0,
+                "raw_tracked_frames": 0,
+                "interpolated_frames": 0,
+                "total_frames": eff_total,
+                "coverage_ratio": 0.0,
+                "gap_ranges": [(1, eff_total)],
+            }
+
+        filled = {f: list(subtitle_frame_no_box_dict[f]) for f in sorted_frames}
+        interpolated_count = 0
+        gap_ranges = []
+
+        if frame_size is not None and len(frame_size) >= 2:
+            fh, fw = float(frame_size[0]), float(frame_size[1])
+            max_jump_dist = ((fh ** 2 + fw ** 2) ** 0.5) * max_jump_ratio
+        else:
+            max_jump_dist = 400.0
+
+        if sorted_frames[0] > 1:
+            gap_ranges.append((1, sorted_frames[0] - 1))
+
+        for idx in range(len(sorted_frames) - 1):
+            f_prev = sorted_frames[idx]
+            f_next = sorted_frames[idx + 1]
+            gap_len = f_next - f_prev - 1
+            if gap_len <= 0:
+                continue
+
+            if gap_len <= max_interp_gap:
+                boxes_a = filled.get(f_prev, [])
+                boxes_b = filled.get(f_next, [])
+                num_pairs = min(len(boxes_a), len(boxes_b))
+                interpolated_this_gap = False
+                for b_idx in range(num_pairs):
+                    ba = boxes_a[b_idx]
+                    bb = boxes_b[b_idx]
+                    if ba is None or bb is None or len(ba) < 4 or len(bb) < 4:
+                        continue
+                    xmin_a, xmax_a, ymin_a, ymax_a = [float(v) for v in ba[:4]]
+                    xmin_b, xmax_b, ymin_b, ymax_b = [float(v) for v in bb[:4]]
+                    cx_a, cy_a = (xmin_a + xmax_a) / 2.0, (ymin_a + ymax_a) / 2.0
+                    cx_b, cy_b = (xmin_b + xmax_b) / 2.0, (ymin_b + ymax_b) / 2.0
+                    dist = ((cx_b - cx_a) ** 2 + (cy_b - cy_a) ** 2) ** 0.5
+                    if dist <= max_jump_dist:
+                        span = float(f_next - f_prev)
+                        for f_mid in range(f_prev + 1, f_next):
+                            alpha = (f_mid - f_prev) / span
+                            ixmin = int(round(xmin_a + alpha * (xmin_b - xmin_a)))
+                            ixmax = int(round(xmax_a + alpha * (xmax_b - xmax_a)))
+                            iymin = int(round(ymin_a + alpha * (ymin_b - ymin_a)))
+                            iymax = int(round(ymax_a + alpha * (ymax_b - ymax_a)))
+                            if ixmax > ixmin and iymax > iymin:
+                                filled.setdefault(f_mid, []).append((ixmin, ixmax, iymin, iymax))
+                        interpolated_this_gap = True
+
+                if interpolated_this_gap:
+                    interpolated_count += gap_len
+                else:
+                    gap_ranges.append((f_prev + 1, f_next - 1))
+            else:
+                gap_ranges.append((f_prev + 1, f_next - 1))
+
+        eff_total = max(int(total_frames or 0), sorted_frames[-1], 1)
+        if sorted_frames[-1] < eff_total:
+            gap_ranges.append((sorted_frames[-1] + 1, eff_total))
+
+        tracked_frames = len(filled)
+        coverage_ratio = tracked_frames / float(eff_total)
+        report = {
+            "tracked_frames": tracked_frames,
+            "raw_tracked_frames": len(sorted_frames),
+            "interpolated_frames": interpolated_count,
+            "total_frames": eff_total,
+            "coverage_ratio": coverage_ratio,
+            "gap_ranges": gap_ranges,
+        }
+        return filled, report
 
     def _open_capture_no_hwaccel(self, path):
         # Ép FFmpeg dùng software decode, tránh lỗi Static surface pool exceeded
@@ -605,9 +719,23 @@ class ObjectTracker:
                     sub_remover.progress_signal.emit(sub_remover.progress_total, False, current_frame_no)
 
         video_cap.release()
+        subtitle_frame_no_box_dict, report = self.interpolate_and_analyze_tracks(
+            subtitle_frame_no_box_dict,
+            total_frames=frame_count,
+            max_interp_gap=15,
+            frame_size=(frame_h, frame_w),
+        )
+        self.last_tracking_report = report
         if sub_remover:
-            sub_remover.append_output("Hoàn tất bám đuổi vị trí đối tượng.")
-            
+            cov_pct = report["coverage_ratio"] * 100.0
+            sub_remover.append_output(
+                f"Hoàn tất bám đuổi đối tượng: bao phủ {report['tracked_frames']}/{report['total_frames']} khung hình ({cov_pct:.1f}%), nội suy {report['interpolated_frames']} khung hình."
+            )
+            if report["coverage_ratio"] < 0.75 or report["gap_ranges"]:
+                sub_remover.append_output(
+                    f"Cảnh báo: Phát hiện {len(report['gap_ranges'])} khoảng mất dấu đối tượng trên video. Vui lòng kiểm tra lại kết quả."
+                )
+
         return subtitle_frame_no_box_dict
 
     def _run_sam2_tracking(self, sam2_tracker, initial_boxes, start_frame, total_frames, sub_remover, tbar, sub_detector):
@@ -767,7 +895,20 @@ class ObjectTracker:
         if video_cap:
             video_cap.release()
 
+        subtitle_frame_no_box_dict, report = self.interpolate_and_analyze_tracks(
+            subtitle_frame_no_box_dict,
+            total_frames=total_frames,
+            max_interp_gap=15,
+        )
+        self.last_tracking_report = report
         if sub_remover:
-            sub_remover.append_output("Hoàn tất bám đuổi vị trí đối tượng bằng SAM 2.")
+            cov_pct = report["coverage_ratio"] * 100.0
+            sub_remover.append_output(
+                f"Hoàn tất bám đuổi đối tượng bằng SAM 2: bao phủ {report['tracked_frames']}/{report['total_frames']} khung hình ({cov_pct:.1f}%), nội suy {report['interpolated_frames']} khung hình."
+            )
+            if report["coverage_ratio"] < 0.75 or report["gap_ranges"]:
+                sub_remover.append_output(
+                    f"Cảnh báo: Phát hiện {len(report['gap_ranges'])} khoảng mất dấu đối tượng trên video. Vui lòng kiểm tra lại kết quả."
+                )
             
         return subtitle_frame_no_box_dict

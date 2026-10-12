@@ -27,6 +27,9 @@ class TaskStatus(Enum):
 class TaskOptions(Enum):
     AB_SECTIONS = "ab_sections"
     SUB_AREAS = "sub_areas"
+    FREEHAND_STROKES = "freehand_strokes"
+    TRACKED_SUB_LIST = "tracked_sub_list"
+    MOVING_TRACKING = "moving_tracking"
 
 @dataclass
 class Task:
@@ -58,6 +61,10 @@ class Task:
     def is_image(self):
         """判断是否是图片文件"""
         return is_image_file(self.path)
+
+
+# Alias tương thích ngược cho các bộ kiểm thử và module gọi TaskItem
+TaskItem = Task
 
 class TaskListComponent(QWidget):
     """任务列表组件"""
@@ -168,6 +175,14 @@ class TaskListComponent(QWidget):
         # 滚动到最新添加的行
         self.table.scrollToBottom()
         self.save_session()
+        return True
+
+    def add_tasks(self, video_paths):
+        """Thêm hàng loạt tác vụ vào danh sách."""
+        if not video_paths:
+            return False
+        for vp in video_paths:
+            self.add_task(vp)
         return True
         
     def update_task_progress(self, index, progress):
