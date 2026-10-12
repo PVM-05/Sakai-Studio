@@ -1,0 +1,15 @@
+# Goi phu thuoc tinh gon cho backend va celery tren Docker
+numpy>=1.24.0
+opencv-python-headless>=4.10.0
+Pillow>=10.0.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.28.0
+celery>=5.3.0
+redis>=5.0.0
+sqlalchemy>=2.0.0
+yt-dlp>=2024.1.0
+python-multipart>=0.0.9
+requests>=2.31.0
+pydantic>=2.0.0
+rapidocr-onnxruntime
+onnxruntime

@@ -294,32 +294,40 @@ class AutoPipelineWorker(QThread):
                 import shutil
                 shutil.copy(input_video_for_merge, self.output_path)
 
-            # --- 3.5 BƯỚC TTS & AUDIO DUCKING (Nếu được cấu hình) ---
+            # --- 3.5 BƯỚC LỒNG TIẾNG OMNIVOICE TRÊN GPU (Nếu được cấu hình) ---
             if getattr(config, 'mmoEnableTTS', None) and config.mmoEnableTTS.value:
                 try:
-                    self.log_signal.emit("BẮT ĐẦU QUÁ TRÌNH LỒNG TIẾNG AI (OmniVoice)...")
-                    tts_engine = TTSEngine(parent_logger=lambda msg: self.log_signal.emit(f"[TTS] {msg}"))
-                    
+                    self.log_signal.emit("BẮT ĐẦU QUÁ TRÌNH LỒNG TIẾNG TRÍ TUỆ NHÂN TẠO TRÊN GPU...")
+                    tts_engine = TTSEngine.from_app_config(
+                        parent_logger=lambda msg: self.log_signal.emit(f"[Lồng tiếng] {msg}"),
+                        language=self.target_lang,
+                    )
+
                     tts_temp_audio = str(Path(self.output_path).parent / f"{Path(self.video_path).stem}_tts_temp.wav")
-                    tts_engine.synthesize_blocks(extracted_blocks, total_duration, tts_temp_audio)
-                    
-                    self.log_signal.emit("Đang mix âm thanh với Auto Ducking...")
+                    tts_engine.synthesize_blocks(
+                        extracted_blocks,
+                        total_duration,
+                        tts_temp_audio,
+                        video_path=self.video_path,
+                    )
+
+                    self.log_signal.emit("Đang hòa trộn âm thanh lồng tiếng với âm thanh gốc...")
                     ducked_video_path = str(Path(self.output_path).parent / f"{Path(self.video_path).stem}_ducked_temp.mp4")
-                    
+
                     duck_vol = config.mmoAudioDuckingVolume.value if hasattr(config, 'mmoAudioDuckingVolume') else 0.15
                     TTSEngine.mix_audio_ducking(self.output_path, tts_temp_audio, ducked_video_path, duck_vol)
-                    
+
                     if os.path.exists(ducked_video_path) and os.path.getsize(ducked_video_path) > 0:
                         import shutil
                         shutil.move(ducked_video_path, self.output_path)
-                        self.log_signal.emit("Hoàn thành Lồng tiếng AI & Mix âm thanh!")
-                    
+                        self.log_signal.emit("Hoàn thành lồng tiếng và hòa trộn âm thanh!")
+
                     if os.path.exists(tts_temp_audio):
                         os.remove(tts_temp_audio)
-                        
+
                     tts_engine.unload_model()
                 except Exception as tts_e:
-                    self.log_signal.emit(f"Lỗi Lồng tiếng AI: {str(tts_e)}")
+                    self.log_signal.emit(f"Lỗi lồng tiếng: {str(tts_e)}")
 
             for tmp in [cleaned_video_path, ass_path]:
                 if os.path.exists(tmp):

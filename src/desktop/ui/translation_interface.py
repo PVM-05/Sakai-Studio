@@ -312,10 +312,15 @@ class TranslationInterface(QWidget):
         self.stop_btn.setVisible(False)
         export_layout.addWidget(self.stop_btn)
 
-        self.export_srt_button = PushButton("Lưu file phụ đề dịch", self)
+        self.export_srt_button = PushButton("Lưu tệp phụ đề dịch", self)
         self.export_srt_button.setIcon(FluentIcon.SAVE)
         self.export_srt_button.setEnabled(False)
         export_layout.addWidget(self.export_srt_button)
+
+        self.send_to_tts_button = PrimaryPushButton("Chuyển Sang Lồng Tiếng", self)
+        self.send_to_tts_button.setIcon(FluentIcon.MICROPHONE)
+        self.send_to_tts_button.setEnabled(False)
+        export_layout.addWidget(self.send_to_tts_button)
 
         main_layout.addWidget(export_card)
 
@@ -347,6 +352,7 @@ class TranslationInterface(QWidget):
         self.table.cellChanged.connect(self._on_table_cell_changed)
         self.table.itemSelectionChanged.connect(self._on_table_row_selected)
         self.export_srt_button.clicked.connect(self._export_srt)
+        self.send_to_tts_button.clicked.connect(self._send_to_omnivoice)
 
         self.progress_signal.connect(self._update_progress)
         self.finished_signal.connect(self._on_translation_finished)
@@ -588,6 +594,8 @@ class TranslationInterface(QWidget):
             self.translate_btn.setEnabled(has_data)
         if hasattr(self, 'export_srt_button'):
             self.export_srt_button.setEnabled(has_data)
+        if hasattr(self, 'send_to_tts_button'):
+            self.send_to_tts_button.setEnabled(has_data)
 
     def _filter_table(self, query: str):
         query = query.lower().strip()
@@ -779,6 +787,18 @@ class TranslationInterface(QWidget):
             content = blocks_to_srt(self.subtitle_blocks, use_translated=True)
             Path(filepath).write_text(content, encoding="utf-8")
             InfoBar.success("Đã lưu", f"Đã xuất tệp phụ đề tại: {os.path.basename(filepath)}", parent=self, duration=3000)
+
+    def _send_to_omnivoice(self):
+        if not self.subtitle_blocks:
+            InfoBar.warning("Cảnh báo", "Chưa có dữ liệu phụ đề để chuyển sang lồng tiếng!", parent=self, duration=2500)
+            return
+        win = self.window()
+        if hasattr(win, "open_in_omnivoice"):
+            win.open_in_omnivoice(
+                srt_path=self.current_srt_path,
+                video_path=self.current_video_path,
+                blocks=self.subtitle_blocks,
+            )
 
     def _save_api_config(self, show_toast=False):
         try:

@@ -807,9 +807,28 @@ class Config(QConfig):
     voiceSeparation = ConfigItem("Main", "VoiceSeparation", False, BoolValidator())
     autoTighten = ConfigItem("Main", "AutoTighten", False, BoolValidator())
 
-    # --- TTS & Audio Ducking Configs ---
+    # --- TTS & Audio Ducking Configs (OmniVoice Local GPU) ---
     mmoEnableTTS = ConfigItem("MMO", "EnableTTS", False, BoolValidator())
-    mmoAudioDuckingVolume = ConfigItem("MMO", "AudioDuckingVolume", 0.15) # Giảm 85% tiếng gốc
+    mmoAudioDuckingVolume = ConfigItem("MMO", "AudioDuckingVolume", 0.15)  # Giảm 85% tiếng gốc
+    mmoTTSMode = OptionsConfigItem("MMO", "TTSMode", "clone", OptionsValidator(["clone", "design", "auto"]))
+    mmoTTSAutoExtractRef = ConfigItem("MMO", "TTSAutoExtractRef", True, BoolValidator())  # Tự động trích xuất giọng từ video
+    mmoTTSRefAudioPath = ConfigItem("MMO", "TTSRefAudioPath", "")  # Đường dẫn giọng mẫu tùy chỉnh
+    mmoTTSRefText = ConfigItem("MMO", "TTSRefText", "")  # Phiên âm văn bản của giọng mẫu
+    mmoTTSVoicePromptDir = ConfigItem("MMO", "TTSVoicePromptDir", "")  # Thư mục cache giọng mẫu (.pt)
+    mmoTTSGender = OptionsConfigItem("MMO", "TTSGender", "auto", OptionsValidator(["auto", "male", "female"]))
+    mmoTTSAge = OptionsConfigItem("MMO", "TTSAge", "auto", OptionsValidator(["auto", "child", "teenager", "young adult", "middle-aged", "elderly"]))
+    mmoTTSPitch = OptionsConfigItem("MMO", "TTSPitch", "auto", OptionsValidator(["auto", "very low pitch", "low pitch", "moderate pitch", "high pitch", "very high pitch"]))
+    mmoTTSStyle = OptionsConfigItem("MMO", "TTSStyle", "normal", OptionsValidator(["normal", "whisper"]))
+    mmoTTSInstructCustom = ConfigItem("MMO", "TTSInstructCustom", "")  # Thuộc tính thiết kế giọng bổ sung
+    mmoTTSSpeed = ConfigItem("MMO", "TTSSpeed", 1.0)  # Tốc độ nói (0.5-2.0)
+    mmoTTSSyncDuration = ConfigItem("MMO", "TTSSyncDuration", True, BoolValidator())  # Tự động khớp thời lượng câu đọc với phụ đề
+    mmoTTSNumStep = RangeConfigItem("MMO", "TTSNumStep", 32, RangeValidator(4, 64))  # Số bước giải mã khuếch tán
+    mmoTTSGuidanceScale = ConfigItem("MMO", "TTSGuidanceScale", 2.0)  # Hệ số dẫn hướng CFG (0.0-4.0)
+    mmoTTSDenoise = ConfigItem("MMO", "TTSDenoise", True, BoolValidator())  # Khử nhiễu giọng đọc
+    mmoTTSPreprocessPrompt = ConfigItem("MMO", "TTSPreprocessPrompt", True, BoolValidator())  # Tiền xử lý cắt khoảng lặng giọng mẫu
+    mmoTTSPostprocessOutput = ConfigItem("MMO", "TTSPostprocessOutput", True, BoolValidator())  # Hậu xử lý cắt khoảng lặng âm thanh đầu ra
+    mmoTTSNormalizeText = ConfigItem("MMO", "TTSNormalizeText", True, BoolValidator())  # Chuẩn hóa đọc chữ số và ngày tháng
+    mmoTTSFlashInfer = ConfigItem("MMO", "TTSFlashInfer", False, BoolValidator())  # Tăng tốc phần cứng FlashInfer / CUDA Graph
 CONFIG_FILE = 'config/config.json'
 if not os.path.exists(CONFIG_FILE):
     os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)

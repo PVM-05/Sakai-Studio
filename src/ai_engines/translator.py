@@ -41,6 +41,10 @@ class SubtitleBlock:
     xmax: int = -1
     ymin: int = -1
     ymax: int = -1
+    # Multi-Speaker / Per-Block Voice Profile
+    speaker: str = ""
+    voice_ref_path: str = ""
+    voice_instruct: str = ""
 
     def to_srt(self, use_translated: bool = True) -> str:
         content = self.translated_text if (use_translated and self.translated_text) else self.text

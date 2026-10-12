@@ -1,0 +1,83 @@
+services:
+  # May chu Redis lam cau noi hang doi thong diep
+  redis:
+    image: redis:alpine
+    container_name: sakai_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # May chu Backend FastAPI
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: sakai_backend
+    restart: unless-stopped
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - sakai_downloads:/app/src/web_api/downloads
+      - sakai_uploads:/app/src/web_api/uploads
+      - sakai_results:/app/src/web_api/results
+      - sakai_db:/app/src/web_api
+    depends_on:
+      - redis
+
+  # Tien trinh xu ly ngam Celery Worker
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: sakai_celery_worker
+    restart: unless-stopped
+    command: celery -A src.web_api.api.celery_app.celery_app worker --loglevel=info --concurrency=2
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - sakai_downloads:/app/src/web_api/downloads
+      - sakai_uploads:/app/src/web_api/uploads
+      - sakai_results:/app/src/web_api/results
+      - sakai_db:/app/src/web_api
+    depends_on:
+      - redis
+      - backend
+
+  # Giao dien Frontend Next.js
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: sakai_frontend
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    depends_on:
+      - backend
+
+  # Cong dao nguoc Nginx ket noi toan bo he thong tren cong 80
+  nginx:
+    image: nginx:alpine
+    container_name: sakai_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend
+      - frontend
+
+volumes:
+  redis_data:
+  sakai_downloads:
+  sakai_uploads:
+  sakai_results:
+  sakai_db:
