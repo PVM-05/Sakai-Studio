@@ -471,6 +471,7 @@ class HomeInterface(QWidget):
             if get_current_task_index >= 0:
                 self.task_list_component.update_task_option(get_current_task_index, TaskOptions.TRACKED_SUB_LIST, {})
                 self.task_list_component.update_task_option(get_current_task_index, TaskOptions.MOVING_TRACKING, False)
+                self.task_list_component.update_task_option(get_current_task_index, TaskOptions.TRACKING_REPORT, None)
             config.set(config.movingSubtitleTracking, False)
             if hasattr(self.setting_interface, 'moving_subtitle_card'):
                 self.setting_interface.moving_subtitle_card.setText("Nhận Diện Logo")
@@ -540,6 +541,7 @@ class HomeInterface(QWidget):
                 import traceback
                 traceback.print_exc()
                 print(f"Lỗi nhận diện chuyển động: {e}")
+                self._last_tracking_report = None
                 self.track_motion_finished_signal.emit({})
 
         threading.Thread(target=_bg_track, daemon=True).start()
@@ -557,23 +559,38 @@ class HomeInterface(QWidget):
             self._tracked_sub_list = tracked_dict
             config.set(config.movingSubtitleTracking, True)
 
+            report = getattr(self, '_last_tracking_report', None)
             get_current_task_index = self.task_list_component.get_current_task_index()
             if get_current_task_index >= 0:
                 self.task_list_component.update_task_option(get_current_task_index, TaskOptions.TRACKED_SUB_LIST, tracked_dict)
                 self.task_list_component.update_task_option(get_current_task_index, TaskOptions.MOVING_TRACKING, True)
+                self.task_list_component.update_task_option(get_current_task_index, TaskOptions.TRACKING_REPORT, report)
 
-            InfoBar.success(
-                title="Nhận diện chuyển động hoàn tất!",
-                content=f"Đã bám đuổi logo thành công trên {len(tracked_dict)} khung hình! Hãy bấm nút 'Bắt Đầu' để khởi chạy xóa toàn bộ video và xuất tệp.",
-                duration=6000,
-                position=InfoBarPosition.TOP, parent=self
-            )
+            if isinstance(report, dict) and report.get("needs_review"):
+                warn_msg = report.get("warning_message") or (
+                    f"Đã theo dõi {len(tracked_dict)} khung hình nhưng có khoảng trống quỹ đạo cần kiểm tra lại."
+                )
+                self.append_output(f"[Cảnh báo Theo Dõi] {warn_msg}")
+                InfoBar.warning(
+                    title="Cần kiểm tra lại quỹ đạo chuyển động",
+                    content=warn_msg,
+                    duration=7000,
+                    position=InfoBarPosition.TOP, parent=self
+                )
+            else:
+                InfoBar.success(
+                    title="Nhận diện chuyển động hoàn tất!",
+                    content=f"Đã bám đuổi logo thành công trên {len(tracked_dict)} khung hình! Hãy bấm nút 'Bắt Đầu' để khởi chạy xóa toàn bộ video và xuất tệp.",
+                    duration=6000,
+                    position=InfoBarPosition.TOP, parent=self
+                )
         else:
             self._is_tracked = False
             config.set(config.movingSubtitleTracking, False)
             get_current_task_index = self.task_list_component.get_current_task_index()
             if get_current_task_index >= 0:
                 self.task_list_component.update_task_option(get_current_task_index, TaskOptions.MOVING_TRACKING, False)
+                self.task_list_component.update_task_option(get_current_task_index, TaskOptions.TRACKING_REPORT, None)
             if hasattr(self.setting_interface, 'moving_subtitle_card'):
                 self.setting_interface.moving_subtitle_card.setEnabled(True)
                 self.setting_interface.moving_subtitle_card.setText("Nhận Diện Logo")
@@ -1172,8 +1189,14 @@ class HomeInterface(QWidget):
                             options['moving_tracking'] = is_moving_sub
                             if is_moving_sub and tracked_list:
                                 options['tracked_sub_list'] = tracked_list
+                                tracking_report = self.task_list_component.get_task_option(
+                                    self.current_processing_task_index, TaskOptions.TRACKING_REPORT, None
+                                )
+                                if tracking_report:
+                                    options['tracking_report'] = tracking_report
                             else:
                                 options['tracked_sub_list'] = {}
+                                options['tracking_report'] = None
                             if TaskOptions.FREEHAND_STROKES.value in options:
                                 options['strokes'] = options[TaskOptions.FREEHAND_STROKES.value]
                             elif hasattr(self.video_display_component, 'freehand_strokes') and self.video_display_component.freehand_strokes:
@@ -1192,30 +1215,35 @@ class HomeInterface(QWidget):
                                 task_item.output_path = out_path
                             output_path = task_item.output_path
                             self._last_process_result_status = None
+                            self._last_process_result_detail = ""
                             process = self.run_subtitle_remover_process(task_item.path, output_path, options)
 
                             # 检查是否在处理过程中被停止
                             if self._stop_event.is_set():
                                 break
 
-                            # Xác minh đầu ra hợp lệ trước khi đánh dấu COMPLETED
+                            # Xác minh đầu ra hợp lệ trước khi đánh dấu COMPLETED / WARNING
                             from src.core.main import verify_media_output
                             task_obj = self.task_list_component.get_task(self.current_processing_task_index)
                             output_valid = verify_media_output(output_path, is_picture=is_image_file(task_item.path))
+                            result_status = getattr(self, '_last_process_result_status', 'success')
                             if (
                                 process.exitcode == 0
                                 and output_valid
-                                and getattr(self, '_last_process_result_status', 'success') != 'failed'
+                                and result_status != 'failed'
                                 and task_obj
                                 and task_obj.status == TaskStatus.PROCESSING
                             ):
-                                if getattr(self, '_last_process_result_status', '') == 'no_target_found':
+                                if result_status == 'no_target_found':
                                     self.append_log_signal.emit([
                                         "[Thông báo] Không phát hiện phụ đề hoặc đối tượng cần xóa trong vùng chọn; đã giữ nguyên hình ảnh gốc."
                                     ])
                                 self.progress_signal.emit(100, True, 0)
                                 task_obj.output_path = output_path
-                                self.task_status_signal.emit(self.current_processing_task_index, TaskStatus.COMPLETED)
+                                if result_status == 'partial':
+                                    self.task_status_signal.emit(self.current_processing_task_index, TaskStatus.WARNING)
+                                else:
+                                    self.task_status_signal.emit(self.current_processing_task_index, TaskStatus.COMPLETED)
                                 
                                 # Kiểm tra xem file SRT có được tạo ra không
                                 custom_dir = getattr(config, 'srtSaveDirectory', None)
@@ -1267,14 +1295,18 @@ class HomeInterface(QWidget):
 
     def _on_process_result(self, status, output_path="", detail=""):
         self._last_process_result_status = status
+        self._last_process_result_detail = detail
         if detail and status == "failed":
             self.append_log_signal.emit([f"[Lỗi xử lý] {detail}"])
+        elif detail and status == "partial":
+            self.append_log_signal.emit([f"[Cảnh báo kiểm tra] {detail}"])
 
     @staticmethod
     def remover_process(queue, video_path, output_path, options, temp_output_path=None):
         """
         Thực thi xóa phụ đề trong tiến trình con với tệp tạm biệt lập, xác minh đầu ra trước khi ghi đè nguyên tử.
         """
+        import sys
         sr = None
         exit_code = 0
         if not temp_output_path:
@@ -1306,12 +1338,24 @@ class HomeInterface(QWidget):
 
             sr.run()
 
-            if not verify_media_output(temp_output_path, is_picture=sr.is_picture):
+            expected_frames = int(sr.frame_count) if not sr.is_picture else 0
+            expected_fps = float(sr.fps) if not sr.is_picture else 0.0
+            require_audio = bool(getattr(sr, 'source_has_audio', False)) and not sr.is_picture
+            if not verify_media_output(
+                temp_output_path,
+                is_picture=sr.is_picture,
+                expected_frames=expected_frames,
+                expected_fps=expected_fps,
+                require_audio=require_audio,
+            ):
                 raise RuntimeError(f"Tệp kết quả tạm không hợp lệ: {temp_output_path}")
 
             os.replace(temp_output_path, output_path)
             run_status = getattr(sr, 'run_status', 'success')
-            SubtitleRemoverRemoteCall.remote_call_report_result(queue, run_status, output_path, "")
+            detail = ""
+            if run_status == "partial" and isinstance(getattr(sr, 'tracking_report', None), dict):
+                detail = sr.tracking_report.get("warning_message", "")
+            SubtitleRemoverRemoteCall.remote_call_report_result(queue, run_status, output_path, detail)
         except Exception as e:
             exit_code = 1
             traceback.print_exc()

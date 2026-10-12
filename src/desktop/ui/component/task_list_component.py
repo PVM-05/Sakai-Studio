@@ -20,6 +20,7 @@ class TaskStatus(Enum):
     PENDING = tr['TaskList']['Pending']
     PROCESSING = tr['TaskList']['Processing']
     COMPLETED = tr['TaskList']['Completed']
+    WARNING = "Hoàn thành (Cần kiểm tra)"
     FAILED = tr['TaskList']['Failed']
 
 
@@ -29,6 +30,7 @@ class TaskOptions(str, Enum):
     SUB_AREAS = "sub_areas"
     FREEHAND_STROKES = "freehand_strokes"
     TRACKED_SUB_LIST = "tracked_sub_list"
+    TRACKING_REPORT = "tracking_report"
     MOVING_TRACKING = "moving_tracking"
 
 @dataclass
@@ -220,6 +222,8 @@ class TaskListComponent(QWidget):
                 # 根据状态设置不同颜色
                 if status == TaskStatus.COMPLETED:
                     status_item.setForeground(QBrush(QColor("#2ecc71")))  # 绿色
+                elif status == TaskStatus.WARNING:
+                    status_item.setForeground(QBrush(QColor("#f39c12")))  # 橙色
                 elif status == TaskStatus.PROCESSING:
                     status_item.setForeground(QBrush(QColor("#3498db")))  # 蓝色
                 elif status == TaskStatus.FAILED:

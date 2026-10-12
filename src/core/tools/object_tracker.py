@@ -245,6 +245,9 @@ class ObjectTracker:
             "total_frames": 0,
             "coverage_ratio": 0.0,
             "gap_ranges": [],
+            "needs_review": True,
+            "status": "empty",
+            "warning_message": "",
         }
 
     @staticmethod
@@ -254,10 +257,11 @@ class ObjectTracker:
         max_interp_gap: int = 15,
         max_jump_ratio: float = 0.35,
         frame_size: tuple = None,
+        min_coverage_ratio: float = 0.85,
     ):
         """
         Nội suy tuyến tính các khoảng mất dấu ngắn giữa hai đoạn bám đuổi hợp lệ
-        và tổng hợp báo cáo độ phủ khung hình cùng danh sách các khoảng đứt quãng.
+        và tổng hợp báo cáo độ phủ khung hình, danh sách khoảng đứt quãng và trạng thái cần kiểm tra.
         """
         if not subtitle_frame_no_box_dict:
             eff_total = max(1, int(total_frames or 1))
@@ -269,6 +273,9 @@ class ObjectTracker:
                 "total_frames": eff_total,
                 "coverage_ratio": 0.0,
                 "gap_ranges": gap_list,
+                "needs_review": True,
+                "status": "empty",
+                "warning_message": "Không theo dõi được mục tiêu trên bất kỳ khung hình nào.",
             }
 
         sorted_frames = sorted(int(f) for f, boxes in subtitle_frame_no_box_dict.items() if boxes)
@@ -281,6 +288,9 @@ class ObjectTracker:
                 "total_frames": eff_total,
                 "coverage_ratio": 0.0,
                 "gap_ranges": [(1, eff_total)],
+                "needs_review": True,
+                "status": "empty",
+                "warning_message": "Danh sách tọa độ theo dõi rỗng trên toàn bộ video.",
             }
 
         filled = {f: list(subtitle_frame_no_box_dict[f]) for f in sorted_frames}
@@ -343,6 +353,20 @@ class ObjectTracker:
 
         tracked_frames = len(filled)
         coverage_ratio = tracked_frames / float(eff_total)
+        needs_review = bool(len(gap_ranges) > 0 or coverage_ratio < min_coverage_ratio)
+        warning_parts = []
+        if coverage_ratio < min_coverage_ratio:
+            warning_parts.append(
+                f"Độ phủ theo dõi đạt {coverage_ratio * 100:.1f}% ({tracked_frames}/{eff_total} khung hình), thấp hơn ngưỡng an toàn {min_coverage_ratio * 100:.0f}%."
+            )
+        if gap_ranges:
+            gap_str = ", ".join(f"{s}-{e}" for s, e in gap_ranges[:5])
+            if len(gap_ranges) > 5:
+                gap_str += f" (+{len(gap_ranges) - 5} đoạn)"
+            warning_parts.append(
+                f"Phát hiện khoảng mất dấu chưa thể nội suy tại các khung hình: {gap_str}. Logo có thể còn xuất hiện tại các đoạn này."
+            )
+        warning_message = " ".join(warning_parts)
         report = {
             "tracked_frames": tracked_frames,
             "raw_tracked_frames": len(sorted_frames),
@@ -350,6 +374,9 @@ class ObjectTracker:
             "total_frames": eff_total,
             "coverage_ratio": coverage_ratio,
             "gap_ranges": gap_ranges,
+            "needs_review": needs_review,
+            "status": "needs_review" if needs_review else "complete",
+            "warning_message": warning_message,
         }
         return filled, report
 

@@ -19,6 +19,8 @@
 numpy>=1.21.0
 opencv-python>=4.12.0
 Pillow>=12.2.0
+filesplit>=3.0.2
+tqdm>=4.65.0
 
 # AI/ML Frameworks (choose based on your GPU)
 # ------------------------------------------

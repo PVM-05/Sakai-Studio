@@ -362,3 +362,155 @@ def test_sharpening_and_opencv_inpaint_mask_normalization():
     out_batch = opencv_engine([orig_frame, orig_frame], [float_mask, float_mask])
     assert len(out_batch) == 2
     assert out_batch[0].shape == orig_frame.shape
+
+
+def _create_synthetic_video(path: str, width: int = 160, height: int = 120, num_frames: int = 20, moving: bool = False):
+    """Tạo video tổng hợp dùng cho kiểm thử tự động xóa phụ đề và logo di chuyển."""
+    writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), 24.0, (width, height))
+    try:
+        for idx in range(num_frames):
+            frame = np.full((height, width, 3), 60, dtype=np.uint8)
+            if moving:
+                x1 = min(width - 45, 15 + idx * 3)
+                cv2.rectangle(frame, (x1, 42), (x1 + 36, 68), (240, 240, 240), -1)
+            else:
+                cv2.rectangle(frame, (24, 80), (width - 24, 106), (240, 240, 240), -1)
+            writer.write(frame)
+    finally:
+        writer.release()
+
+
+def test_moving_logo_inpaint_short_vs_long_occlusion_gap():
+    """
+    Xác minh xóa logo di chuyển:
+    - Khi mất dấu ngắn (<= 15 frame): nội suy lấp đầy, xóa sạch logo trên các frame bị khuất và trả về run_status == 'success'.
+    - Khi mất dấu dài (> 15 frame) hoặc độ phủ thấp (< 85%): không báo thành công tuyệt đối mà trả về run_status == 'partial' kèm cảnh báo cần kiểm tra.
+    """
+    from src.core.main import GUISubtitleRemover, verify_media_output
+    from src.core.tools.constant import InpaintMode
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vid_short = os.path.join(tmpdir, "moving_short_gap.mp4")
+        vid_long = os.path.join(tmpdir, "moving_long_gap.mp4")
+        _create_synthetic_video(vid_short, width=160, height=120, num_frames=20, moving=True)
+        _create_synthetic_video(vid_long, width=160, height=120, num_frames=40, moving=True)
+
+        old_mask_type = config.maskType.value
+        old_inpaint_mode = config.inpaintMode.value
+        old_moving = config.movingSubtitleTracking.value
+        try:
+            config.set(config.maskType, "rectangle")
+            config.set(config.inpaintMode, InpaintMode.OPENCV)
+            config.set(config.movingSubtitleTracking, False)
+
+            # 1. Mất dấu ngắn (frame 6..9 bị thiếu trong tracked_sub_list nhưng khoảng trống = 4 <= 15)
+            tracked_short = {}
+            for idx in range(1, 21):
+                if 6 <= idx <= 9:
+                    continue
+                x1 = 15 + (idx - 1) * 6
+                x2 = min(160 - 5, x1 + 42)
+                tracked_short[idx] = [(max(0, x1 - 4), min(160, x2 + 4), 38, 72)]
+
+            remover_short = GUISubtitleRemover(vid_short, gui_mode=True)
+            remover_short.moving_tracking = True
+            remover_short.tracked_sub_list = tracked_short
+            remover_short.lama_inpaint = OpenCVInpaint()
+            remover_short.run()
+
+            assert remover_short.run_status == "success"
+            assert remover_short.tracking_report is not None
+            assert remover_short.tracking_report["needs_review"] is False
+            assert remover_short.tracking_report["interpolated_frames"] == 4
+            assert verify_media_output(remover_short.video_out_path, is_picture=False, expected_frames=20)
+
+            # 2. Mất dấu dài (chỉ theo dõi được frame 1..5 và 36..40 -> khoảng trống 30 frame > 15, coverage = 25% < 85%)
+            tracked_long = {}
+            for idx in list(range(1, 6)) + list(range(36, 41)):
+                x1 = 15 + (idx - 1) * 3
+                x2 = min(160 - 5, x1 + 42)
+                tracked_long[idx] = [(max(0, x1 - 4), min(160, x2 + 4), 38, 72)]
+
+            remover_long = GUISubtitleRemover(vid_long, gui_mode=True)
+            remover_long.moving_tracking = True
+            remover_long.tracked_sub_list = tracked_long
+            remover_long.lama_inpaint = OpenCVInpaint()
+            remover_long.run()
+
+            assert remover_long.run_status == "partial"
+            assert remover_long.tracking_report is not None
+            assert remover_long.tracking_report["needs_review"] is True
+            assert remover_long.tracking_report["status"] == "needs_review"
+            assert (6, 35) in remover_long.tracking_report["gap_ranges"]
+            assert remover_long.tracking_report["warning_message"] != ""
+        finally:
+            config.set(config.maskType, old_mask_type)
+            config.set(config.inpaintMode, old_inpaint_mode)
+            config.set(config.movingSubtitleTracking, old_moving)
+
+
+def test_audio_preservation_rejects_muted_fallback_when_source_has_audio(monkeypatch):
+    """
+    Khi video nguồn có luồng âm thanh nhưng cả 2 bước FFmpeg mux âm thanh đều thất bại,
+    GUISubtitleRemover KHÔNG ĐƯỢC âm thầm copy tệp tạm mất tiếng và báo thành công.
+    """
+    import subprocess
+    from src.core.main import GUISubtitleRemover
+    from src.core.tools.constant import InpaintMode, SubtitleDetectMode
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vid_path = os.path.join(tmpdir, "with_audio.mp4")
+        _create_synthetic_video(vid_path, width=160, height=120, num_frames=10, moving=False)
+
+        remover = GUISubtitleRemover(vid_path, gui_mode=True)
+        remover.source_has_audio = True
+        remover.sub_areas = [(74, 112, 16, 144)]
+
+        # Giả lập FFmpeg mux âm thanh thất bại ở cả 2 lần gọi
+        def _fail_ffmpeg(*args, **kwargs):
+            raise subprocess.CalledProcessError(1, args[0] if args else "ffmpeg")
+
+        monkeypatch.setattr(subprocess, "check_output", _fail_ffmpeg)
+
+        old_mode = config.inpaintMode.value
+        old_detect = config.subtitleDetectMode.value
+        try:
+            config.set(config.inpaintMode, InpaintMode.OPENCV)
+            config.set(config.subtitleDetectMode, SubtitleDetectMode.NONE.value)
+            with pytest.raises(RuntimeError, match="mất âm thanh|không hợp lệ"):
+                remover.run()
+            assert remover.audio_merge_failed is True
+            assert remover.is_successful_merged is False
+            assert remover.run_status == "failed"
+            assert not os.path.exists(remover.video_out_path)
+        finally:
+            config.set(config.inpaintMode, old_mode)
+            config.set(config.subtitleDetectMode, old_detect)
+
+
+def test_verify_media_output_rejects_truncated_video():
+    """verify_media_output phải từ chối video bị cắt cụt số khung hình so với expected_frames."""
+    from src.core.main import verify_media_output
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vid_path = os.path.join(tmpdir, "truncated.mp4")
+        _create_synthetic_video(vid_path, width=160, height=120, num_frames=8, moving=False)
+
+        # Hợp lệ khi kỳ vọng 8 frame
+        assert verify_media_output(vid_path, is_picture=False, expected_frames=8, expected_fps=24.0) is True
+        # Phải trả về False khi kỳ vọng 30 frame nhưng tệp chỉ có 8 frame
+        assert verify_media_output(vid_path, is_picture=False, expected_frames=30, expected_fps=24.0) is False
+        # Phải trả về False khi yêu cầu có luồng âm thanh nhưng tệp chỉ có hình ảnh
+        assert verify_media_output(vid_path, is_picture=False, expected_frames=8, require_audio=True) is False
+
+
+def test_task_queue_isolation_and_partial_warning_status():
+    """
+    Kiểm tra cô lập tùy chọn theo từng task và cập nhật trạng thái TaskStatus.WARNING
+    khi kết quả xóa logo di chuyển trả về 'partial'.
+    """
+    from src.desktop.ui.component.task_list_component import TaskStatus, TaskOptions
+
+    assert TaskStatus.WARNING.value == "Hoàn thành (Cần kiểm tra)"
+    assert TaskOptions.TRACKING_REPORT.value == "tracking_report"
+

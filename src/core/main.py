@@ -87,9 +87,63 @@ class ModelCacheManager:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-def verify_media_output(output_path: str, is_picture: bool = False) -> bool:
+def has_audio_stream(video_path: str) -> bool:
     """
-    Xác minh tệp đầu ra hình ảnh hoặc video tồn tại, có dung lượng > 0 và có thể giải mã khung hình hợp lệ.
+    Kiểm tra tệp video có chứa luồng âm thanh hợp lệ hay không bằng ffprobe hoặc ffmpeg.
+    """
+    if not video_path or not os.path.exists(video_path) or is_image_file(str(video_path)):
+        return False
+
+    try:
+        ffprobe_path = FFmpegCLI.instance().ffprobe_path
+        if ffprobe_path:
+            proc = subprocess.run(
+                [
+                    ffprobe_path,
+                    "-v", "error",
+                    "-select_streams", "a:0",
+                    "-show_entries", "stream=codec_type",
+                    "-of", "csv=p=0",
+                    video_path,
+                ],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if proc.returncode == 0:
+                return "audio" in (proc.stdout or "").lower()
+    except Exception:
+        pass
+
+    try:
+        ffmpeg_path = FFmpegCLI.instance().ffmpeg_path
+        if ffmpeg_path:
+            proc = subprocess.run(
+                [ffmpeg_path, "-hide_banner", "-i", video_path],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            stderr_text = (proc.stderr or "").lower()
+            return "stream #" in stderr_text and "audio:" in stderr_text
+    except Exception:
+        pass
+
+    return False
+
+
+def verify_media_output(
+    output_path: str,
+    is_picture: bool = False,
+    expected_frames: int = 0,
+    expected_fps: float = 0.0,
+    require_audio: bool = False,
+) -> bool:
+    """
+    Xác minh tệp đầu ra hình ảnh hoặc video tồn tại, có dung lượng > 0, giải mã được khung hình đầu/cuối,
+    đạt số lượng khung hình kỳ vọng và bảo toàn luồng âm thanh khi được yêu cầu.
     """
     if not output_path or not os.path.exists(output_path):
         return False
@@ -111,11 +165,48 @@ def verify_media_output(output_path: str, is_picture: bool = False) -> bool:
         if not cap.isOpened():
             return False
         ret, frame = cap.read()
-        return bool(ret and frame is not None and frame.size > 0)
+        if not (ret and frame is not None and frame.size > 0):
+            return False
+
+        if expected_fps > 0:
+            actual_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+            if actual_fps <= 0.0:
+                return False
+
+        if expected_frames > 0:
+            actual_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) + 0.5)
+            tolerance = max(2, int(round(expected_frames * 0.05)))
+            min_required_frames = max(1, expected_frames - tolerance)
+            if actual_frames > 0 and actual_frames < min_required_frames:
+                return False
+
+            target_tail = max(0, (actual_frames if actual_frames > 0 else expected_frames) - 1)
+            if target_tail > 0:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, target_tail)
+                ret_tail, tail_frame = cap.read()
+                if not (ret_tail and tail_frame is not None and tail_frame.size > 0):
+                    # Dự phòng đọc tuần tự nếu container không hỗ trợ seek chính xác
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    decoded_count = 0
+                    last_valid = False
+                    while decoded_count <= expected_frames + tolerance:
+                        ok, frm = cap.read()
+                        if not ok:
+                            break
+                        if frm is not None and frm.size > 0:
+                            decoded_count += 1
+                            last_valid = True
+                    if not last_valid or decoded_count < min_required_frames:
+                        return False
     except Exception:
         return False
     finally:
         cap.release()
+
+    if require_audio and not has_audio_stream(output_path):
+        return False
+
+    return True
 
 
 class GUISubtitleRemover:
@@ -131,6 +222,7 @@ class GUISubtitleRemover:
         self.moving_tracking = None
         self.run_status = "pending"
         self.tracking_report = None
+        self.audio_merge_failed = False
         # 是否为gui运行，gui运行需要显示预览
         self.gui_mode = gui_mode
         self.hardware_accelerator = HardwareAccelerator.instance()
@@ -141,6 +233,7 @@ class GUISubtitleRemover:
         self.is_picture = is_image_file(str(vd_path))
         # 视频路径
         self.video_path = vd_path
+        self.source_has_audio = False if self.is_picture else has_audio_stream(self.video_path)
         self.video_cap = cv2.VideoCapture(get_readable_path(vd_path))
         # 通过视频路径获取视频名称
         self.vd_name = Path(self.video_path).stem
@@ -532,6 +625,24 @@ class GUISubtitleRemover:
             sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
             sub_list = sub_detector.find_subtitle_frame_no(sub_remover=self)
 
+        if is_moving_tracking and len(sub_list) > 0:
+            from src.core.tools.object_tracker import ObjectTracker
+            sub_list, computed_report = ObjectTracker.interpolate_and_analyze_tracks(
+                sub_list,
+                total_frames=self.frame_count,
+            )
+            if not isinstance(getattr(self, 'tracking_report', None), dict):
+                self.tracking_report = computed_report
+            elif computed_report.get("needs_review"):
+                self.tracking_report["needs_review"] = True
+                self.tracking_report["status"] = "needs_review"
+                if not self.tracking_report.get("warning_message"):
+                    self.tracking_report["warning_message"] = computed_report.get("warning_message", "")
+            if isinstance(self.tracking_report, dict) and self.tracking_report.get("needs_review"):
+                self.run_status = "partial"
+                warn_msg = self.tracking_report.get("warning_message") or "Độ phủ quỹ đạo thấp hoặc có khoảng trống dài, cần kiểm tra lại video."
+                self.append_output(f"[Cảnh báo Theo Dõi] {warn_msg}")
+
         if len(sub_list) == 0:
             if self._has_positive_strokes():
                 sub_list = {f: [] for f in range(1, max(1, self.frame_count) + 1)}
@@ -680,59 +791,70 @@ class GUISubtitleRemover:
         self.progress_total = 0
         tbar = tqdm(total=int(self.frame_count), unit='frame', position=0, file=sys.__stdout__,
                     desc='Subtitle Removing')
-        if self.is_picture:
-            original_frame = read_image(self.video_path)
-            if original_frame is None:
-                self.run_status = "failed"
-                self.append_output(tr['Main']['ReadImageFailed'].format(self.video_path))
-                raise RuntimeError(tr['Main']['ReadImageFailed'].format(self.video_path))
-            sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
-            sub_list = sub_detector.detect_subtitle(original_frame)
-            del sub_detector
-            gc.collect()
-            if len(sub_list) or self._has_positive_strokes():
-                mask = self.get_mask(original_frame, sub_list)
-                if np.any(mask > 0):
-                    inpainted_frame = self.lama_inpaint.inpaint(original_frame, mask)
-                    inpainted_frame = self.apply_sharpening_to_inpainted_frame(original_frame, inpainted_frame, mask)
-                    if hasattr(self, 'callback') and self.callback:
-                        vis_m = mask[:, :, np.newaxis] if mask.ndim == 2 else mask
-                        vis_scale = 76.5 if vis_m.max() <= 1.0 else 0.3
-                        self.callback.update_preview(np.clip(original_frame+vis_m*vis_scale,0,255).astype(np.uint8), inpainted_frame)
+        try:
+            if self.is_picture:
+                original_frame = read_image(self.video_path)
+                if original_frame is None:
+                    self.run_status = "failed"
+                    self.append_output(tr['Main']['ReadImageFailed'].format(self.video_path))
+                    raise RuntimeError(tr['Main']['ReadImageFailed'].format(self.video_path))
+                sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
+                sub_list = sub_detector.detect_subtitle(original_frame)
+                del sub_detector
+                gc.collect()
+                if len(sub_list) or self._has_positive_strokes():
+                    mask = self.get_mask(original_frame, sub_list)
+                    if np.any(mask > 0):
+                        inpainted_frame = self.lama_inpaint.inpaint(original_frame, mask)
+                        inpainted_frame = self.apply_sharpening_to_inpainted_frame(original_frame, inpainted_frame, mask)
+                        if hasattr(self, 'callback') and self.callback:
+                            vis_m = mask[:, :, np.newaxis] if mask.ndim == 2 else mask
+                            vis_scale = 76.5 if vis_m.max() <= 1.0 else 0.3
+                            self.callback.update_preview(np.clip(original_frame+vis_m*vis_scale,0,255).astype(np.uint8), inpainted_frame)
+                    else:
+                        self.run_status = "no_target_found"
+                        inpainted_frame = original_frame
+                        if hasattr(self, 'callback') and self.callback:
+                            self.callback.update_preview(original_frame, inpainted_frame)
                 else:
                     self.run_status = "no_target_found"
                     inpainted_frame = original_frame
                     if hasattr(self, 'callback') and self.callback:
                         self.callback.update_preview(original_frame, inpainted_frame)
+                cv2.imencode(self.ext, inpainted_frame)[1].tofile(self.video_out_path)
+                tbar.update(1)
+                self.progress_total = 100
             else:
-                self.run_status = "no_target_found"
-                inpainted_frame = original_frame
-                if hasattr(self, 'callback') and self.callback:
-                    self.callback.update_preview(original_frame, inpainted_frame)
-            cv2.imencode(self.ext, inpainted_frame)[1].tofile(self.video_out_path)
-            tbar.update(1)
-            self.progress_total = 100
-        else:
-            # 精准模式下，获取场景分割的帧号，进一步切割
-            is_moving = self._is_moving_tracking_enabled()
-            if is_moving:
-                self.append_output("[Nhận Diện Chuyển Động] Tự động kích hoạt mô hình AI LaMa bám sát từng khung hình để xóa sạch 100% logo di chuyển...")
-                self.video_inpaint(tbar, self.lama_inpaint)
-            elif config.inpaintMode.value == InpaintMode.PROPAINTER:
-                self.propainter_mode(tbar)
-            elif config.inpaintMode.value == InpaintMode.STTN_AUTO:
-                self.sttn_auto_mode(tbar)
-            elif config.inpaintMode.value == InpaintMode.STTN_DET:
-                self.video_inpaint(tbar, self.sttn_det_inpaint)
-            elif config.inpaintMode.value == InpaintMode.LAMA:
-                self.video_inpaint(tbar, self.lama_inpaint)
-            elif config.inpaintMode.value == InpaintMode.OPENCV:
-                self.video_inpaint(tbar, OpenCVInpaint())
-            else:
-                raise Exception(f'inpaint mode: {config.inpaintMode.value} not implemented')
+                # 精准模式下，获取场景分割的帧号，进一步切割
+                is_moving = self._is_moving_tracking_enabled()
+                if is_moving:
+                    self.append_output("[Nhận Diện Chuyển Động] Tự động kích hoạt mô hình AI LaMa bám sát từng khung hình để xóa sạch 100% logo di chuyển...")
+                    inpaint_engine = OpenCVInpaint() if config.inpaintMode.value == InpaintMode.OPENCV else self.lama_inpaint
+                    self.video_inpaint(tbar, inpaint_engine)
+                elif config.inpaintMode.value == InpaintMode.PROPAINTER:
+                    self.propainter_mode(tbar)
+                elif config.inpaintMode.value == InpaintMode.STTN_AUTO:
+                    self.sttn_auto_mode(tbar)
+                elif config.inpaintMode.value == InpaintMode.STTN_DET:
+                    self.video_inpaint(tbar, self.sttn_det_inpaint)
+                elif config.inpaintMode.value == InpaintMode.LAMA:
+                    self.video_inpaint(tbar, self.lama_inpaint)
+                elif config.inpaintMode.value == InpaintMode.OPENCV:
+                    self.video_inpaint(tbar, OpenCVInpaint())
+                else:
+                    raise Exception(f'inpaint mode: {config.inpaintMode.value} not implemented')
+        finally:
+            try:
+                if getattr(self, 'video_cap', None) is not None:
+                    self.video_cap.release()
+            except Exception:
+                pass
+            try:
+                if getattr(self, 'video_writer', None) is not None:
+                    self.video_writer.release()
+            except Exception:
+                pass
 
-        self.video_cap.release()
-        self.video_writer.release()
         if not self.is_picture:
             # 将原音频合并到新生成的视频文件中
             self.merge_audio_to_video()
@@ -763,10 +885,19 @@ class GUISubtitleRemover:
             except Exception:
                 pass
 
-        if not verify_media_output(self.video_out_path, is_picture=self.is_picture):
+        expected_frames = int(self.frame_count) if not self.is_picture else 0
+        expected_fps = float(self.fps) if not self.is_picture else 0.0
+        require_audio = bool(getattr(self, 'source_has_audio', False)) and not self.is_picture
+        if getattr(self, 'audio_merge_failed', False) or not verify_media_output(
+            self.video_out_path,
+            is_picture=self.is_picture,
+            expected_frames=expected_frames,
+            expected_fps=expected_fps,
+            require_audio=require_audio,
+        ):
             self.run_status = "failed"
             self.is_successful_merged = False
-            raise RuntimeError(f"Tệp kết quả đầu ra không hợp lệ hoặc bị hỏng: {self.video_out_path}")
+            raise RuntimeError(f"Tệp kết quả đầu ra không hợp lệ, bị thiếu khung hình hoặc mất âm thanh: {self.video_out_path}")
 
         if self.run_status == "pending":
             self.run_status = "success"
@@ -798,6 +929,11 @@ class GUISubtitleRemover:
         if not os.path.exists(self.video_temp_file.name):
             return
 
+        source_has_audio = getattr(self, 'source_has_audio', None)
+        if source_has_audio is None:
+            source_has_audio = has_audio_stream(self.video_path)
+            self.source_has_audio = source_has_audio
+
         # 1. Thử ghép trực tiếp và sao chép (copy) luồng âm thanh gốc
         audio_merge_command = [
             FFmpegCLI.instance().ffmpeg_path,
@@ -814,7 +950,13 @@ class GUISubtitleRemover:
         ]
         try:
             subprocess.check_output(audio_merge_command, stdin=open(os.devnull), shell=use_shell, timeout=600)
-            if verify_media_output(self.video_out_path, is_picture=False):
+            if verify_media_output(
+                self.video_out_path,
+                is_picture=False,
+                expected_frames=self.frame_count,
+                expected_fps=self.fps,
+                require_audio=source_has_audio,
+            ):
                 self.is_successful_merged = True
         except Exception:
             pass
@@ -836,19 +978,43 @@ class GUISubtitleRemover:
             ]
             try:
                 subprocess.check_output(audio_encode_command, stdin=open(os.devnull), shell=use_shell, timeout=600)
-                if verify_media_output(self.video_out_path, is_picture=False):
+                if verify_media_output(
+                    self.video_out_path,
+                    is_picture=False,
+                    expected_frames=self.frame_count,
+                    expected_fps=self.fps,
+                    require_audio=source_has_audio,
+                ):
                     self.is_successful_merged = True
             except Exception:
                 pass
 
-        # 3. Nếu video gốc không có âm thanh (hoặc ghép âm thanh thất bại), copy trực tiếp tệp video tạm sang tệp đầu ra
-        if not self.is_successful_merged or not verify_media_output(self.video_out_path, is_picture=False):
-            try:
-                shutil.copyfile(self.video_temp_file.name, self.video_out_path)
-                if verify_media_output(self.video_out_path, is_picture=False):
-                    self.is_successful_merged = True
-            except Exception as e:
-                self.append_output(f"[Lỗi] Không thể sao chép tệp video đầu ra: {e}")
+        # 3. Xử lý khi ghép âm thanh không thành công
+        if not self.is_successful_merged:
+            if source_has_audio:
+                self.audio_merge_failed = True
+                self.is_successful_merged = False
+                self.run_status = "failed"
+                self.append_output("[Lỗi] Không thể ghép luồng âm thanh gốc vào video kết quả. Đã hủy xuất tệp bị mất tiếng.")
+                if os.path.exists(self.video_out_path):
+                    try:
+                        os.remove(self.video_out_path)
+                    except Exception:
+                        pass
+                return
+            else:
+                try:
+                    shutil.copyfile(self.video_temp_file.name, self.video_out_path)
+                    if verify_media_output(
+                        self.video_out_path,
+                        is_picture=False,
+                        expected_frames=self.frame_count,
+                        expected_fps=self.fps,
+                        require_audio=False,
+                    ):
+                        self.is_successful_merged = True
+                except Exception as e:
+                    self.append_output(f"[Lỗi] Không thể sao chép tệp video đầu ra: {e}")
         if config.burnTranslatedSubtitles.value and hasattr(self, 'ass_file_path') and os.path.exists(self.ass_file_path):
             self.append_output("[Thông báo] Đang ghép phụ đề mới vào video kết quả...")
             base_no_ext = os.path.splitext(self.video_out_path)[0]
@@ -939,7 +1105,7 @@ class GUISubtitleRemover:
             return user_fixed
 
         # 2. CHẾ ĐỘ TỰ ĐỘNG (AUTO MODE)
-        if not torch.cuda.is_available():
+        if torch is None or not torch.cuda.is_available():
             safe_load = 15
             self.append_output(f"[Chế độ Tự động - CPU] Đặt ProPainter Max Load = {safe_load}")
             return safe_load
@@ -977,7 +1143,7 @@ class GUISubtitleRemover:
             return user_fixed
 
         # 2. CHẾ ĐỘ TỰ ĐỘNG (AUTO MODE)
-        if not torch.cuda.is_available():
+        if torch is None or not torch.cuda.is_available():
             safe_load = 20
             self.append_output(f"[Chế độ Tự động - CPU] Đặt STTN Max Load = {safe_load}")
             return safe_load
@@ -1003,11 +1169,19 @@ class GUISubtitleRemover:
 
     @property
     def lama_inpaint(self):
+        if getattr(self, '_lama_inpaint_override', None) is not None:
+            return self._lama_inpaint_override
+        if LamaInpaint is None or config.inpaintMode.value == InpaintMode.OPENCV:
+            return OpenCVInpaint()
         def load():
             model_path = os.path.join(self.model_config.LAMA_MODEL_DIR, 'big-lama.pt')
-            device = self.hardware_accelerator.device if self.hardware_accelerator.has_cuda() or self.hardware_accelerator.has_mps() else torch.device("cpu")
+            device = self.hardware_accelerator.device if self.hardware_accelerator.has_cuda() or self.hardware_accelerator.has_mps() else (torch.device("cpu") if torch is not None else "cpu")
             return LamaInpaint(device, model_path)
         return ModelCacheManager.get_model("lama", load)
+
+    @lama_inpaint.setter
+    def lama_inpaint(self, value):
+        self._lama_inpaint_override = value
 
     @property
     def sttn_det_inpaint(self):
@@ -1019,7 +1193,7 @@ class GUISubtitleRemover:
     def propainter_inpaint(self):
         max_load = self.get_adaptive_propainter_max_load()
         def load():
-            device = self.hardware_accelerator.device if self.hardware_accelerator.has_cuda() or self.hardware_accelerator.has_mps() else torch.device("cpu")
+            device = self.hardware_accelerator.device if self.hardware_accelerator.has_cuda() or self.hardware_accelerator.has_mps() else (torch.device("cpu") if torch is not None else "cpu")
             return PropainterInpaint(device, self.model_config.PROPAINTER_MODEL_DIR, max_load)
         return ModelCacheManager.get_model("propainter", load, param_key=max_load)
 

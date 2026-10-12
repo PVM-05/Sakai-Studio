@@ -28,7 +28,7 @@ jobs:
       - name: Cài đặt thư viện kiểm thử cốt lõi
         run: |
           python -m pip install --upgrade pip
-          pip install pytest PySide6 PySide6-Fluent-Widgets opencv-python-headless numpy scipy soundfile requests tqdm Pillow
+          pip install pytest PySide6 PySide6-Fluent-Widgets opencv-python-headless numpy scipy soundfile requests tqdm Pillow filesplit
 
       - name: Chạy bộ kiểm thử tự động không cần GPU
         run: |
