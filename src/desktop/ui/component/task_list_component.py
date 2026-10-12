@@ -24,7 +24,7 @@ class TaskStatus(Enum):
 
 
 @unique
-class TaskOptions(Enum):
+class TaskOptions(str, Enum):
     AB_SECTIONS = "ab_sections"
     SUB_AREAS = "sub_areas"
     FREEHAND_STROKES = "freehand_strokes"

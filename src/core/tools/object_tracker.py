@@ -1,6 +1,10 @@
 import cv2
 import sys
-from tqdm import tqdm
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(iterable=None, *args, **kwargs):
+        return iterable
 from src.core.config import tr, config
 from src.core.tools.common_tools import get_readable_path
 from src.core.tools.subtitle_detect import SubtitleDetect

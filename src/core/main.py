@@ -1,5 +1,8 @@
 import gc
-import torch
+try:
+    import torch
+except ImportError:
+    torch = None
 import shutil
 import traceback
 import subprocess
@@ -21,11 +24,23 @@ from src.core.config import *
 from src.core.tools.constant import InpaintMode, SubtitleDetectMode
 from src.core.tools.hardware_accelerator import HardwareAccelerator
 from src.core.tools.common_tools import is_video_or_image, is_image_file, get_readable_path, read_image
-from src.ai_engines.inpaint.sttn_auto_inpaint import STTNAutoInpaint
-from src.ai_engines.inpaint.sttn_det_inpaint import STTNDetInpaint
-from src.ai_engines.inpaint.lama_inpaint import LamaInpaint
+try:
+    from src.ai_engines.inpaint.sttn_auto_inpaint import STTNAutoInpaint
+except ImportError:
+    STTNAutoInpaint = None
+try:
+    from src.ai_engines.inpaint.sttn_det_inpaint import STTNDetInpaint
+except ImportError:
+    STTNDetInpaint = None
+try:
+    from src.ai_engines.inpaint.lama_inpaint import LamaInpaint
+except ImportError:
+    LamaInpaint = None
 from src.ai_engines.inpaint.opencv_inpaint import OpenCVInpaint
-from src.ai_engines.inpaint.propainter_inpaint import PropainterInpaint
+try:
+    from src.ai_engines.inpaint.propainter_inpaint import PropainterInpaint
+except ImportError:
+    PropainterInpaint = None
 from src.ai_engines.translator import SubtitleTranslator, SubtitleBlock
 from src.core.tools.subtitle_exporter import SubtitleExporter
 from src.core.tools.inpaint_tools import create_mask, batch_generator, expand_frame_ranges, apply_temporal_smoothing, create_stroke_mask, create_combined_mask
@@ -36,7 +51,11 @@ from src.core.tools.video_io import FramePrefetcher, FFmpegVideoWriter
 import tempfile
 import multiprocessing
 import time
-from tqdm import tqdm
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(iterable=None, *args, **kwargs):
+        return iterable
 import numpy as np
 
 class ModelCacheManager:
@@ -49,7 +68,8 @@ class ModelCacheManager:
             logger.info(f"[ModelCacheManager] Giải phóng model '{model_type}' VRAM cũ do đổi tham số...")
             del cls._cache[model_type]
             gc.collect()
-            torch.cuda.empty_cache()
+            if torch is not None and torch.cuda.is_available():
+                torch.cuda.empty_cache()
             
         if model_type not in cls._cache:
             logger.info(f"[ModelCacheManager] Nạp mới model '{model_type}' với tham số {param_key}...")

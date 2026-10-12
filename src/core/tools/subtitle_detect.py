@@ -4,7 +4,11 @@ logging.getLogger("RapidOCR").setLevel(logging.ERROR)
 from functools import cached_property
 
 import cv2
-from tqdm import tqdm
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(iterable=None, *args, **kwargs):
+        return iterable
 
 from .model_config import ModelConfig
 from .hardware_accelerator import HardwareAccelerator

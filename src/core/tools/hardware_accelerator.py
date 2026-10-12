@@ -1,7 +1,10 @@
 import traceback
 import importlib.util
 
-import torch
+try:
+    import torch
+except ImportError:
+    torch = None
 
 from src.core.config import tr
 
@@ -36,10 +39,10 @@ class HardwareAccelerator:
         self.__dml = importlib.util.find_spec("torch_directml")
 
     def check_cuda_available(self):
-        self.__cuda = torch.cuda.is_available()
+        self.__cuda = bool(torch is not None and torch.cuda.is_available())
 
     def check_mps_available(self):
-        self.__mps = torch.backends.mps.is_available() and torch.backends.mps.is_built()
+        self.__mps = bool(torch is not None and hasattr(torch, "backends") and torch.backends.mps.is_available() and torch.backends.mps.is_built())
 
     def load_onnx_providers(self):
         try:
@@ -148,8 +151,8 @@ class HardwareAccelerator:
                 except:
                     traceback.print_exc()
                     self.__dml = False
-            if self.__cuda:
+            if self.__cuda and torch is not None:
                 return torch.device("cuda:0")
-            if self.__mps:
+            if self.__mps and torch is not None:
                 return torch.device("mps")
-        return torch.device("cpu")
+        return torch.device("cpu") if torch is not None else "cpu"

@@ -4,18 +4,30 @@ import gc
 import cv2
 import numpy as np
 import scipy.ndimage
-from PIL import Image
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
 from typing import List
 
-import torch
-import torchvision
+try:
+    import torch
+    import torchvision
+    from src.ai_engines.inpaint.video.model.modules.flow_comp_raft import RAFT_bi
+    from src.ai_engines.inpaint.video.model.recurrent_flow_completion import RecurrentFlowCompleteNet
+    from src.ai_engines.inpaint.video.model.propainter import InpaintGenerator
+    from src.ai_engines.inpaint.video.core.utils import to_tensors
+    from src.ai_engines.inpaint.video.model.misc import get_device
+except ImportError:
+    torch = None
+    torchvision = None
+    RAFT_bi = None
+    RecurrentFlowCompleteNet = None
+    InpaintGenerator = None
+    to_tensors = None
+    get_device = None
 
 from src.core.config import config
-from src.ai_engines.inpaint.video.model.modules.flow_comp_raft import RAFT_bi
-from src.ai_engines.inpaint.video.model.recurrent_flow_completion import RecurrentFlowCompleteNet
-from src.ai_engines.inpaint.video.model.propainter import InpaintGenerator
-from src.ai_engines.inpaint.video.core.utils import to_tensors
-from src.ai_engines.inpaint.video.model.misc import get_device
 from src.core.tools.inpaint_tools import get_inpaint_area_by_mask, blend_inpaint
 from src.core.tools.model_config import ModelConfig
 

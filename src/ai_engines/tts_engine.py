@@ -26,7 +26,10 @@ from typing import List, Optional, Any, Dict, Union, Tuple
 
 import numpy as np
 import soundfile as sf
-import torch
+try:
+    import torch
+except ImportError:
+    torch = None  # type: ignore[assignment]
 
 # Đảm bảo nạp trực tiếp gói mã nguồn omnivoice tích hợp trong src/ai_engines/omnivoice
 _AI_ENGINES_DIR = str(Path(__file__).resolve().parent)
@@ -774,6 +777,9 @@ class TTSEngine:
         if self.model is not None:
             return
 
+        if torch is None or OmniVoice is None:
+            raise RuntimeError("Thư viện PyTorch hoặc OmniVoice chưa được cài đặt trên môi trường hiện tại.")
+
         self.log("Đang kiểm tra thiết bị phần cứng để tải mô hình OmniVoice...")
         if torch.cuda.is_available():
             device = "cuda:0"
@@ -818,7 +824,7 @@ class TTSEngine:
             self.model = None
             self.current_prompt = None
             gc.collect()
-            if torch.cuda.is_available():
+            if torch is not None and torch.cuda.is_available():
                 torch.cuda.empty_cache()
             self.log("Đã giải phóng hoàn toàn bộ nhớ VRAM.")
 
@@ -1734,7 +1740,7 @@ class TTSEngine:
                 if ok_seg:
                     # Ưu tiên lấy câu gốc của phụ đề làm phiên âm nếu không rỗng, tránh dùng dấu chấm vô nghĩa
                     line_ref_text = (getattr(blk, "text", "") or "").strip() or None
-                    seg_tensor = torch.from_numpy(seg_wav).unsqueeze(0)
+                    seg_tensor = torch.from_numpy(seg_wav).unsqueeze(0) if torch is not None else seg_wav
                     override_prompt = self._get_or_create_prompt_for_audio(
                         (seg_tensor, vocals_sr),
                         cache_key=f"line_{i}",
@@ -1825,7 +1831,7 @@ class TTSEngine:
                     ok_lock, lock_reason = is_audio_quality_acceptable_for_voice_lock(audio_arr, self.sample_rate)
                     if ok_lock and self.model is not None and hasattr(self.model, "create_voice_clone_prompt"):
                         try:
-                            wav_t = torch.from_numpy(audio_arr).unsqueeze(0)
+                            wav_t = torch.from_numpy(audio_arr).unsqueeze(0) if torch is not None else audio_arr
                             locked_prompt = self.model.create_voice_clone_prompt(
                                 ref_audio=(wav_t, self.sample_rate),
                                 ref_text=text_to_speak,
@@ -1878,11 +1884,13 @@ class TTSEngine:
                 err_str = str(e)
                 report.failed_count += 1
                 report.failed_lines.append(i + 1)
-                if "out of memory" in err_str.lower() or isinstance(e, getattr(torch.cuda, "OutOfMemoryError", RuntimeError)) and "cuda" in err_str.lower():
+                cuda_mod = getattr(torch, "cuda", None) if torch is not None else None
+                oom_cls = getattr(cuda_mod, "OutOfMemoryError", RuntimeError)
+                if "out of memory" in err_str.lower() or (isinstance(e, oom_cls) and "cuda" in err_str.lower()):
                     report.oom_detected = True
                     gc.collect()
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
+                    if cuda_mod is not None and cuda_mod.is_available():
+                        cuda_mod.empty_cache()
                     self.log(
                         f"Lỗi thiếu bộ nhớ VRAM trên GPU tại câu {i + 1}: Đã tự động giải phóng bộ nhớ đệm. "
                         "Khuyến nghị giảm Số bước giải mã xuống 16, tắt Tăng tốc đồ họa chuyên sâu hoặc nhấn Giải phóng VRAM."
