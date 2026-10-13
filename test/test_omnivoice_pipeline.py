@@ -404,6 +404,37 @@ def test_onnx_speaker_embedding_session_and_extraction():
     close_speaker_session(session)
 
 
+def test_camppus_fbank_preprocessing_matches_model_input_contract():
+    from src.ai_engines.speaker_embedding_onnx import _extract_fbank_features, _make_model_input
+
+    waveform = _make_sine_wave(duration_sec=1.2, sr=16000, freq=220.0)
+    features = _extract_fbank_features(waveform)
+    assert features.ndim == 2
+    assert features.shape[1] == 80
+    assert np.isfinite(features).all()
+
+    class _Input:
+        name = "input"
+        shape = ["batch", "frames", 80]
+
+    class _Output:
+        name = "embedding"
+        shape = ["batch", 192]
+
+    class _FakeSession:
+        def get_inputs(self):
+            return [_Input()]
+
+        def get_outputs(self):
+            return [_Output()]
+
+    tensor, time_axis = _make_model_input(_FakeSession(), waveform)
+    assert tensor.ndim == 3
+    assert tensor.shape[0] == 1
+    assert tensor.shape[2] == 80
+    assert time_axis == 1
+
+
 # ==============================================================================
 # 12. KIỂM THỬ PHÂN CỤM COSIN VÀ 3 MỨC ĐỘ TIN CẬY (TÁC VỤ 2)
 # ==============================================================================
