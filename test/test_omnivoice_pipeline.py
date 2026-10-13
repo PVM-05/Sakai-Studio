@@ -390,7 +390,7 @@ def test_onnx_speaker_embedding_session_and_extraction():
     )
 
     mock_audio = np.random.randn(16000 * 2).astype(np.float32)
-    session, provider = create_speaker_session(model_path="", prefer_cuda=False)
+    session, provider = create_speaker_session(model_path="", prefer_cuda=False, allow_mock=True)
     assert provider in ("CPUExecutionProvider", "MockExecutionProvider")
 
     emb = extract_speaker_embedding(session, mock_audio, sample_rate=16000)
@@ -404,9 +404,58 @@ def test_onnx_speaker_embedding_session_and_extraction():
     close_speaker_session(session)
 
 
+def test_camppus_fbank_preprocessing_matches_model_input_contract():
+    from src.ai_engines.speaker_embedding_onnx import _extract_fbank_features, _make_model_input
+
+    waveform = _make_sine_wave(duration_sec=1.2, sr=16000, freq=220.0)
+    features = _extract_fbank_features(waveform)
+    assert features.ndim == 2
+    assert features.shape[1] == 80
+    assert np.isfinite(features).all()
+
+    class _Input:
+        name = "input"
+        shape = ["batch", "frames", 80]
+
+    class _Output:
+        name = "embedding"
+        shape = ["batch", 192]
+
+    class _FakeSession:
+        def get_inputs(self):
+            return [_Input()]
+
+        def get_outputs(self):
+            return [_Output()]
+
+    tensor, time_axis = _make_model_input(_FakeSession(), waveform)
+    assert tensor.ndim == 3
+    assert tensor.shape[0] == 1
+    assert tensor.shape[2] == 80
+    assert time_axis == 1
+
+
 # ==============================================================================
 # 12. KIỂM THỬ PHÂN CỤM COSIN VÀ 3 MỨC ĐỘ TIN CẬY (TÁC VỤ 2)
 # ==============================================================================
+def test_kmeanspp_probabilities_are_normalized_from_float32_weights():
+    from src.ai_engines.speaker_diarization import _normalized_choice_probabilities
+
+    # Dãy trọng số float32 dễ có tổng sau phép chia lệch khỏi 1 do làm tròn.
+    weights = np.asarray([0.1, 0.2, 0.3, 0.4, 1e-7, 3.7], dtype=np.float32)
+    probabilities = _normalized_choice_probabilities(weights)
+
+    assert probabilities is not None
+    assert probabilities.dtype == np.float64
+    assert np.isfinite(probabilities).all()
+    assert (probabilities >= 0.0).all()
+    assert np.isclose(probabilities.sum(dtype=np.float64), 1.0, rtol=0.0, atol=1e-15)
+
+    # Trọng số bằng 0/không hữu hạn không được tạo ra phân phối hỏng.
+    degenerate = _normalized_choice_probabilities(np.asarray([0.0, np.nan, np.inf]))
+    assert degenerate is None
+
+
 def test_cosine_clustering_and_three_confidence_levels():
     from src.ai_engines.speaker_diarization import (
         SpeakerDiarizationCoordinator,
@@ -457,8 +506,21 @@ def test_tts_engine_respects_locked_speaker_and_releases_diarizer_session(tmp_pa
     b2.is_speaker_locked = True
 
     blocks = [b1, b2]
-    # Gọi nhận diện
-    res = engine.detect_speakers_from_video(video_path=wav_path, blocks=blocks, max_speakers=3)
+    # Chỉ dùng mô hình giả lập và âm thanh WAV được sao chép trong bài kiểm thử.
+    def _copy_test_audio(source, target):
+        audio, sr = sf.read(source, dtype="float32")
+        sf.write(target, audio, sr)
+        return True
+
+    with patch("src.ai_engines.tts_engine.VoiceSeparator") as separator_cls:
+        separator_cls.return_value.separate_from_video.side_effect = _copy_test_audio
+        res = engine.detect_speakers_from_video(
+            video_path=wav_path,
+            blocks=blocks,
+            max_speakers=3,
+            prefer_cuda=False,
+            allow_mock=True,
+        )
     assert isinstance(res, dict)
     assert len(res) >= 1
     # Câu 1 được gán nhận diện từ bộ điều phối
@@ -468,6 +530,61 @@ def test_tts_engine_respects_locked_speaker_and_releases_diarizer_session(tmp_pa
     assert b2.speaker == "Nhân vật đã khóa"
     # Thuộc tính phiên làm việc nhận diện nội bộ phải được thu hồi
     assert getattr(engine, "_active_diarizer_session", None) is None
+    assert any(
+        Path(p.get("ref_audio_path", "")).is_file()
+        for p in engine.speaker_profiles.values()
+    )
+
+
+def test_speaker_model_missing_is_not_silently_mocked(tmp_path):
+    from src.ai_engines.speaker_embedding_onnx import create_speaker_session
+
+    missing_model = tmp_path / "model-does-not-exist.onnx"
+    with pytest.raises(FileNotFoundError, match="không tồn tại"):
+        create_speaker_session(
+            model_path=str(missing_model),
+            prefer_cuda=False,
+            allow_mock=False,
+        )
+
+
+def test_diarizer_rejects_unreadable_audio_instead_of_random_fallback(tmp_path):
+    from src.ai_engines.speaker_diarization import SpeakerDiarizationCoordinator
+
+    block = SubtitleBlock(
+        index=1,
+        start_time="00:00:00,000",
+        end_time="00:00:01,000",
+        text="Câu thoại kiểm thử",
+    )
+    coordinator = SpeakerDiarizationCoordinator(allow_mock=True, prefer_cuda=False)
+    with pytest.raises(FileNotFoundError, match="Không tìm thấy tệp âm thanh"):
+        coordinator.process_video_subtitles(
+            video_path=str(tmp_path / "video-khong-ton-tai.mp4"),
+            blocks=[block],
+        )
+
+
+def test_silent_segments_remain_unassigned(tmp_path):
+    from src.ai_engines.speaker_diarization import SpeakerDiarizationCoordinator
+
+    silent_wav = tmp_path / "silent.wav"
+    sf.write(str(silent_wav), np.zeros(16000, dtype=np.float32), 16000)
+    block = SubtitleBlock(
+        index=1,
+        start_time="00:00:00,000",
+        end_time="00:00:01,000",
+        text="Không có tiếng",
+    )
+    coordinator = SpeakerDiarizationCoordinator(allow_mock=True, prefer_cuda=False)
+    result = coordinator.process_video_subtitles(
+        video_path=str(silent_wav),
+        blocks=[block],
+        prefer_cuda=False,
+    )
+    assert result == {}
+    assert block.speaker == "Chưa xác định"
+    assert block.confidence_level == "unassigned"
 
 
 # ==============================================================================
