@@ -469,3 +469,29 @@ def test_tts_engine_respects_locked_speaker_and_releases_diarizer_session(tmp_pa
     # Thuộc tính phiên làm việc nhận diện nội bộ phải được thu hồi
     assert getattr(engine, "_active_diarizer_session", None) is None
 
+
+# ==============================================================================
+# 14. KIỂM THỬ QUY TRÌNH GIAO DIỆN 5 BƯỚC VÀ BẢO TOÀN DỮ LIỆU (TÁC VỤ 4)
+# ==============================================================================
+def test_ui_wizard_preserves_state_on_step_navigation():
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.tts_engine import SubtitleBlock
+
+    ui = OmniVoiceInterface()
+    assert hasattr(ui, "step_stack")
+    assert ui.step_stack.count() == 5
+    assert ui.current_step_index == 0
+
+    ui._switch_to_step(1)
+    assert ui.current_step_index == 1
+    ui._switch_to_step(2)
+    assert ui.current_step_index == 2
+
+    ui.subtitle_blocks = [
+        SubtitleBlock(index=1, start_time="00:00:01,000", end_time="00:00:02,000", text="Thử nghiệm", speaker="Người nói 1")
+    ]
+    ui._switch_to_step(0)
+    assert len(ui.subtitle_blocks) == 1
+    assert ui.subtitle_blocks[0].speaker == "Người nói 1"
+
+

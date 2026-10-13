@@ -200,6 +200,7 @@ class OmniVoiceTaskWorker(QThread):
         fixed_duration: float = 0.0,
         override_ref_audio: str = "",
         override_instruct: str = "",
+        prefer_cuda: bool = True,
         parent=None,
     ):
         super().__init__(parent=parent)
@@ -213,6 +214,7 @@ class OmniVoiceTaskWorker(QThread):
         self.fixed_duration = fixed_duration
         self.override_ref_audio = override_ref_audio
         self.override_instruct = override_instruct
+        self.prefer_cuda = prefer_cuda
         self._engine: Optional[TTSEngine] = None
         self._did_emit_result: bool = False
 
@@ -238,11 +240,13 @@ class OmniVoiceTaskWorker(QThread):
             if self.task_type == "detect_speakers":
                 max_spk = int(self.engine_params.get("max_speakers", 4))
                 if self.video_path and os.path.exists(self.video_path):
-                    self.progressSignal.emit(25, "Đang tách giọng nói từ video và phân cụm âm sắc người nói...")
+                    device_str = "NVIDIA RTX 4050 · CUDA" if self.prefer_cuda else "Vi xử lý trung tâm · CPU"
+                    self.progressSignal.emit(25, f"Đang nhận diện người nói · {device_str}...")
                     profiles = engine.detect_speakers_from_video(
                         self.video_path,
                         self.subtitle_blocks,
                         max_speakers=max_spk,
+                        prefer_cuda=self.prefer_cuda,
                     )
                     source_desc = "từ âm thanh video gốc"
                 else:
@@ -414,6 +418,8 @@ class OmniVoiceInterface(ScrollArea):
         self.setObjectName("OmniVoiceInterface")
         self.parent = parent
 
+        self.current_step_index: int = 0
+        self.step_buttons: List[PushButton] = []
         self.current_ref_audio_path: str = config.mmoTTSRefAudioPath.value or ""
         self.current_subtitle_path: str = ""
         self.current_video_path: str = ""
@@ -430,6 +436,7 @@ class OmniVoiceInterface(ScrollArea):
         self._init_ui()
         self._connect_signals()
         self._sync_ui_from_config()
+        self._switch_to_step(0)
 
     def _init_ui(self):
         self.container = QWidget(self)
@@ -442,7 +449,7 @@ class OmniVoiceInterface(ScrollArea):
         root_layout.setSpacing(14)
 
         # =====================================================================
-        # 1. THANH TIÊU ĐỀ & CHỌN CHẾ ĐỘ GIỌNG NÓI + NGÔN NGỮ
+        # 1. TIÊU ĐỀ GIAO DIỆN & TÁC VỤ NHANH
         # =====================================================================
         header_card = CardWidget(self.container)
         header_layout = QVBoxLayout(header_card)
@@ -453,7 +460,7 @@ class OmniVoiceInterface(ScrollArea):
         title_box = QVBoxLayout()
         title_lbl = TitleLabel("Lồng Tiếng Trí Tuệ Nhân Tạo", header_card)
         desc_lbl = CaptionLabel(
-            "Tổng hợp giọng nói 646 ngôn ngữ, nhân bản giọng từ mẫu, thiết kế giọng theo thuộc tính và tự động nhận diện đa nhân vật trên card đồ họa NVIDIA.",
+            "Tự động nhận diện người nói, phân vai nhân vật và lồng tiếng đa ngôn ngữ trên card đồ họa NVIDIA.",
             header_card,
         )
         desc_lbl.setWordWrap(True)
@@ -470,13 +477,93 @@ class OmniVoiceInterface(ScrollArea):
         self.btn_free_vram.setIcon(FluentIcon.BROOM)
         top_row.addWidget(self.btn_free_vram, 0, Qt.AlignRight | Qt.AlignTop)
         header_layout.addLayout(top_row)
+        root_layout.addWidget(header_card)
+
+        # =====================================================================
+        # 2. THANH ĐIỀU HƯỚNG QUY TRÌNH 5 BƯỚC
+        # =====================================================================
+        nav_card = CardWidget(self.container)
+        nav_layout = QHBoxLayout(nav_card)
+        nav_layout.setContentsMargins(14, 10, 14, 10)
+        nav_layout.setSpacing(8)
+
+        self.btn_prev_step = PushButton("Bước Trước", nav_card)
+        self.btn_prev_step.setIcon(FluentIcon.LEFT_ARROW)
+        self.btn_prev_step.setEnabled(False)
+
+        self.step_buttons = []
+        step_labels = [
+            "1. Nguồn Đầu Vào",
+            "2. Quản Lý Nhân Vật",
+            "3. Biên Tập Phụ Đề",
+            "4. Cân Chỉnh Âm Thanh",
+            "5. Kiểm Tra Và Xuất",
+        ]
+        for idx, lbl in enumerate(step_labels):
+            btn = PushButton(lbl, nav_card)
+            btn.clicked.connect(lambda checked=False, i=idx: self._switch_to_step(i))
+            self.step_buttons.append(btn)
+
+        self.btn_next_step = PushButton("Bước Tiếp Theo", nav_card)
+        self.btn_next_step.setIcon(FluentIcon.RIGHT_ARROW)
+
+        nav_layout.addWidget(self.btn_prev_step)
+        for btn in self.step_buttons:
+            nav_layout.addWidget(btn, 1)
+        nav_layout.addWidget(self.btn_next_step)
+        root_layout.addWidget(nav_card)
+
+        # =====================================================================
+        # 3. NỘI DUNG 5 BƯỚC (QStackedWidget)
+        # =====================================================================
+        self.step_stack = QStackedWidget(self.container)
+
+        # ---------------------------------------------------------------------
+        # BƯỚC 0: NGUỒN ĐẦU VÀO
+        # ---------------------------------------------------------------------
+        self.page_step_0 = QWidget(self.step_stack)
+        p0_layout = QVBoxLayout(self.page_step_0)
+        p0_layout.setContentsMargins(0, 0, 0, 0)
+        p0_layout.setSpacing(12)
+
+        sub_file_card = CardWidget(self.page_step_0)
+        sub_file_layout = QVBoxLayout(sub_file_card)
+        sub_file_layout.setContentsMargins(18, 14, 18, 14)
+        sub_file_layout.setSpacing(10)
+        sub_file_layout.addWidget(SubtitleLabel("Tệp Phụ Đề Và Video Nguồn", sub_file_card))
+
+        sub_file_btn_row = QHBoxLayout()
+        self.btn_load_srt = PushButton("Chọn Tệp Phụ Đề", sub_file_card)
+        self.btn_load_srt.setIcon(FluentIcon.DOCUMENT)
+
+        self.btn_load_video = PushButton("Chọn Video Nguồn Để Ghép", sub_file_card)
+        self.btn_load_video.setIcon(FluentIcon.VIDEO)
+
+        self.btn_clear_video = PushButton("Bỏ Chọn Video", sub_file_card)
+        self.btn_clear_video.setIcon(FluentIcon.DELETE)
+        self.btn_clear_video.setEnabled(False)
+
+        self.lbl_sub_video_info = CaptionLabel("Chưa nạp tệp phụ đề và video nguồn.", sub_file_card)
+        self.lbl_sub_video_info.setWordWrap(True)
+
+        sub_file_btn_row.addWidget(self.btn_load_srt)
+        sub_file_btn_row.addWidget(self.btn_load_video)
+        sub_file_btn_row.addWidget(self.btn_clear_video)
+        sub_file_btn_row.addWidget(self.lbl_sub_video_info, 1)
+        sub_file_layout.addLayout(sub_file_btn_row)
+        p0_layout.addWidget(sub_file_card)
+
+        general_voice_card = CardWidget(self.page_step_0)
+        general_voice_layout = QVBoxLayout(general_voice_card)
+        general_voice_layout.setContentsMargins(18, 14, 18, 14)
+        general_voice_layout.setSpacing(10)
+        general_voice_layout.addWidget(SubtitleLabel("Thiết Lập Giọng Nói Mặc Định", general_voice_card))
 
         mode_row = QHBoxLayout()
         mode_row.setSpacing(12)
-
-        lbl_mode = BodyLabel("Chế độ tạo giọng:", header_card)
+        lbl_mode = BodyLabel("Chế độ tạo giọng:", general_voice_card)
         lbl_mode.setStyleSheet("font-weight: bold;")
-        self.combo_mode = ComboBox(header_card)
+        self.combo_mode = ComboBox(general_voice_card)
         self.combo_mode.addItems([
             "Nhân Bản Giọng Nói Từ Mẫu",
             "Thiết Kế Giọng Nói Theo Thuộc Tính",
@@ -484,9 +571,9 @@ class OmniVoiceInterface(ScrollArea):
         ])
         self.combo_mode.setMinimumWidth(260)
 
-        lbl_lang = BodyLabel("Ngôn ngữ đọc:", header_card)
+        lbl_lang = BodyLabel("Ngôn ngữ đọc:", general_voice_card)
         lbl_lang.setStyleSheet("font-weight: bold;")
-        self.combo_lang = EditableComboBox(header_card)
+        self.combo_lang = EditableComboBox(general_voice_card)
         self.combo_lang.setMinimumWidth(250)
         self._populate_languages()
 
@@ -495,27 +582,26 @@ class OmniVoiceInterface(ScrollArea):
         mode_row.addSpacing(16)
         mode_row.addWidget(lbl_lang)
         mode_row.addWidget(self.combo_lang, 1)
-        header_layout.addLayout(mode_row)
+        general_voice_layout.addLayout(mode_row)
 
-        # Kho 22 Giọng Đọc Mẫu Tiếng Việt & Nghe Thử Nhanh
         vn_catalog_row = QHBoxLayout()
         vn_catalog_row.setSpacing(10)
-        lbl_vn_cat = BodyLabel("Giọng đọc mẫu tiếng Việt:", header_card)
+        lbl_vn_cat = BodyLabel("Giọng đọc mẫu tiếng Việt:", general_voice_card)
         lbl_vn_cat.setStyleSheet("font-weight: bold;")
-        self.combo_vn_catalog = ComboBox(header_card)
+        self.combo_vn_catalog = ComboBox(general_voice_card)
         self.combo_vn_catalog.addItems(list(VIETNAMESE_VOICE_CATALOG.keys()))
         self.combo_vn_catalog.setMinimumWidth(290)
 
-        self.edit_vn_sample_text = LineEdit(header_card)
+        self.edit_vn_sample_text = LineEdit(general_voice_card)
         first_preset = next(iter(VIETNAMESE_VOICE_CATALOG.values()))
         self.edit_vn_sample_text.setText(first_preset["sample_vi"])
         self.edit_vn_sample_text.setPlaceholderText("Nhập câu tiếng Việt bất kỳ để nghe thử giọng đọc mẫu đang chọn...")
         self.edit_vn_sample_text.setClearButtonEnabled(True)
 
-        self.btn_preview_vn_voice = PrimaryPushButton("Nghe Thử Tiếng Việt", header_card)
+        self.btn_preview_vn_voice = PrimaryPushButton("Nghe Thử Tiếng Việt", general_voice_card)
         self.btn_preview_vn_voice.setIcon(FluentIcon.VOLUME)
 
-        self.btn_use_vn_voice_as_ref = PushButton("Chốt Làm Giọng Mẫu Chính", header_card)
+        self.btn_use_vn_voice_as_ref = PushButton("Chốt Làm Giọng Mẫu Chính", general_voice_card)
         self.btn_use_vn_voice_as_ref.setIcon(FluentIcon.ACCEPT)
         self.btn_use_vn_voice_as_ref.setEnabled(False)
 
@@ -524,17 +610,12 @@ class OmniVoiceInterface(ScrollArea):
         vn_catalog_row.addWidget(self.edit_vn_sample_text, 1)
         vn_catalog_row.addWidget(self.btn_preview_vn_voice)
         vn_catalog_row.addWidget(self.btn_use_vn_voice_as_ref)
-        header_layout.addLayout(vn_catalog_row)
+        general_voice_layout.addLayout(vn_catalog_row)
+        p0_layout.addWidget(general_voice_card)
 
-        root_layout.addWidget(header_card)
+        self.voice_source_stack = QStackedWidget(self.page_step_0)
 
-        # =====================================================================
-        # 2. KHỐI THIẾT LẬP NGUỒN GIỌNG MẶC ĐỊNH
-        # =====================================================================
-        self.voice_source_stack = QStackedWidget(self.container)
-
-        # --- Trang 0: Nhân Bản Giọng Nói Từ Mẫu ---
-        self.clone_card = CardWidget(self.container)
+        self.clone_card = CardWidget(self.voice_source_stack)
         clone_layout = QGridLayout(self.clone_card)
         clone_layout.setContentsMargins(18, 14, 18, 14)
         clone_layout.setSpacing(10)
@@ -583,11 +664,9 @@ class OmniVoiceInterface(ScrollArea):
         self.btn_transcribe_ref = PushButton("Nhận Diện Lời Thoại Mẫu", self.clone_card)
         self.btn_transcribe_ref.setIcon(FluentIcon.MICROPHONE)
         clone_layout.addWidget(self.btn_transcribe_ref, 4, 2)
-
         self.voice_source_stack.addWidget(self.clone_card)
 
-        # --- Trang 1: Thiết Kế Giọng Nói Theo Thuộc Tính ---
-        self.design_card = CardWidget(self.container)
+        self.design_card = CardWidget(self.voice_source_stack)
         design_layout = QGridLayout(self.design_card)
         design_layout.setContentsMargins(18, 14, 18, 14)
         design_layout.setSpacing(10)
@@ -630,11 +709,9 @@ class OmniVoiceInterface(ScrollArea):
         self.edit_instruct_preview.setPlaceholderText("Các thuộc tính được chọn ở trên sẽ tự động kết hợp tại đây...")
         self.edit_instruct_preview.setClearButtonEnabled(True)
         design_layout.addWidget(self.edit_instruct_preview, 3, 1, 1, 5)
-
         self.voice_source_stack.addWidget(self.design_card)
 
-        # --- Trang 2: Giọng Đọc Tự Động ---
-        self.auto_voice_card = CardWidget(self.container)
+        self.auto_voice_card = CardWidget(self.voice_source_stack)
         auto_voice_layout = QVBoxLayout(self.auto_voice_card)
         auto_voice_layout.setContentsMargins(18, 14, 18, 14)
         auto_voice_layout.addWidget(SubtitleLabel("Chế Độ Giọng Đọc Tự Động", self.auto_voice_card))
@@ -646,27 +723,206 @@ class OmniVoiceInterface(ScrollArea):
         auto_voice_layout.addWidget(lbl_auto_desc)
         self.voice_source_stack.addWidget(self.auto_voice_card)
 
-        root_layout.addWidget(self.voice_source_stack)
+        p0_layout.addWidget(self.voice_source_stack)
+        self.step_stack.addWidget(self.page_step_0)
 
-        # =====================================================================
-        # 3. KHÔNG GIAN LÀM VIỆC CHÍNH (TRÁI = PHÒNG THU & LỒNG TIẾNG ĐA NHÂN VẬT, PHẢI = THAM SỐ KHUẾCH TÁN)
-        # =====================================================================
-        workspace_row = QHBoxLayout()
-        workspace_row.setSpacing(14)
+        # ---------------------------------------------------------------------
+        # BƯỚC 1: QUẢN LÝ NHÂN VẬT (BẢNG VOICE CASTING)
+        # ---------------------------------------------------------------------
+        self.page_step_1 = QWidget(self.step_stack)
+        p1_layout = QVBoxLayout(self.page_step_1)
+        p1_layout.setContentsMargins(0, 0, 0, 0)
+        p1_layout.setSpacing(12)
 
-        left_card = CardWidget(self.container)
-        left_layout = QVBoxLayout(left_card)
-        left_layout.setContentsMargins(18, 14, 18, 14)
-        left_layout.setSpacing(12)
+        diarize_card = CardWidget(self.page_step_1)
+        diarize_layout = QVBoxLayout(diarize_card)
+        diarize_layout.setContentsMargins(14, 12, 14, 12)
+        diarize_layout.setSpacing(10)
 
-        self.workspace_pivot = Pivot(left_card)
-        self.workspace_stack = QStackedWidget(left_card)
+        diarize_top_row = QHBoxLayout()
+        diarize_top_row.setSpacing(8)
+        lbl_multi_mode = BodyLabel("Chế độ giọng phụ đề:", diarize_card)
+        lbl_multi_mode.setStyleSheet("font-weight: bold;")
+        self.combo_multi_speaker_mode = ComboBox(diarize_card)
+        for label_vn, _ in MULTI_SPEAKER_MODE_ITEMS:
+            self.combo_multi_speaker_mode.addItem(label_vn)
+        self.combo_multi_speaker_mode.setMinimumWidth(290)
 
-        # >> Tab con 0: Phòng Thu Tổng Hợp Văn Bản & Biểu Cảm <<
-        self.studio_page = QWidget(left_card)
+        lbl_max_spk = BodyLabel("Số người tối đa:", diarize_card)
+        self.spin_max_speakers = SpinBox(diarize_card)
+        self.spin_max_speakers.setRange(1, 6)
+        self.spin_max_speakers.setValue(4)
+
+        self.btn_auto_detect_speakers = PrimaryPushButton("Tự Động Nhận Diện Nhiều Người Nói", diarize_card)
+        self.btn_auto_detect_speakers.setIcon(FluentIcon.PEOPLE)
+        self.btn_auto_detect_speakers.setEnabled(False)
+
+        diarize_top_row.addWidget(lbl_multi_mode)
+        diarize_top_row.addWidget(self.combo_multi_speaker_mode, 1)
+        diarize_top_row.addWidget(lbl_max_spk)
+        diarize_top_row.addWidget(self.spin_max_speakers)
+        diarize_top_row.addWidget(self.btn_auto_detect_speakers)
+        diarize_layout.addLayout(diarize_top_row)
+
+        spk_assign_row1 = QHBoxLayout()
+        spk_assign_row1.setSpacing(8)
+        spk_assign_row1.addWidget(BodyLabel("Nhân vật:", diarize_card))
+        self.combo_target_speaker = ComboBox(diarize_card)
+        self.combo_target_speaker.addItems([f"Người nói {i}" for i in range(1, 7)])
+
+        self.combo_speaker_voice_preset = ComboBox(diarize_card)
+        self.combo_speaker_voice_preset.addItems(list(SPEAKER_VOICE_PRESETS.keys()))
+
+        self.btn_preview_speaker_preset_vi = PushButton("Nghe Thử Giọng Nhân Vật", diarize_card)
+        self.btn_preview_speaker_preset_vi.setIcon(FluentIcon.VOLUME)
+
+        spk_assign_row1.addWidget(self.combo_target_speaker)
+        spk_assign_row1.addWidget(self.combo_speaker_voice_preset, 1)
+        spk_assign_row1.addWidget(self.btn_preview_speaker_preset_vi)
+        diarize_layout.addLayout(spk_assign_row1)
+
+        spk_assign_row2 = QHBoxLayout()
+        spk_assign_row2.setSpacing(8)
+        self.btn_apply_preset_to_speaker = PushButton("Áp Dụng Thiết Kế Giọng Cho Nhân Vật", diarize_card)
+        self.btn_apply_preset_to_speaker.setIcon(FluentIcon.ACCEPT)
+
+        self.btn_pick_audio_for_speaker = PushButton("Chọn Tệp Giọng Mẫu Cho Nhân Vật", diarize_card)
+        self.btn_pick_audio_for_speaker.setIcon(FluentIcon.MUSIC)
+
+        self.btn_assign_speaker_to_rows = PushButton("Gán Nhân Vật Vào Câu Đang Chọn", diarize_card)
+        self.btn_assign_speaker_to_rows.setIcon(FluentIcon.EDIT)
+
+        self.btn_reset_speaker_voice = PushButton("Tạo Lại Mẫu Giọng", diarize_card)
+        self.btn_reset_speaker_voice.setIcon(FluentIcon.SYNC)
+
+        spk_assign_row2.addWidget(self.btn_apply_preset_to_speaker)
+        spk_assign_row2.addWidget(self.btn_pick_audio_for_speaker)
+        spk_assign_row2.addWidget(self.btn_assign_speaker_to_rows)
+        spk_assign_row2.addWidget(self.btn_reset_speaker_voice)
+        diarize_layout.addLayout(spk_assign_row2)
+
+        self.lbl_speaker_summary = CaptionLabel(
+            "Mẹo: Bấm Tự Động Nhận Diện Nhiều Người Nói để hệ thống tự tách giọng từng nhân vật từ video hoặc phân vai hội thoại từ tệp phụ đề.",
+            diarize_card,
+        )
+        self.lbl_speaker_summary.setWordWrap(True)
+        diarize_layout.addWidget(self.lbl_speaker_summary)
+        p1_layout.addWidget(diarize_card)
+
+        casting_card = CardWidget(self.page_step_1)
+        casting_layout = QVBoxLayout(casting_card)
+        casting_layout.setContentsMargins(14, 12, 14, 12)
+        casting_layout.setSpacing(8)
+
+        casting_header_row = QHBoxLayout()
+        casting_header_row.addWidget(SubtitleLabel("Bảng Phân Vai Và Giọng Đọc Nhân Vật", casting_card))
+        casting_header_row.addStretch(1)
+
+        self.btn_reanalyze_speakers = PrimaryPushButton("Tự Động Phân Tích Lại", casting_card)
+        self.btn_reanalyze_speakers.setIcon(FluentIcon.SYNC)
+
+        self.btn_reset_all_voices = PushButton("Đặt Lại Toàn Bộ Giọng", casting_card)
+        self.btn_reset_all_voices.setIcon(FluentIcon.DELETE)
+
+        self.btn_audition_all_speakers = PushButton("Nghe Thử Toàn Bộ Nhân Vật", casting_card)
+        self.btn_audition_all_speakers.setIcon(FluentIcon.VOLUME)
+
+        casting_header_row.addWidget(self.btn_reanalyze_speakers)
+        casting_header_row.addWidget(self.btn_reset_all_voices)
+        casting_header_row.addWidget(self.btn_audition_all_speakers)
+        casting_layout.addLayout(casting_header_row)
+
+        self.casting_table = TableWidget(casting_card)
+        self.casting_table.setColumnCount(7)
+        self.casting_table.setHorizontalHeaderLabels([
+            "Mã Nhân Vật",
+            "Tên Nhân Vật",
+            "Số Câu Thoại",
+            "Giọng Gốc Video",
+            "Giọng Lồng Tiếng",
+            "Độ Tin Cậy",
+            "Thao Tác",
+        ])
+        self.casting_table.setColumnWidth(0, 100)
+        self.casting_table.setColumnWidth(1, 140)
+        self.casting_table.setColumnWidth(2, 100)
+        self.casting_table.setColumnWidth(3, 160)
+        self.casting_table.setColumnWidth(4, 200)
+        self.casting_table.setColumnWidth(5, 120)
+        self.casting_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.Stretch)
+        self.casting_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.casting_table.setMinimumHeight(200)
+        casting_layout.addWidget(self.casting_table, 1)
+
+        p1_layout.addWidget(casting_card, 1)
+        self.step_stack.addWidget(self.page_step_1)
+
+        # ---------------------------------------------------------------------
+        # BƯỚC 2: BIÊN TẬP PHỤ ĐỀ
+        # ---------------------------------------------------------------------
+        self.page_step_2 = QWidget(self.step_stack)
+        p2_layout = QVBoxLayout(self.page_step_2)
+        p2_layout.setContentsMargins(0, 0, 0, 0)
+        p2_layout.setSpacing(12)
+
+        sub_page_card = CardWidget(self.page_step_2)
+        sub_layout = QVBoxLayout(sub_page_card)
+        sub_layout.setContentsMargins(14, 12, 14, 12)
+        sub_layout.setSpacing(8)
+
+        sub_top_row = QHBoxLayout()
+        sub_top_row.addWidget(SubtitleLabel("Danh Sách Câu Thoại Phụ Đề", sub_page_card))
+        sub_top_row.addStretch(1)
+
+        sub_top_row.addWidget(BodyLabel("Biểu cảm:", sub_page_card))
+        self.combo_sub_tag = ComboBox(sub_page_card)
+        for vn_label, tag_code in EXPRESSIVE_TAG_BUTTONS:
+            self.combo_sub_tag.addItem(f"{vn_label} {tag_code}")
+        self.btn_insert_tag_to_sub = PushButton("Chèn Thẻ Biểu Cảm Vào Câu Đang Chọn", sub_page_card)
+        self.btn_insert_tag_to_sub.setIcon(FluentIcon.ADD)
+
+        self.btn_preview_selected_row = PushButton("Nghe Thử Câu Đang Chọn", sub_page_card)
+        self.btn_preview_selected_row.setIcon(FluentIcon.VOLUME)
+        self.btn_preview_selected_row.setEnabled(False)
+
+        sub_top_row.addWidget(self.combo_sub_tag)
+        sub_top_row.addWidget(self.btn_insert_tag_to_sub)
+        sub_top_row.addWidget(self.btn_preview_selected_row)
+        sub_layout.addLayout(sub_top_row)
+
+        self.sub_table = TableWidget(sub_page_card)
+        self.sub_table.setColumnCount(6)
+        self.sub_table.setHorizontalHeaderLabels([
+            "STT",
+            "Bắt Đầu",
+            "Kết Thúc",
+            "Nhân Vật",
+            "Nguồn Giọng Nhân Vật",
+            "Nội Dung Câu Thoại Lồng Tiếng",
+        ])
+        self.sub_table.setColumnWidth(0, 50)
+        self.sub_table.setColumnWidth(1, 95)
+        self.sub_table.setColumnWidth(2, 95)
+        self.sub_table.setColumnWidth(3, 110)
+        self.sub_table.setColumnWidth(4, 185)
+        self.sub_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
+        self.sub_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.sub_table.setMinimumHeight(220)
+        sub_layout.addWidget(self.sub_table, 1)
+        p2_layout.addWidget(sub_page_card, 1)
+
+        studio_card = CardWidget(self.page_step_2)
+        studio_card_layout = QVBoxLayout(studio_card)
+        studio_card_layout.setContentsMargins(14, 10, 14, 10)
+        studio_card_layout.setSpacing(8)
+
+        self.workspace_pivot = Pivot(studio_card)
+        self.workspace_stack = QStackedWidget(studio_card)
+
+        self.studio_page = QWidget(studio_card)
         studio_layout = QVBoxLayout(self.studio_page)
-        studio_layout.setContentsMargins(0, 6, 0, 0)
-        studio_layout.setSpacing(10)
+        studio_layout.setContentsMargins(0, 4, 0, 0)
+        studio_layout.setSpacing(8)
 
         lbl_tags = BodyLabel("Chèn nhanh thẻ biểu cảm phi ngôn từ vào vị trí con trỏ:", self.studio_page)
         lbl_tags.setStyleSheet("font-weight: bold;")
@@ -694,7 +950,7 @@ class OmniVoiceInterface(ScrollArea):
         studio_layout.addLayout(pronun_row)
 
         self.studio_text_edit = TextEdit(self.studio_page)
-        self.studio_text_edit.setMinimumHeight(180)
+        self.studio_text_edit.setMinimumHeight(120)
         self.studio_text_edit.setPlaceholderText(
             "Nhập văn bản cần tổng hợp giọng nói tại đây...\n"
             "Mẹo: Bạn có thể bấm các nút phía trên để chèn tiếng cười [laughter], tiếng thở dài [sigh] hoặc ghi đè cách phát âm."
@@ -719,164 +975,9 @@ class OmniVoiceInterface(ScrollArea):
 
         self.workspace_stack.addWidget(self.studio_page)
 
-        # >> Tab con 1: Lồng Tiếng Tệp Phụ Đề Đa Nhân Vật & Ghép Video <<
-        self.sub_dub_page = QWidget(left_card)
-        sub_dub_layout = QVBoxLayout(self.sub_dub_page)
-        sub_dub_layout.setContentsMargins(0, 6, 0, 0)
-        sub_dub_layout.setSpacing(10)
-
-        # Hàng 1: Chọn tệp phụ đề & video nguồn
-        sub_file_row = QHBoxLayout()
-        self.btn_load_srt = PushButton("Chọn Tệp Phụ Đề", self.sub_dub_page)
-        self.btn_load_srt.setIcon(FluentIcon.DOCUMENT)
-
-        self.btn_load_video = PushButton("Chọn Video Nguồn Để Ghép", self.sub_dub_page)
-        self.btn_load_video.setIcon(FluentIcon.VIDEO)
-
-        self.btn_clear_video = PushButton("Bỏ Chọn Video", self.sub_dub_page)
-        self.btn_clear_video.setIcon(FluentIcon.DELETE)
-        self.btn_clear_video.setEnabled(False)
-
-        self.lbl_sub_video_info = CaptionLabel("Chưa nạp tệp phụ đề và video nguồn.", self.sub_dub_page)
-        self.lbl_sub_video_info.setWordWrap(True)
-
-        sub_file_row.addWidget(self.btn_load_srt)
-        sub_file_row.addWidget(self.btn_load_video)
-        sub_file_row.addWidget(self.btn_clear_video)
-        sub_file_row.addWidget(self.lbl_sub_video_info, 1)
-        sub_dub_layout.addLayout(sub_file_row)
-
-        # Hàng 2: Chế độ Phân Vai Đa Nhân Vật & Tự Động Nhận Diện Giọng Nhiều Người
-        diarize_card = CardWidget(self.sub_dub_page)
-        diarize_layout = QVBoxLayout(diarize_card)
-        diarize_layout.setContentsMargins(12, 10, 12, 10)
-        diarize_layout.setSpacing(8)
-
-        diarize_top_row = QHBoxLayout()
-        diarize_top_row.setSpacing(8)
-        lbl_multi_mode = BodyLabel("Chế độ giọng phụ đề:", diarize_card)
-        lbl_multi_mode.setStyleSheet("font-weight: bold;")
-        self.combo_multi_speaker_mode = ComboBox(diarize_card)
-        for label_vn, _ in MULTI_SPEAKER_MODE_ITEMS:
-            self.combo_multi_speaker_mode.addItem(label_vn)
-        self.combo_multi_speaker_mode.setMinimumWidth(290)
-
-        lbl_max_spk = BodyLabel("Số người tối đa:", diarize_card)
-        self.spin_max_speakers = SpinBox(diarize_card)
-        self.spin_max_speakers.setRange(1, 6)
-        self.spin_max_speakers.setValue(4)
-
-        self.btn_auto_detect_speakers = PrimaryPushButton("Tự Động Nhận Diện Nhiều Người Nói", diarize_card)
-        self.btn_auto_detect_speakers.setIcon(FluentIcon.PEOPLE)
-        self.btn_auto_detect_speakers.setEnabled(False)
-
-        diarize_top_row.addWidget(lbl_multi_mode)
-        diarize_top_row.addWidget(self.combo_multi_speaker_mode, 1)
-        diarize_top_row.addWidget(lbl_max_spk)
-        diarize_top_row.addWidget(self.spin_max_speakers)
-        diarize_top_row.addWidget(self.btn_auto_detect_speakers)
-        diarize_layout.addLayout(diarize_top_row)
-
-        # Cấu hình giọng riêng cho từng nhân vật chia làm 2 hàng gọn gàng
-        spk_assign_row1 = QHBoxLayout()
-        spk_assign_row1.setSpacing(8)
-        spk_assign_row1.addWidget(BodyLabel("Nhân vật:", diarize_card))
-        self.combo_target_speaker = ComboBox(diarize_card)
-        self.combo_target_speaker.addItems([f"Người nói {i}" for i in range(1, 7)])
-
-        self.combo_speaker_voice_preset = ComboBox(diarize_card)
-        self.combo_speaker_voice_preset.addItems(list(SPEAKER_VOICE_PRESETS.keys()))
-
-        self.btn_preview_speaker_preset_vi = PushButton("Nghe Thử Giọng Nhân Vật", diarize_card)
-        self.btn_preview_speaker_preset_vi.setIcon(FluentIcon.VOLUME)
-
-        spk_assign_row1.addWidget(self.combo_target_speaker)
-        spk_assign_row1.addWidget(self.combo_speaker_voice_preset, 1)
-        spk_assign_row1.addWidget(self.btn_preview_speaker_preset_vi)
-        diarize_layout.addLayout(spk_assign_row1)
-
-        spk_assign_row2 = QHBoxLayout()
-        spk_assign_row2.setSpacing(8)
-
-        self.btn_apply_preset_to_speaker = PushButton("Áp Dụng Thiết Kế Giọng Cho Nhân Vật", diarize_card)
-        self.btn_apply_preset_to_speaker.setIcon(FluentIcon.ACCEPT)
-
-        self.btn_pick_audio_for_speaker = PushButton("Chọn Tệp Giọng Mẫu Cho Nhân Vật", diarize_card)
-        self.btn_pick_audio_for_speaker.setIcon(FluentIcon.MUSIC)
-
-        self.btn_assign_speaker_to_rows = PushButton("Gán Nhân Vật Vào Câu Đang Chọn", diarize_card)
-        self.btn_assign_speaker_to_rows.setIcon(FluentIcon.EDIT)
-
-        self.btn_reset_speaker_voice = PushButton("Tạo Lại Mẫu Giọng", diarize_card)
-        self.btn_reset_speaker_voice.setIcon(FluentIcon.SYNC)
-
-        spk_assign_row2.addWidget(self.btn_apply_preset_to_speaker)
-        spk_assign_row2.addWidget(self.btn_pick_audio_for_speaker)
-        spk_assign_row2.addWidget(self.btn_assign_speaker_to_rows)
-        spk_assign_row2.addWidget(self.btn_reset_speaker_voice)
-        diarize_layout.addLayout(spk_assign_row2)
-
-        # Hàng chèn thẻ biểu cảm nhanh vào dòng phụ đề đang chọn
-        sub_tag_row = QHBoxLayout()
-        sub_tag_row.setSpacing(8)
-        sub_tag_row.addWidget(BodyLabel("Biểu cảm câu phụ đề:", diarize_card))
-        self.combo_sub_tag = ComboBox(diarize_card)
-        for vn_label, tag_code in EXPRESSIVE_TAG_BUTTONS:
-            self.combo_sub_tag.addItem(f"{vn_label} {tag_code}")
-        self.btn_insert_tag_to_sub = PushButton("Chèn Thẻ Biểu Cảm Vào Câu Đang Chọn", diarize_card)
-        self.btn_insert_tag_to_sub.setIcon(FluentIcon.ADD)
-        self.lbl_speaker_summary = CaptionLabel(
-            "Mẹo: Bấm Tự Động Nhận Diện Nhiều Người Nói để hệ thống tự tách giọng từng nhân vật từ video hoặc phân vai hội thoại từ tệp phụ đề.",
-            diarize_card,
-        )
-        self.lbl_speaker_summary.setWordWrap(True)
-
-        sub_tag_row.addWidget(self.combo_sub_tag)
-        sub_tag_row.addWidget(self.btn_insert_tag_to_sub)
-        sub_tag_row.addWidget(self.lbl_speaker_summary, 1)
-        diarize_layout.addLayout(sub_tag_row)
-
-        sub_dub_layout.addWidget(diarize_card)
-
-        # Bảng phụ đề 6 cột hỗ trợ đa nhân vật
-        self.sub_table = TableWidget(self.sub_dub_page)
-        self.sub_table.setColumnCount(6)
-        self.sub_table.setHorizontalHeaderLabels([
-            "STT",
-            "Bắt Đầu",
-            "Kết Thúc",
-            "Nhân Vật",
-            "Nguồn Giọng Nhân Vật",
-            "Nội Dung Câu Thoại Lồng Tiếng",
-        ])
-        self.sub_table.setColumnWidth(0, 50)
-        self.sub_table.setColumnWidth(1, 95)
-        self.sub_table.setColumnWidth(2, 95)
-        self.sub_table.setColumnWidth(3, 110)
-        self.sub_table.setColumnWidth(4, 185)
-        self.sub_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
-        self.sub_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.sub_table.setMinimumHeight(210)
-        sub_dub_layout.addWidget(self.sub_table, 1)
-
-        sub_action_row = QHBoxLayout()
-        self.btn_preview_selected_row = PushButton("Nghe Thử Câu Đang Chọn", self.sub_dub_page)
-        self.btn_preview_selected_row.setIcon(FluentIcon.VOLUME)
-        self.btn_preview_selected_row.setEnabled(False)
-
-        self.btn_export_dub_wav = PushButton("Xuất Tệp Âm Thanh Lồng Tiếng", self.sub_dub_page)
-        self.btn_export_dub_wav.setIcon(FluentIcon.MUSIC)
-        self.btn_export_dub_wav.setEnabled(False)
-
-        self.btn_dub_merge_video = PrimaryPushButton("Lồng Tiếng Và Xuất Video", self.sub_dub_page)
-        self.btn_dub_merge_video.setIcon(FluentIcon.VIDEO)
-        self.btn_dub_merge_video.setEnabled(False)
-
-        sub_action_row.addWidget(self.btn_preview_selected_row)
-        sub_action_row.addWidget(self.btn_export_dub_wav)
-        sub_action_row.addWidget(self.btn_dub_merge_video)
-        sub_dub_layout.addLayout(sub_action_row)
-
+        self.sub_dub_page = QWidget(studio_card)
+        sub_dub_inner = QVBoxLayout(self.sub_dub_page)
+        sub_dub_inner.addWidget(CaptionLabel("Chế độ lồng tiếng phụ đề đa nhân vật đã sẵn sàng ở bảng phía trên.", self.sub_dub_page))
         self.workspace_stack.addWidget(self.sub_dub_page)
 
         self.workspace_pivot.addItem(
@@ -893,11 +994,229 @@ class OmniVoiceInterface(ScrollArea):
         )
         self.workspace_pivot.setCurrentItem("studio_page")
 
-        left_layout.addWidget(self.workspace_pivot, 0, Qt.AlignLeft)
-        left_layout.addWidget(self.workspace_stack, 1)
+        studio_card_layout.addWidget(self.workspace_pivot, 0, Qt.AlignLeft)
+        studio_card_layout.addWidget(self.workspace_stack, 1)
+        p2_layout.addWidget(studio_card)
 
-        # Trình phát âm thanh kết quả tích hợp ngay bên dưới không gian làm việc
-        player_card = CardWidget(left_card)
+        self.step_stack.addWidget(self.page_step_2)
+
+        # ---------------------------------------------------------------------
+        # BƯỚC 3: CÂN CHỈNH ÂM THANH
+        # ---------------------------------------------------------------------
+        self.page_step_3 = QWidget(self.step_stack)
+        p3_layout = QVBoxLayout(self.page_step_3)
+        p3_layout.setContentsMargins(0, 0, 0, 0)
+        p3_layout.setSpacing(12)
+
+        audio_card = CardWidget(self.page_step_3)
+        audio_layout = QVBoxLayout(audio_card)
+        audio_layout.setContentsMargins(18, 14, 18, 14)
+        audio_layout.setSpacing(10)
+        audio_layout.addWidget(SubtitleLabel("Tham Số Âm Thanh Và Hòa Trộn", audio_card))
+
+        param_grid = QGridLayout()
+        param_grid.setSpacing(8)
+
+        param_grid.addWidget(BodyLabel("Tốc độ phát ngôn:", audio_card), 0, 0)
+        self.spin_speed = DoubleSpinBox(audio_card)
+        self.spin_speed.setRange(0.5, 2.0)
+        self.spin_speed.setSingleStep(0.05)
+        self.spin_speed.setValue(1.0)
+        param_grid.addWidget(self.spin_speed, 0, 1)
+
+        param_grid.addWidget(BodyLabel("Thời lượng cố định theo giây:", audio_card), 0, 2)
+        self.spin_duration = DoubleSpinBox(audio_card)
+        self.spin_duration.setRange(0.0, 120.0)
+        self.spin_duration.setSingleStep(0.5)
+        self.spin_duration.setValue(0.0)
+        param_grid.addWidget(self.spin_duration, 0, 3)
+
+        param_grid.addWidget(BodyLabel("Âm lượng video gốc:", audio_card), 1, 0)
+        self.spin_duck_vol = DoubleSpinBox(audio_card)
+        self.spin_duck_vol.setRange(0.0, 1.0)
+        self.spin_duck_vol.setSingleStep(0.05)
+        self.spin_duck_vol.setValue(0.15)
+        param_grid.addWidget(self.spin_duck_vol, 1, 1)
+
+        param_grid.addWidget(BodyLabel("Chế độ hòa trộn nhạc nền:", audio_card), 1, 2)
+        self.combo_ducking_mode = ComboBox(audio_card)
+        self.combo_ducking_mode.addItems([
+            "Tự động giảm nhạc nền khi có thoại",
+            "Giảm âm lượng nhạc nền cố định",
+        ])
+        param_grid.addWidget(self.combo_ducking_mode, 1, 3)
+        audio_layout.addLayout(param_grid)
+
+        chk_grid = QGridLayout()
+        chk_grid.setSpacing(8)
+        self.chk_sync_sub_duration = CheckBox("Tự động khớp thời lượng theo từng câu phụ đề", audio_card)
+        self.chk_sync_sub_duration.setChecked(True)
+        chk_grid.addWidget(self.chk_sync_sub_duration, 0, 0)
+
+        self.chk_denoise = CheckBox("Khử nhiễu giọng đọc đầu ra", audio_card)
+        self.chk_denoise.setChecked(True)
+        chk_grid.addWidget(self.chk_denoise, 0, 1)
+
+        self.chk_preprocess_prompt = CheckBox("Tiền xử lý cắt khoảng lặng giọng mẫu", audio_card)
+        self.chk_preprocess_prompt.setChecked(True)
+        chk_grid.addWidget(self.chk_preprocess_prompt, 1, 0)
+
+        self.chk_postprocess_output = CheckBox("Hậu xử lý làm mượt âm thanh đầu ra", audio_card)
+        self.chk_postprocess_output.setChecked(True)
+        chk_grid.addWidget(self.chk_postprocess_output, 1, 1)
+
+        self.chk_normalize_text = CheckBox("Chuẩn hóa chữ số và ngày tháng thành chữ", audio_card)
+        self.chk_normalize_text.setChecked(True)
+        chk_grid.addWidget(self.chk_normalize_text, 2, 0)
+
+        self.chk_flashinfer = CheckBox("Tăng tốc phần cứng FlashInfer trên card đồ họa", audio_card)
+        self.chk_flashinfer.setChecked(False)
+        chk_grid.addWidget(self.chk_flashinfer, 2, 1)
+        audio_layout.addLayout(chk_grid)
+        p3_layout.addWidget(audio_card)
+
+        adv_card = CardWidget(self.page_step_3)
+        adv_layout = QVBoxLayout(adv_card)
+        adv_layout.setContentsMargins(18, 14, 18, 14)
+        adv_layout.setSpacing(8)
+        adv_layout.addWidget(SubtitleLabel("Phần Cứng Nhận Diện Và Tham Số Nâng Cao", adv_card))
+
+        hw_row = QHBoxLayout()
+        hw_row.addWidget(BodyLabel("Bộ xử lý nhận diện người nói:", adv_card))
+        self.combo_hardware_selector = ComboBox(adv_card)
+        self.combo_hardware_selector.addItems([
+            "Ưu tiên card đồ họa NVIDIA RTX 4050",
+            "Chế độ vi xử lý trung tâm",
+            "Phân đoạn người nói chuyên sâu",
+        ])
+        self.combo_hardware_selector.setCurrentIndex(0)
+        self.combo_hardware_selector.setMinimumWidth(320)
+        hw_row.addWidget(self.combo_hardware_selector, 1)
+        adv_layout.addLayout(hw_row)
+
+        diff_grid = QGridLayout()
+        diff_grid.setSpacing(6)
+        diff_grid.addWidget(BodyLabel("Số bước giải mã khuếch tán:", adv_card), 0, 0)
+        self.spin_num_step = SpinBox(adv_card)
+        self.spin_num_step.setRange(4, 64)
+        self.spin_num_step.setValue(32)
+        diff_grid.addWidget(self.spin_num_step, 0, 1)
+
+        diff_grid.addWidget(BodyLabel("Hệ số dẫn hướng:", adv_card), 0, 2)
+        self.spin_guidance = DoubleSpinBox(adv_card)
+        self.spin_guidance.setRange(0.0, 4.0)
+        self.spin_guidance.setSingleStep(0.1)
+        self.spin_guidance.setValue(2.0)
+        diff_grid.addWidget(self.spin_guidance, 0, 3)
+
+        diff_grid.addWidget(BodyLabel("Độ dịch bước thời gian:", adv_card), 1, 0)
+        self.spin_t_shift = DoubleSpinBox(adv_card)
+        self.spin_t_shift.setRange(0.01, 1.0)
+        self.spin_t_shift.setSingleStep(0.05)
+        self.spin_t_shift.setValue(0.10)
+        diff_grid.addWidget(self.spin_t_shift, 1, 1)
+
+        diff_grid.addWidget(BodyLabel("Hệ số phạt tầng mã hóa:", adv_card), 1, 2)
+        self.spin_layer_penalty = DoubleSpinBox(adv_card)
+        self.spin_layer_penalty.setRange(0.0, 20.0)
+        self.spin_layer_penalty.setSingleStep(0.5)
+        self.spin_layer_penalty.setValue(5.0)
+        diff_grid.addWidget(self.spin_layer_penalty, 1, 3)
+
+        diff_grid.addWidget(BodyLabel("Nhiệt độ chọn vị trí:", adv_card), 2, 0)
+        self.spin_pos_temp = DoubleSpinBox(adv_card)
+        self.spin_pos_temp.setRange(0.0, 10.0)
+        self.spin_pos_temp.setSingleStep(0.5)
+        self.spin_pos_temp.setValue(5.0)
+        diff_grid.addWidget(self.spin_pos_temp, 2, 1)
+
+        diff_grid.addWidget(BodyLabel("Nhiệt độ lấy mẫu lớp:", adv_card), 2, 2)
+        self.spin_cls_temp = DoubleSpinBox(adv_card)
+        self.spin_cls_temp.setRange(0.0, 2.0)
+        self.spin_cls_temp.setSingleStep(0.1)
+        self.spin_cls_temp.setValue(0.0)
+        diff_grid.addWidget(self.spin_cls_temp, 2, 3)
+
+        diff_grid.addWidget(BodyLabel("Thời lượng chia đoạn dài:", adv_card), 3, 0)
+        self.spin_chunk_dur = DoubleSpinBox(adv_card)
+        self.spin_chunk_dur.setRange(5.0, 60.0)
+        self.spin_chunk_dur.setSingleStep(1.0)
+        self.spin_chunk_dur.setValue(15.0)
+        diff_grid.addWidget(self.spin_chunk_dur, 3, 1)
+
+        diff_grid.addWidget(BodyLabel("Ngưỡng tự chia đoạn dài:", adv_card), 3, 2)
+        self.spin_chunk_thresh = DoubleSpinBox(adv_card)
+        self.spin_chunk_thresh.setRange(10.0, 120.0)
+        self.spin_chunk_thresh.setSingleStep(5.0)
+        self.spin_chunk_thresh.setValue(30.0)
+        diff_grid.addWidget(self.spin_chunk_thresh, 3, 3)
+
+        diff_grid.addWidget(BodyLabel("Khoảng lặng đệm hai đầu:", adv_card), 4, 0)
+        self.spin_pad_dur = DoubleSpinBox(adv_card)
+        self.spin_pad_dur.setRange(0.0, 2.0)
+        self.spin_pad_dur.setSingleStep(0.05)
+        self.spin_pad_dur.setValue(0.10)
+        diff_grid.addWidget(self.spin_pad_dur, 4, 1)
+
+        diff_grid.addWidget(BodyLabel("Thời gian làm mượt đầu cuối:", adv_card), 4, 2)
+        self.spin_fade_dur = DoubleSpinBox(adv_card)
+        self.spin_fade_dur.setRange(0.0, 1.0)
+        self.spin_fade_dur.setSingleStep(0.05)
+        self.spin_fade_dur.setValue(0.10)
+        diff_grid.addWidget(self.spin_fade_dur, 4, 3)
+        adv_layout.addLayout(diff_grid)
+        p3_layout.addWidget(adv_card)
+
+        self.step_stack.addWidget(self.page_step_3)
+
+        # ---------------------------------------------------------------------
+        # BƯỚC 4: KIỂM TRA VÀ XUẤT
+        # ---------------------------------------------------------------------
+        self.page_step_4 = QWidget(self.step_stack)
+        p4_layout = QVBoxLayout(self.page_step_4)
+        p4_layout.setContentsMargins(0, 0, 0, 0)
+        p4_layout.setSpacing(12)
+
+        qc_card = CardWidget(self.page_step_4)
+        qc_layout = QVBoxLayout(qc_card)
+        qc_layout.setContentsMargins(18, 14, 18, 14)
+        qc_layout.setSpacing(10)
+        qc_layout.addWidget(SubtitleLabel("Kiểm Tra Chất Lượng Trước Khi Xuất", qc_card))
+
+        qc_row = QHBoxLayout()
+        self.btn_run_qc = PrimaryPushButton("Kiểm Tra Chất Lượng Trước Xuất", qc_card)
+        self.btn_run_qc.setIcon(FluentIcon.ACCEPT)
+        qc_row.addWidget(self.btn_run_qc)
+        qc_row.addStretch(1)
+        qc_layout.addLayout(qc_row)
+
+        self.lbl_qc_result = BodyLabel("Bấm nút kiểm tra phía trên để rà soát toàn bộ câu thoại trước khi xuất.", qc_card)
+        self.lbl_qc_result.setWordWrap(True)
+        qc_layout.addWidget(self.lbl_qc_result)
+        p4_layout.addWidget(qc_card)
+
+        export_card = CardWidget(self.page_step_4)
+        export_layout = QVBoxLayout(export_card)
+        export_layout.setContentsMargins(18, 14, 18, 14)
+        export_layout.setSpacing(10)
+        export_layout.addWidget(SubtitleLabel("Xuất Bản Âm Thanh Và Video Lồng Tiếng", export_card))
+
+        export_action_row = QHBoxLayout()
+        self.btn_export_dub_wav = PushButton("Xuất Tệp Âm Thanh Lồng Tiếng", export_card)
+        self.btn_export_dub_wav.setIcon(FluentIcon.MUSIC)
+        self.btn_export_dub_wav.setEnabled(False)
+
+        self.btn_dub_merge_video = PrimaryPushButton("Lồng Tiếng Và Xuất Video", export_card)
+        self.btn_dub_merge_video.setIcon(FluentIcon.VIDEO)
+        self.btn_dub_merge_video.setEnabled(False)
+
+        export_action_row.addWidget(self.btn_export_dub_wav)
+        export_action_row.addWidget(self.btn_dub_merge_video)
+        export_action_row.addStretch(1)
+        export_layout.addLayout(export_action_row)
+        p4_layout.addWidget(export_card)
+
+        player_card = CardWidget(self.page_step_4)
         player_layout = QHBoxLayout(player_card)
         player_layout.setContentsMargins(14, 10, 14, 10)
         player_layout.setSpacing(10)
@@ -916,154 +1235,24 @@ class OmniVoiceInterface(ScrollArea):
         player_layout.addWidget(self.btn_play_pause_output)
         player_layout.addWidget(self.slider_audio_pos, 1)
         player_layout.addWidget(self.lbl_audio_time)
-        left_layout.addWidget(player_card)
+        p4_layout.addWidget(player_card)
 
-        workspace_row.addWidget(left_card, 3)
+        log_card = CardWidget(self.page_step_4)
+        log_layout = QVBoxLayout(log_card)
+        log_layout.setContentsMargins(14, 10, 14, 10)
+        log_layout.setSpacing(6)
+        log_layout.addWidget(BodyLabel("Nhật ký xử lý trên card đồ họa:", log_card))
 
-        # --- CỘT PHẢI (Tỷ lệ 2): Toàn Bộ Tham Số Giải Mã Khuếch Tán & Nhật Ký ---
-        right_card = CardWidget(self.container)
-        right_layout = QVBoxLayout(right_card)
-        right_layout.setContentsMargins(18, 14, 18, 14)
-        right_layout.setSpacing(6)
-
-        right_layout.addWidget(SubtitleLabel("Tham Số Giải Mã Khuếch Tán", right_card))
-
-        param_grid = QGridLayout()
-        param_grid.setSpacing(6)
-
-        param_grid.addWidget(BodyLabel("Tốc độ phát ngôn:", right_card), 0, 0)
-        self.spin_speed = DoubleSpinBox(right_card)
-        self.spin_speed.setRange(0.5, 2.0)
-        self.spin_speed.setSingleStep(0.05)
-        self.spin_speed.setValue(1.0)
-        param_grid.addWidget(self.spin_speed, 0, 1)
-
-        param_grid.addWidget(BodyLabel("Thời lượng cố định theo giây:", right_card), 1, 0)
-        self.spin_duration = DoubleSpinBox(right_card)
-        self.spin_duration.setRange(0.0, 120.0)
-        self.spin_duration.setSingleStep(0.5)
-        self.spin_duration.setValue(0.0)
-        param_grid.addWidget(self.spin_duration, 1, 1)
-
-        param_grid.addWidget(BodyLabel("Số bước giải mã khuếch tán:", right_card), 2, 0)
-        self.spin_num_step = SpinBox(right_card)
-        self.spin_num_step.setRange(4, 64)
-        self.spin_num_step.setValue(32)
-        param_grid.addWidget(self.spin_num_step, 2, 1)
-
-        param_grid.addWidget(BodyLabel("Hệ số dẫn hướng:", right_card), 3, 0)
-        self.spin_guidance = DoubleSpinBox(right_card)
-        self.spin_guidance.setRange(0.0, 4.0)
-        self.spin_guidance.setSingleStep(0.1)
-        self.spin_guidance.setValue(2.0)
-        param_grid.addWidget(self.spin_guidance, 3, 1)
-
-        param_grid.addWidget(BodyLabel("Độ dịch bước thời gian:", right_card), 4, 0)
-        self.spin_t_shift = DoubleSpinBox(right_card)
-        self.spin_t_shift.setRange(0.01, 1.0)
-        self.spin_t_shift.setSingleStep(0.05)
-        self.spin_t_shift.setValue(0.10)
-        param_grid.addWidget(self.spin_t_shift, 4, 1)
-
-        param_grid.addWidget(BodyLabel("Hệ số phạt tầng mã hóa:", right_card), 5, 0)
-        self.spin_layer_penalty = DoubleSpinBox(right_card)
-        self.spin_layer_penalty.setRange(0.0, 20.0)
-        self.spin_layer_penalty.setSingleStep(0.5)
-        self.spin_layer_penalty.setValue(5.0)
-        param_grid.addWidget(self.spin_layer_penalty, 5, 1)
-
-        param_grid.addWidget(BodyLabel("Nhiệt độ chọn vị trí:", right_card), 6, 0)
-        self.spin_pos_temp = DoubleSpinBox(right_card)
-        self.spin_pos_temp.setRange(0.0, 10.0)
-        self.spin_pos_temp.setSingleStep(0.5)
-        self.spin_pos_temp.setValue(5.0)
-        param_grid.addWidget(self.spin_pos_temp, 6, 1)
-
-        param_grid.addWidget(BodyLabel("Nhiệt độ lấy mẫu lớp:", right_card), 7, 0)
-        self.spin_cls_temp = DoubleSpinBox(right_card)
-        self.spin_cls_temp.setRange(0.0, 2.0)
-        self.spin_cls_temp.setSingleStep(0.1)
-        self.spin_cls_temp.setValue(0.0)
-        param_grid.addWidget(self.spin_cls_temp, 7, 1)
-
-        param_grid.addWidget(BodyLabel("Thời lượng chia đoạn dài:", right_card), 8, 0)
-        self.spin_chunk_dur = DoubleSpinBox(right_card)
-        self.spin_chunk_dur.setRange(5.0, 60.0)
-        self.spin_chunk_dur.setSingleStep(1.0)
-        self.spin_chunk_dur.setValue(15.0)
-        param_grid.addWidget(self.spin_chunk_dur, 8, 1)
-
-        param_grid.addWidget(BodyLabel("Ngưỡng tự chia đoạn dài:", right_card), 9, 0)
-        self.spin_chunk_thresh = DoubleSpinBox(right_card)
-        self.spin_chunk_thresh.setRange(10.0, 120.0)
-        self.spin_chunk_thresh.setSingleStep(5.0)
-        self.spin_chunk_thresh.setValue(30.0)
-        param_grid.addWidget(self.spin_chunk_thresh, 9, 1)
-
-        param_grid.addWidget(BodyLabel("Khoảng lặng đệm hai đầu:", right_card), 10, 0)
-        self.spin_pad_dur = DoubleSpinBox(right_card)
-        self.spin_pad_dur.setRange(0.0, 2.0)
-        self.spin_pad_dur.setSingleStep(0.05)
-        self.spin_pad_dur.setValue(0.10)
-        param_grid.addWidget(self.spin_pad_dur, 10, 1)
-
-        param_grid.addWidget(BodyLabel("Thời gian làm mượt đầu cuối:", right_card), 11, 0)
-        self.spin_fade_dur = DoubleSpinBox(right_card)
-        self.spin_fade_dur.setRange(0.0, 1.0)
-        self.spin_fade_dur.setSingleStep(0.05)
-        self.spin_fade_dur.setValue(0.10)
-        param_grid.addWidget(self.spin_fade_dur, 11, 1)
-
-        param_grid.addWidget(BodyLabel("Âm lượng video gốc:", right_card), 12, 0)
-        self.spin_duck_vol = DoubleSpinBox(right_card)
-        self.spin_duck_vol.setRange(0.0, 1.0)
-        self.spin_duck_vol.setSingleStep(0.05)
-        self.spin_duck_vol.setValue(0.15)
-        param_grid.addWidget(self.spin_duck_vol, 12, 1)
-
-        param_grid.addWidget(BodyLabel("Chế độ hòa trộn nhạc nền:", right_card), 13, 0)
-        self.combo_ducking_mode = ComboBox(right_card)
-        self.combo_ducking_mode.addItems([
-            "Tự động giảm nhạc nền khi có thoại",
-            "Giảm âm lượng nhạc nền cố định",
-        ])
-        param_grid.addWidget(self.combo_ducking_mode, 13, 1)
-
-        right_layout.addLayout(param_grid)
-
-        self.chk_sync_sub_duration = CheckBox("Tự động khớp thời lượng theo từng câu phụ đề", right_card)
-        self.chk_sync_sub_duration.setChecked(True)
-        right_layout.addWidget(self.chk_sync_sub_duration)
-
-        self.chk_denoise = CheckBox("Khử nhiễu giọng đọc đầu ra", right_card)
-        self.chk_denoise.setChecked(True)
-        right_layout.addWidget(self.chk_denoise)
-
-        self.chk_preprocess_prompt = CheckBox("Tiền xử lý cắt khoảng lặng giọng mẫu", right_card)
-        self.chk_preprocess_prompt.setChecked(True)
-        right_layout.addWidget(self.chk_preprocess_prompt)
-
-        self.chk_postprocess_output = CheckBox("Hậu xử lý làm mượt âm thanh đầu ra", right_card)
-        self.chk_postprocess_output.setChecked(True)
-        right_layout.addWidget(self.chk_postprocess_output)
-
-        self.chk_normalize_text = CheckBox("Chuẩn hóa chữ số và ngày tháng thành chữ", right_card)
-        self.chk_normalize_text.setChecked(True)
-        right_layout.addWidget(self.chk_normalize_text)
-
-        self.chk_flashinfer = CheckBox("Tăng tốc phần cứng FlashInfer trên GPU", right_card)
-        self.chk_flashinfer.setChecked(False)
-        right_layout.addWidget(self.chk_flashinfer)
-
-        right_layout.addWidget(BodyLabel("Nhật ký xử lý trên card đồ họa:", right_card))
-        self.log_edit = TextEdit(right_card)
+        self.log_edit = TextEdit(log_card)
         self.log_edit.setReadOnly(True)
-        self.log_edit.setMinimumHeight(100)
-        self.log_edit.setPlaceholderText("Nhật ký vận hành OmniVoice trên GPU sẽ hiển thị tại đây...")
-        right_layout.addWidget(self.log_edit, 1)
+        self.log_edit.setMinimumHeight(140)
+        self.log_edit.setPlaceholderText("Nhật ký vận hành OmniVoice trên card đồ họa sẽ hiển thị tại đây...")
+        log_layout.addWidget(self.log_edit, 1)
+        p4_layout.addWidget(log_card, 1)
 
-        workspace_row.addWidget(right_card, 2)
-        root_layout.addLayout(workspace_row, 1)
+        self.step_stack.addWidget(self.page_step_4)
+
+        root_layout.addWidget(self.step_stack, 1)
 
         # =====================================================================
         # 4. THANH TIẾN TRÌNH PHÍA DƯỚI
@@ -1150,6 +1339,18 @@ class OmniVoiceInterface(ScrollArea):
         # Tín hiệu khóa/mở khóa tốc độ khi bật Thời lượng cố định
         self.spin_duration.valueChanged.connect(self._update_control_states)
         self.chk_sync_sub_duration.stateChanged.connect(self._update_control_states)
+
+        # Tín hiệu thanh điều hướng 5 bước
+        self.btn_prev_step.clicked.connect(self._go_prev_step)
+        self.btn_next_step.clicked.connect(self._go_next_step)
+
+        # Tín hiệu bảng phân vai nhân vật (Bước 1)
+        self.btn_reanalyze_speakers.clicked.connect(self._run_auto_detect_speakers)
+        self.btn_reset_all_voices.clicked.connect(self._reset_all_character_voices)
+        self.btn_audition_all_speakers.clicked.connect(self._audition_all_speakers)
+
+        # Tín hiệu kiểm tra chất lượng trước xuất (Bước 4)
+        self.btn_run_qc.clicked.connect(self._on_run_pre_export_qc)
 
         # Tín hiệu Trình phát kết quả
         self.btn_play_pause_output.clicked.connect(self._toggle_play_output)
@@ -1273,6 +1474,203 @@ class OmniVoiceInterface(ScrollArea):
         ms_mode = self._get_selected_multi_speaker_mode()
         is_per_line_clone = ms_mode == "per_line_video_clone"
         self.spin_max_speakers.setEnabled(ms_mode not in ("single", "per_line_video_clone"))
+
+    # =========================================================================
+    # QUY TRÌNH ĐIỀU HƯỚNG 5 BƯỚC & QUẢN LÝ BẢNG NHÂN VẬT
+    # =========================================================================
+    def _switch_to_step(self, step_idx: int):
+        """Chuyển đổi giữa 5 bước quy trình giao diện và bảo toàn trạng thái dữ liệu."""
+        if not (0 <= step_idx < self.step_stack.count()):
+            return
+        self.current_step_index = step_idx
+        self.step_stack.setCurrentIndex(step_idx)
+        self.btn_prev_step.setEnabled(step_idx > 0)
+        self.btn_next_step.setEnabled(step_idx < self.step_stack.count() - 1)
+        for idx, btn in enumerate(self.step_buttons):
+            if idx == step_idx:
+                btn.setStyleSheet("font-weight: bold; background-color: #0078D4; color: white;")
+            else:
+                btn.setStyleSheet("")
+        if step_idx == 1:
+            self._update_casting_table()
+        elif step_idx == 2:
+            self._populate_subtitle_table()
+        elif step_idx == 4:
+            self._update_export_card_state()
+
+    def _go_prev_step(self):
+        if self.current_step_index > 0:
+            self._switch_to_step(self.current_step_index - 1)
+
+    def _go_next_step(self):
+        if self.current_step_index < self.step_stack.count() - 1:
+            self._switch_to_step(self.current_step_index + 1)
+
+    def _update_export_card_state(self):
+        has_subs = len(self.subtitle_blocks) > 0
+        has_video = bool(self.current_video_path and os.path.exists(self.current_video_path))
+        self.btn_export_dub_wav.setEnabled(has_subs)
+        self.btn_dub_merge_video.setEnabled(has_subs and has_video)
+
+    def _update_casting_table(self):
+        """Đồng bộ danh sách nhân vật vào bảng Voice Casting ở Bước 2."""
+        if not hasattr(self, "casting_table"):
+            return
+        self.casting_table.blockSignals(True)
+        self.casting_table.setRowCount(0)
+
+        speaker_map: Dict[str, Dict[str, Any]] = {}
+        for blk in self.subtitle_blocks:
+            spk = getattr(blk, "speaker", "") or "Người nói 1"
+            if spk not in speaker_map:
+                speaker_map[spk] = {
+                    "count": 0,
+                    "confidence": getattr(blk, "confidence_level", "high"),
+                    "ref_audio": getattr(blk, "voice_ref_path", ""),
+                    "voice_instruct": getattr(blk, "voice_instruct", ""),
+                }
+            speaker_map[spk]["count"] += 1
+            conf = getattr(blk, "confidence_level", "high")
+            if conf == "unassigned":
+                speaker_map[spk]["confidence"] = "unassigned"
+            elif conf == "review_needed" and speaker_map[spk]["confidence"] != "unassigned":
+                speaker_map[spk]["confidence"] = "review_needed"
+
+        for spk, prof in self.speaker_profiles.items():
+            if spk not in speaker_map:
+                speaker_map[spk] = {
+                    "count": prof.get("count", 0),
+                    "confidence": prof.get("confidence", "high"),
+                    "ref_audio": prof.get("ref_audio", ""),
+                    "voice_instruct": prof.get("voice_instruct", ""),
+                }
+            else:
+                if "ref_audio" in prof and prof["ref_audio"]:
+                    speaker_map[spk]["ref_audio"] = prof["ref_audio"]
+
+        if not speaker_map and not self.subtitle_blocks:
+            self.casting_table.blockSignals(False)
+            return
+
+        self.casting_table.setRowCount(len(speaker_map))
+        for row, (spk_name, data) in enumerate(speaker_map.items()):
+            spk_id = self.speaker_profiles.get(spk_name, {}).get("speaker_id", f"spk_{row}")
+            item_id = QTableWidgetItem(spk_id)
+            item_id.setFlags(item_id.flags() & ~Qt.ItemIsEditable)
+            self.casting_table.setItem(row, 0, item_id)
+
+            item_name = QTableWidgetItem(spk_name)
+            self.casting_table.setItem(row, 1, item_name)
+
+            item_cnt = QTableWidgetItem(f"{data['count']} câu")
+            item_cnt.setFlags(item_cnt.flags() & ~Qt.ItemIsEditable)
+            self.casting_table.setItem(row, 2, item_cnt)
+
+            ref_txt = os.path.basename(data["ref_audio"]) if data.get("ref_audio") else "Trích xuất từ video"
+            item_ref = QTableWidgetItem(ref_txt)
+            item_ref.setFlags(item_ref.flags() & ~Qt.ItemIsEditable)
+            self.casting_table.setItem(row, 3, item_ref)
+
+            prof_info = self.speaker_profiles.get(spk_name, {})
+            preset_name = prof_info.get("voice_preset", "Giọng đọc mặc định")
+            item_preset = QTableWidgetItem(preset_name)
+            item_preset.setFlags(item_preset.flags() & ~Qt.ItemIsEditable)
+            self.casting_table.setItem(row, 4, item_preset)
+
+            conf_code = data.get("confidence", "high")
+            if conf_code == "high":
+                conf_str = "Độ tin cậy cao"
+            elif conf_code == "review_needed":
+                conf_str = "Cần kiểm tra"
+            else:
+                conf_str = "Chưa xác định"
+            item_conf = QTableWidgetItem(conf_str)
+            item_conf.setFlags(item_conf.flags() & ~Qt.ItemIsEditable)
+            self.casting_table.setItem(row, 5, item_conf)
+
+            item_act = QTableWidgetItem("Sẵn sàng")
+            item_act.setFlags(item_act.flags() & ~Qt.ItemIsEditable)
+            self.casting_table.setItem(row, 6, item_act)
+
+        self.casting_table.blockSignals(False)
+
+    def _reset_all_character_voices(self):
+        """Đặt lại toàn bộ phân vai và cấu hình giọng nhân vật."""
+        self.speaker_profiles.clear()
+        for blk in self.subtitle_blocks:
+            blk.voice_ref_path = ""
+            blk.voice_instruct = ""
+            blk.is_speaker_locked = False
+        self._update_casting_table()
+        self._populate_subtitle_table()
+        InfoBar.success("Đã đặt lại", "Đã xóa toàn bộ cấu hình giọng gán cho nhân vật.", parent=self, duration=2500)
+
+    def _audition_all_speakers(self):
+        """Nghe thử mẫu giọng cho nhân vật đang chọn."""
+        if not self.speaker_profiles and not self.subtitle_blocks:
+            InfoBar.warning("Chưa có nhân vật", "Vui lòng nạp phụ đề hoặc nhận diện nhân vật trước khi nghe thử.", parent=self, duration=2500)
+            return
+        self._preview_speaker_preset_vi()
+
+    def _run_pre_export_quality_check(self) -> List[Dict[str, Any]]:
+        """Kiểm tra chất lượng trước khi xuất âm thanh hoặc video lồng tiếng."""
+        issues: List[Dict[str, Any]] = []
+        if not self.subtitle_blocks:
+            issues.append({
+                "severity": "error",
+                "index": 0,
+                "message": "Danh sách phụ đề đang trống. Vui lòng nạp tệp phụ đề trước khi xuất.",
+            })
+            return issues
+
+        for blk in self.subtitle_blocks:
+            spk = (getattr(blk, "speaker", "") or "").strip()
+            conf = getattr(blk, "confidence_level", "high")
+            text = (blk.translated_text if blk.translated_text else blk.text or "").strip()
+
+            if not text:
+                issues.append({
+                    "severity": "warning",
+                    "index": blk.index,
+                    "message": f"Câu {blk.index}: Nội dung phụ đề đang trống.",
+                })
+
+            if not spk or spk == "Chưa xác định" or conf == "unassigned":
+                issues.append({
+                    "severity": "warning",
+                    "index": blk.index,
+                    "message": f"Câu {blk.index}: Chưa gán nhân vật hoặc chưa xác định danh tính người nói.",
+                })
+
+            s_sec = parse_timestamp_to_seconds(blk.start_time)
+            e_sec = parse_timestamp_to_seconds(blk.end_time)
+            dur = max(0.0, e_sec - s_sec)
+            if len(text) > 40 and dur > 0 and (len(text) / dur) > 25.0:
+                issues.append({
+                    "severity": "warning",
+                    "index": blk.index,
+                    "message": f"Câu {blk.index}: Thời lượng quá ngắn so với độ dài câu thoại, có nguy cơ đọc tràn mốc thời gian.",
+                })
+
+        return issues
+
+    def _on_run_pre_export_qc(self):
+        """Hiển thị kết quả kiểm tra chất lượng trước xuất."""
+        issues = self._run_pre_export_quality_check()
+        if not issues:
+            self.lbl_qc_result.setText("Kết quả kiểm tra: Toàn bộ phụ đề và giọng nhân vật đã sẵn sàng để xuất.")
+            InfoBar.success("Kiểm tra hoàn tất", "Không phát hiện lỗi hoặc cảnh báo nào.", parent=self, duration=3000)
+        else:
+            warn_cnt = len(issues)
+            lines = [f"Phát hiện {warn_cnt} điểm cần lưu ý trước khi xuất:"]
+            for itm in issues[:5]:
+                lines.append(f"• {itm['message']}")
+            if warn_cnt > 5:
+                lines.append(f"... và {warn_cnt - 5} điểm khác.")
+            summary_txt = "\n".join(lines)
+            self.lbl_qc_result.setText(summary_txt)
+            InfoBar.warning("Cảnh báo chất lượng", f"Có {warn_cnt} câu cần kiểm tra lại trước khi xuất.", parent=self, duration=4000)
+
 
     def _rebuild_instruct_string(self):
         """Tự động ghép chuỗi thuộc tính thiết kế giọng nói từ các hộp chọn."""
@@ -1554,15 +1952,19 @@ class OmniVoiceInterface(ScrollArea):
                     speaker=getattr(b, "speaker", ""),
                     voice_ref_path=getattr(b, "voice_ref_path", ""),
                     voice_instruct=getattr(b, "voice_instruct", ""),
+                    confidence_level=getattr(b, "confidence_level", "high"),
+                    is_speaker_locked=getattr(b, "is_speaker_locked", False),
                 )
                 for b in blocks
             ]
             self._populate_subtitle_table()
+            self._update_casting_table()
         elif self.current_subtitle_path:
             self._load_subtitle_file_internal(self.current_subtitle_path)
         else:
             self.subtitle_blocks = []
             self._populate_subtitle_table()
+            self._update_casting_table()
 
         self._update_sub_video_status_label()
         self._update_subtitle_action_buttons()
@@ -1597,6 +1999,7 @@ class OmniVoiceInterface(ScrollArea):
                 "Mẹo: Bấm Tự Động Nhận Diện Nhiều Người Nói để hệ thống tự tách giọng từng nhân vật từ video hoặc phân vai hội thoại từ tệp phụ đề."
             )
             self._populate_subtitle_table()
+            self._update_casting_table()
             self._update_sub_video_status_label()
             self._update_subtitle_action_buttons()
             if not blocks:
@@ -1749,13 +2152,17 @@ class OmniVoiceInterface(ScrollArea):
                 ui_blk.speaker = getattr(w_blk, "speaker", ui_blk.speaker)
                 ui_blk.voice_ref_path = getattr(w_blk, "voice_ref_path", ui_blk.voice_ref_path)
                 ui_blk.voice_instruct = getattr(w_blk, "voice_instruct", ui_blk.voice_instruct)
+                ui_blk.confidence_level = getattr(w_blk, "confidence_level", getattr(ui_blk, "confidence_level", "high"))
+                ui_blk.is_speaker_locked = getattr(w_blk, "is_speaker_locked", getattr(ui_blk, "is_speaker_locked", False))
         self._populate_subtitle_table()
+        self._update_casting_table()
         summary_parts = [
             f"{spk}: {info.get('description', '')} ({info.get('count', 0)} câu)"
             for spk, info in self.speaker_profiles.items()
         ]
         if summary_parts:
             self.lbl_speaker_summary.setText("Kết quả phân vai: " + " | ".join(summary_parts))
+        self._switch_to_step(1)
 
     def _apply_preset_to_target_speaker(self):
         target_spk = self.combo_target_speaker.currentText().strip()
@@ -1919,6 +2326,11 @@ class OmniVoiceInterface(ScrollArea):
 
     def _export_subtitle_audio_track(self):
         if not self.subtitle_blocks:
+            InfoBar.error("Chưa có phụ đề", "Danh sách phụ đề đang trống. Vui lòng nạp phụ đề trước khi xuất.", parent=self, duration=3500)
+            return
+        issues = self._run_pre_export_quality_check()
+        if any(item.get("severity") == "error" for item in issues):
+            InfoBar.error("Không thể xuất", "Danh sách phụ đề đang trống hoặc không hợp lệ.", parent=self, duration=3500)
             return
         default_name = (
             str(Path(self.current_subtitle_path).with_name(Path(self.current_subtitle_path).stem + "_dubbed.wav"))
@@ -1941,6 +2353,11 @@ class OmniVoiceInterface(ScrollArea):
 
     def _dub_and_merge_video(self):
         if not self.subtitle_blocks or not self.current_video_path:
+            InfoBar.warning("Thiếu dữ liệu", "Cần có danh sách phụ đề và video nguồn để xuất video lồng tiếng.", parent=self, duration=3500)
+            return
+        issues = self._run_pre_export_quality_check()
+        if any(item.get("severity") == "error" for item in issues):
+            InfoBar.error("Không thể xuất", "Danh sách phụ đề đang trống hoặc không hợp lệ.", parent=self, duration=3500)
             return
         default_name = str(Path(self.current_video_path).with_name(Path(self.current_video_path).stem + "_long_tieng.mp4"))
         save_path, _ = QFileDialog.getSaveFileName(
@@ -2029,8 +2446,19 @@ class OmniVoiceInterface(ScrollArea):
             self.chk_flashinfer,
             *getattr(self, "_studio_tag_buttons", []),
         ]
-        for ctrl in all_task_controls:
-            ctrl.setEnabled(not running)
+        extra_task_controls = [
+            getattr(self, "btn_prev_step", None),
+            getattr(self, "btn_next_step", None),
+            getattr(self, "btn_reanalyze_speakers", None),
+            getattr(self, "btn_reset_all_voices", None),
+            getattr(self, "btn_audition_all_speakers", None),
+            getattr(self, "combo_hardware_selector", None),
+            getattr(self, "btn_run_qc", None),
+            *getattr(self, "step_buttons", []),
+        ]
+        for ctrl in [*all_task_controls, *extra_task_controls]:
+            if ctrl is not None:
+                ctrl.setEnabled(not running)
 
         if not running:
             has_subs = len(self.subtitle_blocks) > 0
@@ -2040,6 +2468,10 @@ class OmniVoiceInterface(ScrollArea):
             self.btn_use_vn_voice_as_ref.setEnabled(
                 bool(self.last_generated_audio_path and os.path.exists(self.last_generated_audio_path))
             )
+            if hasattr(self, "btn_prev_step"):
+                self.btn_prev_step.setEnabled(self.current_step_index > 0)
+            if hasattr(self, "btn_next_step"):
+                self.btn_next_step.setEnabled(self.current_step_index < self.step_stack.count() - 1)
             self._update_control_states()
             self._update_subtitle_action_buttons()
         else:
@@ -2102,6 +2534,10 @@ class OmniVoiceInterface(ScrollArea):
 
         isolated_blocks = copy.deepcopy(subtitle_blocks) if subtitle_blocks is not None else None
 
+        prefer_cuda = True
+        if hasattr(self, "combo_hardware_selector"):
+            prefer_cuda = (self.combo_hardware_selector.currentIndex() == 0)
+
         self._worker = OmniVoiceTaskWorker(
             task_type=task_type,
             engine_params=params,
@@ -2113,6 +2549,7 @@ class OmniVoiceInterface(ScrollArea):
             fixed_duration=fixed_duration,
             override_ref_audio=override_ref_audio,
             override_instruct=override_instruct,
+            prefer_cuda=prefer_cuda,
             parent=self,
         )
         self._worker.progressSignal.connect(self._on_worker_progress)
@@ -2238,6 +2675,10 @@ class OmniVoiceInterface(ScrollArea):
     def retranslateUi(self):
         self.btn_cancel_task.setText("Hủy Tác Vụ")
         self.btn_free_vram.setText("Giải Phóng Bộ Nhớ Card Đồ Họa")
+        if hasattr(self, "btn_prev_step"):
+            self.btn_prev_step.setText("Bước Trước")
+        if hasattr(self, "btn_next_step"):
+            self.btn_next_step.setText("Bước Tiếp Theo")
         self.btn_preview_vn_voice.setText("Nghe Thử Tiếng Việt")
         self.btn_use_vn_voice_as_ref.setText("Chốt Làm Giọng Mẫu Chính")
         self.btn_studio_synth.setText("Tổng Hợp Giọng Nói Ngay")
@@ -2249,4 +2690,12 @@ class OmniVoiceInterface(ScrollArea):
         self.btn_preview_selected_row.setText("Nghe Thử Câu Đang Chọn")
         self.btn_export_dub_wav.setText("Xuất Tệp Âm Thanh Lồng Tiếng")
         self.btn_dub_merge_video.setText("Lồng Tiếng Và Xuất Video")
+        if hasattr(self, "btn_reanalyze_speakers"):
+            self.btn_reanalyze_speakers.setText("Tự Động Phân Tích Lại")
+        if hasattr(self, "btn_reset_all_voices"):
+            self.btn_reset_all_voices.setText("Đặt Lại Toàn Bộ Giọng")
+        if hasattr(self, "btn_audition_all_speakers"):
+            self.btn_audition_all_speakers.setText("Nghe Thử Toàn Bộ Nhân Vật")
+        if hasattr(self, "btn_run_qc"):
+            self.btn_run_qc.setText("Kiểm Tra Chất Lượng Trước Xuất")
         self._update_sub_video_status_label()
