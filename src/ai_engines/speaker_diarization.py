@@ -116,8 +116,13 @@ def cosine_cluster_embeddings(
         centers[0] = norm_embs[rng.integers(0, n_samples)]
         for c_i in range(1, k):
             dists = np.min([np.sum((norm_embs - centers[j]) ** 2, axis=1) for j in range(c_i)], axis=0)
-            probs = dists / np.maximum(np.sum(dists), 1e-12)
-            chosen_idx = rng.choice(n_samples, p=probs)
+            total_dist = float(np.sum(dists))
+            if not np.isfinite(total_dist) or total_dist <= 1e-12:
+                # Các embedding trùng nhau: tránh xác suất toàn số 0 gây lỗi khởi tạo cụm.
+                chosen_idx = int(rng.integers(0, n_samples))
+            else:
+                probs = dists / total_dist
+                chosen_idx = int(rng.choice(n_samples, p=probs))
             centers[c_i] = norm_embs[chosen_idx]
 
         labels = np.zeros(n_samples, dtype=np.int32)
