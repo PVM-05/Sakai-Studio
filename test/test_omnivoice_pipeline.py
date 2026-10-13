@@ -438,6 +438,24 @@ def test_camppus_fbank_preprocessing_matches_model_input_contract():
 # ==============================================================================
 # 12. KIỂM THỬ PHÂN CỤM COSIN VÀ 3 MỨC ĐỘ TIN CẬY (TÁC VỤ 2)
 # ==============================================================================
+def test_kmeanspp_probabilities_are_normalized_from_float32_weights():
+    from src.ai_engines.speaker_diarization import _normalized_choice_probabilities
+
+    # Dãy trọng số float32 dễ có tổng sau phép chia lệch khỏi 1 do làm tròn.
+    weights = np.asarray([0.1, 0.2, 0.3, 0.4, 1e-7, 3.7], dtype=np.float32)
+    probabilities = _normalized_choice_probabilities(weights)
+
+    assert probabilities is not None
+    assert probabilities.dtype == np.float64
+    assert np.isfinite(probabilities).all()
+    assert (probabilities >= 0.0).all()
+    assert np.isclose(probabilities.sum(dtype=np.float64), 1.0, rtol=0.0, atol=1e-15)
+
+    # Trọng số bằng 0/không hữu hạn không được tạo ra phân phối hỏng.
+    degenerate = _normalized_choice_probabilities(np.asarray([0.0, np.nan, np.inf]))
+    assert degenerate is None
+
+
 def test_cosine_clustering_and_three_confidence_levels():
     from src.ai_engines.speaker_diarization import (
         SpeakerDiarizationCoordinator,
