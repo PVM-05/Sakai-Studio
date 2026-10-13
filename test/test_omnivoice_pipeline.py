@@ -403,3 +403,40 @@ def test_onnx_speaker_embedding_session_and_extraction():
 
     close_speaker_session(session)
 
+
+# ==============================================================================
+# 12. KIỂM THỬ PHÂN CỤM COSIN VÀ 3 MỨC ĐỘ TIN CẬY (TÁC VỤ 2)
+# ==============================================================================
+def test_cosine_clustering_and_three_confidence_levels():
+    from src.ai_engines.speaker_diarization import (
+        SpeakerDiarizationCoordinator,
+        SpeakerVoiceProfile,
+        ConfidenceLevel,
+        cosine_cluster_embeddings,
+    )
+
+    spk1_base = np.zeros(192, dtype=np.float32)
+    spk1_base[0] = 1.0
+    spk2_base = np.zeros(192, dtype=np.float32)
+    spk2_base[1] = 1.0
+
+    rng = np.random.default_rng(42)
+    cluster_1 = spk1_base + rng.normal(0, 0.02, (5, 192)).astype(np.float32)
+    cluster_2 = spk2_base + rng.normal(0, 0.02, (5, 192)).astype(np.float32)
+    ambiguous = (spk1_base + spk2_base) / np.sqrt(2.0)
+    ambiguous_noisy = ambiguous + rng.normal(0, 0.05, (1, 192)).astype(np.float32)
+
+    all_embs = np.vstack([cluster_1, cluster_2, ambiguous_noisy])
+    norms = np.linalg.norm(all_embs, axis=1, keepdims=True)
+    all_embs = all_embs / norms
+
+    labels, conf_levels, conf_scores = cosine_cluster_embeddings(all_embs, valid_indices=list(range(11)))
+    assert len(labels) == 11
+    # Cụm 1 và Cụm 2 phải có nhãn khác nhau
+    assert labels[0] != labels[5]
+    # Các câu rõ ràng phải đạt tin cậy cao
+    assert conf_levels[0] == ConfidenceLevel.HIGH.value
+    assert conf_levels[5] == ConfidenceLevel.HIGH.value
+    # Câu phân vân phải rơi vào mức cần kiểm tra hoặc chưa xác định
+    assert conf_levels[10] in (ConfidenceLevel.REVIEW_NEEDED.value, ConfidenceLevel.UNASSIGNED.value)
+
