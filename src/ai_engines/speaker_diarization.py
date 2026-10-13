@@ -332,6 +332,12 @@ class SpeakerDiarizationCoordinator:
         sr = target_sr
         audio_duration = len(data) / float(sr)
 
+        # Làm sạch thông tin giọng cũ của các câu chưa khóa trước khi phân tích
+        for blk in blocks:
+            if not getattr(blk, "is_speaker_locked", False):
+                blk.voice_ref_path = ""
+                blk.voice_instruct = ""
+
         audio_chunks: List[np.ndarray] = []
         valid_indices: List[int] = []
         for i, blk in enumerate(blocks):
@@ -344,11 +350,15 @@ class SpeakerDiarizationCoordinator:
             if duration < 0.30 or end_s <= start_s:
                 blk.speaker = "Chưa xác định"
                 blk.confidence_level = ConfidenceLevel.UNASSIGNED.value
+                blk.voice_ref_path = ""
+                blk.voice_instruct = ""
                 continue
 
             if start_s >= audio_duration:
                 blk.speaker = "Chưa xác định"
                 blk.confidence_level = ConfidenceLevel.UNASSIGNED.value
+                blk.voice_ref_path = ""
+                blk.voice_instruct = ""
                 continue
 
             padded_start = max(0.0, start_s - 0.15)
@@ -357,6 +367,8 @@ class SpeakerDiarizationCoordinator:
             if chunk.size < int(0.30 * sr):
                 blk.speaker = "Chưa xác định"
                 blk.confidence_level = ConfidenceLevel.UNASSIGNED.value
+                blk.voice_ref_path = ""
+                blk.voice_instruct = ""
                 continue
 
             rms = float(np.sqrt(np.mean(np.square(chunk, dtype=np.float64))))
@@ -364,6 +376,8 @@ class SpeakerDiarizationCoordinator:
             if not np.isfinite(rms) or rms < 1e-4 or peak < 1e-4:
                 blk.speaker = "Chưa xác định"
                 blk.confidence_level = ConfidenceLevel.UNASSIGNED.value
+                blk.voice_ref_path = ""
+                blk.voice_instruct = ""
                 continue
 
             audio_chunks.append(chunk.astype(np.float32, copy=False))
@@ -428,36 +442,59 @@ class SpeakerDiarizationCoordinator:
                     if member_conf else 0.0
                 )
 
-                # Chọn các đoạn mẫu rõ, đủ dài, cùng thuộc một cụm; giới hạn tổng khoảng 7 giây.
+                # Ưu tiên các đoạn thoại có mức độ tin cậy cao, không bị lẫn người nói
+                high_conf_members = [
+                    pos for pos in members
+                    if conf_levels[pos] == ConfidenceLevel.HIGH.value
+                ]
+                target_pool = high_conf_members if high_conf_members else members
+
                 candidates = []
-                for pos in members:
+                for pos in target_pool:
                     chunk = audio_chunks[pos]
                     duration = len(chunk) / float(sr)
                     rms = float(np.sqrt(np.mean(np.square(chunk, dtype=np.float64))))
-                    if duration >= 0.60 and rms >= 1e-4:
-                        candidates.append((rms * min(duration, 4.0), chunk))
+                    if duration >= 0.50 and rms >= 1e-4:
+                        c_score = float(conf_scores[pos]) if pos < len(conf_scores) else 0.8
+                        dur_weight = min(duration / 3.0, 1.5)
+                        score = c_score * dur_weight * min(rms * 10.0, 1.0)
+                        candidates.append((score, duration, chunk))
+
                 if not candidates and members:
                     best_pos = max(members, key=lambda p: len(audio_chunks[p]))
-                    candidates.append((1.0, audio_chunks[best_pos]))
+                    ch = audio_chunks[best_pos]
+                    candidates.append((1.0, len(ch) / float(sr), ch))
+
                 candidates.sort(key=lambda item: item[0], reverse=True)
 
-                collected: List[np.ndarray] = []
-                collected_len = 0
-                target_samples = int(7.0 * sr)
-                pause = np.zeros(int(0.15 * sr), dtype=np.float32)
-                for _, chunk in candidates:
-                    remaining = target_samples - collected_len
-                    if remaining <= 0:
+                # Ưu tiên lấy một đoạn đơn lẻ chuẩn nhất nếu độ dài >= 2.5 giây
+                # để tránh ghép nối nhiều đoạn khác nhau gây lẫn chất giọng hoặc tạp âm
+                best_single = None
+                for score, duration, chunk in candidates:
+                    if duration >= 2.5:
+                        best_single = chunk[: int(7.0 * sr)]
                         break
-                    part = chunk[:remaining]
-                    collected.append(part)
-                    collected_len += len(part)
-                    if collected_len < target_samples:
-                        collected.append(pause)
-                        collected_len += len(pause)
 
-                if collected:
-                    merged = np.concatenate(collected)[: int(7.5 * sr)]
+                if best_single is not None:
+                    merged = best_single
+                else:
+                    collected: List[np.ndarray] = []
+                    collected_len = 0
+                    target_samples = int(7.0 * sr)
+                    pause = np.zeros(int(0.15 * sr), dtype=np.float32)
+                    for _, _, chunk in candidates:
+                        remaining = target_samples - collected_len
+                        if remaining <= 0:
+                            break
+                        part = chunk[:remaining]
+                        collected.append(part)
+                        collected_len += len(part)
+                        if collected_len < target_samples:
+                            collected.append(pause)
+                            collected_len += len(pause)
+                    merged = np.concatenate(collected)[: int(7.5 * sr)] if collected else np.zeros(0, dtype=np.float32)
+
+                if len(merged) > 0:
                     if temp_dir:
                         sample_root = Path(temp_dir)
                     else:

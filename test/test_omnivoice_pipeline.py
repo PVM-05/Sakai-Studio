@@ -841,6 +841,186 @@ def test_casting_table_sync_and_subtitle_filter():
     assert ui.subtitle_blocks[0].speaker == "Đạo Diễn Nam"
 
 
+# ==============================================================================
+# 20. KIỂM THỬ ĐỘ THUẦN KHIẾT MẪU GIỌNG, LÀM SẠCH VÀ KHÓA PROMPT NHẤT QUÁN
+# ==============================================================================
+def test_character_reference_sample_selection_prefers_high_confidence_single_take(tmp_path):
+    """
+    Kiểm tra thuật toán chọn mẫu giọng nhân vật:
+    - Khi có câu thoại đạt độ tin cậy cao dài >= 2.5s, ưu tiên dùng đoạn đơn lẻ đó làm mẫu,
+      không ghép nối câu độ tin cậy thấp (review_needed) gây lẫn tạp âm.
+    """
+    from src.ai_engines.speaker_diarization import SpeakerDiarizationCoordinator, ConfidenceLevel
+    from src.ai_engines.tts_engine import SubtitleBlock
+
+    sr = 16000
+    test_wav = str(tmp_path / "dialogue.wav")
+    total_audio = _make_sine_wave(10.0, sr)
+    sf.write(test_wav, total_audio, sr)
+
+    b1 = SubtitleBlock(index=1, start_time="00:00:00,500", end_time="00:00:03,500", text="Câu dài rõ ràng")
+    b2 = SubtitleBlock(index=2, start_time="00:00:04,000", end_time="00:00:05,000", text="Câu ngắn")
+
+    coordinator = SpeakerDiarizationCoordinator(allow_mock=True)
+
+    with patch("src.ai_engines.speaker_diarization.cosine_cluster_embeddings") as mock_cluster:
+        mock_cluster.return_value = (
+            np.array([0, 0]),
+            [ConfidenceLevel.HIGH.value, ConfidenceLevel.REVIEW_NEEDED.value],
+            [0.98, 0.45],
+        )
+        profiles = coordinator.process_video_subtitles(
+            video_path=test_wav,
+            blocks=[b1, b2],
+            temp_dir=str(tmp_path / "cache"),
+        )
+
+    assert "Người nói 1" in profiles
+    prof = profiles["Người nói 1"]
+    sample_path = prof.source_audio_sample
+    assert sample_path and os.path.exists(sample_path)
+    sample_data, sample_sr = sf.read(sample_path)
+    duration = len(sample_data) / sample_sr
+    assert 2.5 <= duration <= 3.6
+
+
+def test_diarization_clears_stale_voice_refs_on_unlocked_blocks(tmp_path):
+    """
+    Kiểm tra việc làm sạch mẫu giọng cũ:
+    Khi nhận diện lại, các câu chưa khóa bị đánh dấu Chưa xác định phải được xóa sạch voice_ref_path cũ,
+    không để mẫu giọng cũ rò rỉ sang quá trình lồng tiếng.
+    """
+    from src.ai_engines.speaker_diarization import SpeakerDiarizationCoordinator
+    from src.ai_engines.tts_engine import SubtitleBlock
+
+    b1 = SubtitleBlock(index=1, start_time="00:00:01,000", end_time="00:00:03,000", text="Câu hợp lệ")
+    b1.voice_ref_path = "duong_dan_cu_spk1.wav"
+    b1.speaker = "Người nói cũ"
+
+    b2 = SubtitleBlock(index=2, start_time="00:00:03,500", end_time="00:00:03,600", text="Câu quá ngắn")
+    b2.voice_ref_path = "duong_dan_cu_spk2.wav"
+    b2.speaker = "Người nói cũ 2"
+
+    b3_locked = SubtitleBlock(index=3, start_time="00:00:04,000", end_time="00:00:06,000", text="Câu đã khóa")
+    b3_locked.is_speaker_locked = True
+    b3_locked.voice_ref_path = "duong_dan_khoa.wav"
+    b3_locked.speaker = "Nhân vật khóa"
+
+    test_wav = str(tmp_path / "test_clear.wav")
+    sf.write(test_wav, _make_sine_wave(6.0, 16000), 16000)
+
+    coordinator = SpeakerDiarizationCoordinator(allow_mock=True)
+    profiles = coordinator.process_video_subtitles(
+        video_path=test_wav,
+        blocks=[b1, b2, b3_locked],
+        temp_dir=str(tmp_path / "samples"),
+    )
+
+    # b1 được gán mẫu mới (khác đường dẫn cũ)
+    assert b1.voice_ref_path != "duong_dan_cu_spk1.wav"
+    assert "Người nói" in b1.speaker
+    # b2 quá ngắn bị đánh dấu Chưa xác định -> voice_ref_path phải bị xóa rỗng
+    assert b2.speaker == "Chưa xác định"
+    assert b2.voice_ref_path == ""
+    # b3_locked giữ nguyên toàn bộ
+    assert b3_locked.speaker == "Nhân vật khóa"
+    assert b3_locked.voice_ref_path == "duong_dan_khoa.wav"
+
+
+def test_character_prompt_locking_and_reuse_across_sentences(tmp_path):
+    """
+    Kiểm tra khóa một prompt duy nhất cho mỗi nhân vật:
+    Toàn bộ các câu thuộc cùng một nhân vật phải tái sử dụng chung một VoiceClonePrompt
+    trong suốt quá trình lồng tiếng video.
+    """
+    from src.ai_engines.tts_engine import TTSEngine, SubtitleBlock, VoiceClonePrompt
+
+    engine = TTSEngine(
+        multi_speaker_mode="auto_video_cluster",
+        voice_prompt_cache_dir=str(tmp_path / "prompts"),
+        allow_mock=True,
+    )
+    engine.load_model = MagicMock()
+    mock_prompt_1 = MagicMock(spec=VoiceClonePrompt)
+    engine._get_or_create_prompt_for_audio = MagicMock(return_value=mock_prompt_1)
+
+    prompts_used = []
+    def mock_generate(*args, **kwargs):
+        prompts_used.append(kwargs.get("voice_clone_prompt"))
+        return _make_sine_wave(1.0, engine.sample_rate)
+
+    engine.model = MagicMock()
+    engine.model.generate.side_effect = mock_generate
+
+    ref_wav = str(tmp_path / "spk1_ref.wav")
+    sf.write(ref_wav, _make_sine_wave(3.0, 16000), 16000)
+
+    engine.speaker_profiles = {
+        "Người nói 1": {"speaker_id": "spk_0", "ref_audio_path": ref_wav, "instruct": "male"},
+    }
+
+    b1 = SubtitleBlock(index=1, start_time="00:00:01,000", end_time="00:00:02,500", text="Câu 1 của nhân vật 1", speaker="Người nói 1")
+    b2 = SubtitleBlock(index=2, start_time="00:00:03,000", end_time="00:00:04,500", text="Câu 2 của nhân vật 1", speaker="Người nói 1")
+    b3 = SubtitleBlock(index=3, start_time="00:00:05,000", end_time="00:00:06,500", text="Câu 3 của nhân vật 1", speaker="Người nói 1")
+
+    out_wav = str(tmp_path / "out.wav")
+    engine.synthesize_blocks(
+        blocks=[b1, b2, b3],
+        total_duration=7.0,
+        output_path=out_wav,
+    )
+
+    # Cả 3 câu của "Người nói 1" phải dùng chung đúng một prompt mock_prompt_1
+    assert len(prompts_used) == 3
+    assert prompts_used[0] is mock_prompt_1
+    assert prompts_used[1] is mock_prompt_1
+    assert prompts_used[2] is mock_prompt_1
+    # Cache phải lưu trữ prompt dưới khóa character_Người nói 1
+    assert "character_Người nói 1" in engine._speaker_prompt_cache
+    assert engine._speaker_prompt_cache["character_Người nói 1"] is mock_prompt_1
+
+
+def test_prompt_creation_failure_falls_back_to_instruct_not_unconditioned(tmp_path):
+    """
+    Kiểm tra xử lý dự phòng:
+    Nếu tạo VoiceClonePrompt thất bại từ ref_audio, generate_single phải tự động
+    chuyển sang override_instruct hoặc instruct mặc định, tuyệt đối không gọi generate
+    khi chưa có điều kiện giọng nói.
+    """
+    from src.ai_engines.tts_engine import TTSEngine
+
+    engine = TTSEngine(
+        auto_extract_ref=False,
+        instruct="female, young adult",
+        allow_mock=True,
+    )
+    engine.load_model = MagicMock()
+    # Giả lập tạo prompt thất bại
+    engine._get_or_create_prompt_for_audio = MagicMock(return_value=None)
+
+    captured_kwargs = {}
+    def mock_generate(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return _make_sine_wave(1.0, engine.sample_rate)
+
+    engine.model = MagicMock()
+    engine.model.generate.side_effect = mock_generate
+
+    fake_ref = str(tmp_path / "broken_ref.wav")
+    sf.write(fake_ref, _make_sine_wave(1.0, 16000), 16000)
+
+    engine.generate_single(
+        text="Thử nghiệm dự phòng giọng nói",
+        override_ref_audio=fake_ref,
+        override_instruct="male, middle-aged",
+    )
+
+    # Khi prompt tạo thất bại, gen_kwargs phải có instruct dự phòng
+    assert "voice_clone_prompt" not in captured_kwargs
+    assert captured_kwargs.get("instruct") == "male, middle-aged"
+
+
+
 
 
 

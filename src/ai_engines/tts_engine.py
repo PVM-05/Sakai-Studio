@@ -1024,8 +1024,11 @@ class TTSEngine:
             resolved_text = ref_text
             if not resolved_text and isinstance(audio_source, str) and os.path.exists(audio_source):
                 resolved_text = self._transcribe_ref_audio_fallback(audio_source)
-            if not resolved_text and self.model._asr_pipe is None and not self.load_asr:
+            if not resolved_text and (self.model is None or getattr(self.model, "_asr_pipe", None) is None) and not self.load_asr:
                 resolved_text = "."
+
+            if self.model is None:
+                return None
 
             prompt = self.model.create_voice_clone_prompt(
                 ref_audio=audio_source,
@@ -1489,6 +1492,10 @@ class TTSEngine:
             prompt = self._get_or_create_prompt_for_audio(override_ref_audio, cache_key=override_ref_audio)
             if prompt is not None:
                 gen_kwargs["voice_clone_prompt"] = prompt
+            elif override_instruct:
+                gen_kwargs["instruct"] = override_instruct
+            elif self.instruct:
+                gen_kwargs["instruct"] = self.instruct
         elif override_instruct:
             gen_kwargs["instruct"] = override_instruct
         elif active_mode == "clone":
@@ -1502,6 +1509,15 @@ class TTSEngine:
         elif active_mode == "design":
             if self.instruct:
                 gen_kwargs["instruct"] = self.instruct
+
+        # Luôn bảo đảm có điều kiện giọng nói để không bị lệch chất giọng ngoài ý muốn
+        if "voice_clone_prompt" not in gen_kwargs and "instruct" not in gen_kwargs:
+            if override_instruct:
+                gen_kwargs["instruct"] = override_instruct
+            elif self.instruct:
+                gen_kwargs["instruct"] = self.instruct
+            else:
+                gen_kwargs["instruct"] = "male, young adult, moderate pitch"
 
         result = self.model.generate(**gen_kwargs)
 
@@ -1741,13 +1757,35 @@ class TTSEngine:
                 if not ins_cand and spk_key in DEFAULT_SPEAKER_PRESETS:
                     ins_cand = DEFAULT_SPEAKER_PRESETS[spk_key]["instruct"]
 
-                if ref_cand and os.path.exists(ref_cand):
-                    override_prompt = self._get_or_create_prompt_for_audio(ref_cand, cache_key=f"spk_{spk_key}_{ref_cand}")
+                character_prompt_key = f"character_{spk_key}" if spk_key else ""
+                if character_prompt_key and character_prompt_key in self._speaker_prompt_cache:
+                    override_prompt = self._speaker_prompt_cache[character_prompt_key]
                     override_ref = ref_cand
                 elif spk_key and f"consistent_{spk_key}" in self._speaker_prompt_cache:
                     override_prompt = self._speaker_prompt_cache[f"consistent_{spk_key}"]
-                elif ins_cand:
-                    override_instruct = ins_cand
+                    override_ref = ref_cand
+                elif ref_cand and os.path.exists(ref_cand):
+                    prompt_key = character_prompt_key or f"spk_{spk_key}_{ref_cand}"
+                    override_prompt = self._get_or_create_prompt_for_audio(ref_cand, cache_key=prompt_key)
+                    if override_prompt is not None and character_prompt_key:
+                        self._speaker_prompt_cache[character_prompt_key] = override_prompt
+                    override_ref = ref_cand
+
+                # Nếu không có prompt nhân bản (hoặc tạo thất bại), luôn chuyển sang hướng dẫn giọng (instruct / preset)
+                if override_prompt is None:
+                    if ins_cand:
+                        override_instruct = ins_cand
+                    elif self.instruct:
+                        override_instruct = self.instruct
+                    elif spk_key and spk_key != "Chưa xác định":
+                        preset_keys = list(VIETNAMESE_VOICE_CATALOG.keys())
+                        cluster_num = 0
+                        import re
+                        match = re.search(r"\d+", spk_key)
+                        if match:
+                            cluster_num = int(match.group()) - 1
+                        preset_name = preset_keys[cluster_num % len(preset_keys)]
+                        override_instruct = VIETNAMESE_VOICE_CATALOG[preset_name]["instruct"]
 
             # Kiểm tra bộ nhớ đệm khôi phục tác vụ (Checkpoint Resume)
             cache_wav_path = self._compute_block_cache_path(
