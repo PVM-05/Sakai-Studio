@@ -755,8 +755,8 @@ def test_vram_sequencing_diarization_before_tts_load_and_sample_extraction(tmp_p
     b2 = SubtitleBlock(index=2, start_time="00:00:03,500", end_time="00:00:05,500", text="Người 2 nói")
 
     out_wav = str(tmp_path / "output.wav")
-    # Thay thế generate_single để không nạp mô hình thật
-    engine.generate_single = lambda *a, **k: np.zeros(24000, dtype=np.float32)
+    # Thay thế generate_single bằng sóng âm thực tế để xác thực toàn bộ chu trình tổng hợp
+    engine.generate_single = lambda *a, **k: _make_sine_wave(1.8, engine.sample_rate)
 
     report = engine.synthesize_blocks(
         blocks=[b1, b2],
@@ -764,6 +764,9 @@ def test_vram_sequencing_diarization_before_tts_load_and_sample_extraction(tmp_p
         output_path=out_wav,
         video_path=test_wav,
     )
+    assert report.status == "success"
+    assert report.success_count == 2
+    assert os.path.isfile(out_wav) and os.path.getsize(out_wav) > 0
 
     # Kiểm tra thứ tự tuần tự: detect_speakers phải được gọi TRƯỚC load_model
     # và tại thời điểm detect_speakers, engine.model phải là None (chưa nạp OmniVoice vào VRAM)
