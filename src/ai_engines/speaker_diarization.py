@@ -265,8 +265,15 @@ class SpeakerDiarizationCoordinator:
         if data.ndim > 1:
             data = np.mean(data, axis=1)
         data = np.asarray(data, dtype=np.float32)
-        if not np.all(np.isfinite(data)) or float(np.max(np.abs(data))) < 1e-6:
-            raise ValueError("Tệp âm thanh nhận diện không chứa tín hiệu thoại hợp lệ.")
+        if not np.all(np.isfinite(data)):
+            raise ValueError("Tệp âm thanh nhận diện chứa giá trị không hữu hạn.")
+        if float(np.max(np.abs(data))) < 1e-6:
+            logger.warning("Tệp âm thanh hoàn toàn im lặng; giữ các câu ở trạng thái Chưa xác định.")
+            for blk in blocks:
+                if not getattr(blk, "is_speaker_locked", False):
+                    blk.speaker = "Chưa xác định"
+                    blk.confidence_level = ConfidenceLevel.UNASSIGNED.value
+            return {}
 
         target_sr = 16000
         if source_sr != target_sr:
