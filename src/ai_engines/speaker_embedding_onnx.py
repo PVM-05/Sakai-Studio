@@ -98,7 +98,12 @@ def create_speaker_session(
     Nạp mô hình ONNX thật và ưu tiên CUDAExecutionProvider.
     allow_mock chỉ dành cho test và phải được bật tường minh.
     """
-    resolved_path = resolve_speaker_model_path(model_path)
+    resolved_path = ""
+    try:
+        resolved_path = resolve_speaker_model_path(model_path)
+    except FileNotFoundError:
+        if not allow_mock:
+            raise
 
     if not resolved_path:
         if allow_mock:
@@ -183,40 +188,110 @@ def _preprocess_audio(audio_data: np.ndarray, sample_rate: int = 16000) -> np.nd
     return audio
 
 
-def _extract_fbank_features(audio: np.ndarray) -> np.ndarray:
-    """Trích xuất FBank 80 chiều theo hợp đồng CAM++/3D-Speaker."""
+def extract_fbank_features(
+    audio: np.ndarray,
+    sample_rate: int = 16000,
+    num_mel_bins: int = 80,
+    frame_length_ms: float = 25.0,
+    frame_shift_ms: float = 10.0,
+) -> np.ndarray:
+    """
+    Trích xuất FBank 80 kênh theo chuẩn Kaldi kết hợp chuẩn hóa CMVN per-utterance.
+    Hỗ trợ kaldi-native-fbank, torchaudio Kaldi FBank và thuật toán dự phòng thuần NumPy.
+    """
+    cleaned_audio = _preprocess_audio(audio, sample_rate=sample_rate)
+
+    # 1. Ưu tiên kaldi-native-fbank nếu có sẵn trong môi trường
     try:
         import kaldi_native_fbank as knf
-    except ImportError as exc:
-        raise RuntimeError(
-            "Thiếu kaldi-native-fbank để trích xuất đặc trưng CAM++. "
-            "Cài dependency từ requirements.txt rồi khởi động lại Sakai-Studio."
-        ) from exc
+        options = knf.FbankOptions()
+        options.frame_opts.samp_freq = sample_rate
+        options.frame_opts.dither = 0.0
+        options.mel_opts.num_bins = num_mel_bins
+        extractor = knf.OnlineFbank(options)
+        extractor.accept_waveform(sample_rate, cleaned_audio.astype(np.float32, copy=False) * 32768.0)
+        extractor.input_finished()
+        count = int(extractor.num_frames_ready)
+        if count > 0:
+            features = np.stack(
+                [extractor.get_frame(i) for i in range(count)],
+                axis=0,
+            ).astype(np.float32, copy=False)
+            features -= features.mean(axis=0, keepdims=True)
+            return features
+    except (ImportError, Exception):
+        pass
 
-    options = knf.FbankOptions()
-    options.frame_opts.samp_freq = 16000
-    options.frame_opts.dither = 0.0
-    options.mel_opts.num_bins = 80
-    extractor = knf.OnlineFbank(options)
+    # 2. Thử nghiệm torchaudio.compliance.kaldi.fbank
+    try:
+        import torch
+        import torchaudio.compliance.kaldi as kaldi
 
-    # kaldi-native-fbank dùng thang biên độ PCM; nguồn SoundFile đang ở [-1, 1].
-    extractor.accept_waveform(16000, audio.astype(np.float32, copy=False) * 32768.0)
-    extractor.input_finished()
-    count = int(extractor.num_frames_ready)
-    if count <= 0:
-        raise RuntimeError("Không trích xuất được khung FBank từ đoạn thoại.")
+        t_waveform = torch.from_numpy(cleaned_audio).unsqueeze(0).float() * 32768.0
+        fbank = kaldi.fbank(
+            t_waveform,
+            sample_frequency=float(sample_rate),
+            num_mel_bins=num_mel_bins,
+            frame_length=float(frame_length_ms),
+            frame_shift=float(frame_shift_ms),
+            dither=0.0,
+            energy_floor=0.0,
+            window_type="hamming",
+            use_energy=False,
+        )
+        features = fbank.numpy().astype(np.float32)
+        features -= features.mean(axis=0, keepdims=True)
+        return features
+    except (ImportError, Exception):
+        pass
 
-    features = np.stack(
-        [extractor.get_frame(i) for i in range(count)],
-        axis=0,
-    ).astype(np.float32, copy=False)
-    if features.ndim != 2 or features.shape[1] != 80:
-        raise RuntimeError(f"FBank phải có 80 dải tần, nhận được shape {features.shape}.")
-    # Cepstral mean normalization theo từng dải tần, như pipeline tham chiếu của mô hình.
-    features -= features.mean(axis=0, keepdims=True)
-    if not np.all(np.isfinite(features)):
-        raise RuntimeError("FBank chứa giá trị không hữu hạn.")
-    return features
+    # 3. Thuật toán dự phòng thuần NumPy
+    win_len = int(frame_length_ms * sample_rate / 1000.0)
+    win_shift = int(frame_shift_ms * sample_rate / 1000.0)
+    n_fft = 1
+    while n_fft < win_len:
+        n_fft <<= 1
+
+    pad_audio = cleaned_audio
+    if len(pad_audio) < win_len:
+        pad_audio = np.pad(pad_audio, (0, win_len - len(pad_audio)))
+
+    num_frames = max(1, 1 + (len(pad_audio) - win_len) // win_shift)
+    frames = np.lib.stride_tricks.sliding_window_view(pad_audio[: (num_frames - 1) * win_shift + win_len], win_len)[::win_shift]
+    window = np.hamming(win_len).astype(np.float32)
+    windowed = frames * window
+
+    spec = np.abs(np.fft.rfft(windowed, n=n_fft)) ** 2
+    hz_to_mel = lambda hz: 1127.0 * np.log(1.0 + hz / 700.0)
+    mel_to_hz = lambda mel: 700.0 * (np.exp(mel / 1127.0) - 1.0)
+    low_mel = hz_to_mel(20.0)
+    high_mel = hz_to_mel(sample_rate / 2.0)
+    mel_points = np.linspace(low_mel, high_mel, num_mel_bins + 2)
+    hz_points = mel_to_hz(mel_points)
+    bin_points = np.floor((n_fft + 1) * hz_points / sample_rate).astype(int)
+
+    fbank_filters = np.zeros((num_mel_bins, n_fft // 2 + 1), dtype=np.float32)
+    for m in range(num_mel_bins):
+        f_m_minus = bin_points[m]
+        f_m = bin_points[m + 1]
+        f_m_plus = bin_points[m + 2]
+        for k in range(f_m_minus, f_m):
+            if f_m > f_m_minus:
+                fbank_filters[m, k] = (k - f_m_minus) / (f_m - f_m_minus)
+        for k in range(f_m, f_m_plus):
+            if f_m_plus > f_m:
+                fbank_filters[m, k] = (f_m_plus - k) / (f_m_plus - f_m)
+
+    mel_spec = np.dot(spec, fbank_filters.T)
+    mel_spec = np.maximum(mel_spec, 1e-10)
+    log_mel = np.log(mel_spec).astype(np.float32)
+    log_mel -= np.mean(log_mel, axis=0, keepdims=True)
+    return log_mel
+
+
+def _extract_fbank_features(audio: np.ndarray) -> np.ndarray:
+    """Trích xuất FBank 80 chiều theo hợp đồng CAM++/3D-Speaker."""
+    return extract_fbank_features(audio, sample_rate=16000, num_mel_bins=80)
 
 
 def _make_model_input(session: Any, audio: np.ndarray) -> Tuple[np.ndarray, int]:

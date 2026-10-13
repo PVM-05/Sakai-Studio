@@ -581,6 +581,7 @@ class TTSEngine:
         resume_cache_dir: Optional[str] = None,
         ducking_mode: str = "dynamic",
         speaker_model_path: Optional[str] = None,
+        allow_mock: bool = False,
     ):
         self.model: Optional[OmniVoice] = None
         self.parent_logger = parent_logger
@@ -626,6 +627,7 @@ class TTSEngine:
         self._speaker_prompt_cache: Dict[str, VoiceClonePrompt] = {}
         self.resume_cache_dir = str(resume_cache_dir).strip() if resume_cache_dir else None
         self.ducking_mode = ducking_mode if ducking_mode in ("dynamic", "fixed") else "dynamic"
+        self.allow_mock = bool(allow_mock)
         self._cancel_requested: bool = False
         self.last_report: Optional[DubbingReport] = None
 
@@ -1209,7 +1211,7 @@ class TTSEngine:
         blocks: List[SubtitleBlock],
         max_speakers: int = 4,
         prefer_cuda: Optional[bool] = None,
-        allow_mock: bool = False,
+        allow_mock: Optional[bool] = None,
     ) -> Dict[str, Dict[str, Any]]:
         """
         Tự động nhận diện nhiều người nói trực tiếp từ âm thanh gốc của video theo mốc thời gian phụ đề (.srt).
@@ -1227,7 +1229,12 @@ class TTSEngine:
 
         cuda_avail = bool(torch is not None and getattr(torch, "cuda", None) is not None and torch.cuda.is_available())
         use_cuda = cuda_avail if prefer_cuda is None else bool(prefer_cuda)
-        coordinator = SpeakerDiarizationCoordinator(prefer_cuda=use_cuda, allow_mock=allow_mock)
+        effective_allow_mock = self.allow_mock if allow_mock is None else bool(allow_mock)
+        coordinator = SpeakerDiarizationCoordinator(
+            model_path=self.speaker_model_path,
+            prefer_cuda=use_cuda,
+            allow_mock=effective_allow_mock,
+        )
 
         self.last_diarization_error = ""
         self.log(f"Đang tách kênh giọng nói từ video để nhận diện đa nhân vật: {os.path.basename(video_path)}...")
@@ -1239,18 +1246,35 @@ class TTSEngine:
         try:
             ok = separator.separate_from_video(video_path, temp_vocals)
             if ok and os.path.isfile(temp_vocals) and os.path.getsize(temp_vocals) > 0:
-                source_audio_for_diarization = temp_vocals
-            else:
-                # Nếu tách giọng thất bại, ít nhất trích xuất âm thanh thật bằng FFmpeg.
-                # Không truyền nguyên MP4 cho SoundFile và tuyệt đối không tạo nhiễu giả.
+                try:
+                    _voc_info = sf.info(temp_vocals)
+                    if _voc_info.frames > 0:
+                        _sample_frames = min(_voc_info.frames, 32000)
+                        _check_data, _ = sf.read(temp_vocals, stop=_sample_frames)
+                        if np.max(np.abs(_check_data)) >= 1e-4:
+                            source_audio_for_diarization = temp_vocals
+                except Exception:
+                    pass
+
+            if not source_audio_for_diarization:
+                # Nếu tách giọng thất bại hoặc bị lọc thành im lặng, dùng âm thanh gốc từ video/audio
                 self.log("Không tách được giọng sạch; đang thử trích xuất âm thanh gốc để phân tích.")
                 if separator._extract_audio(video_path, temp_raw_audio) and os.path.isfile(temp_raw_audio):
                     source_audio_for_diarization = temp_raw_audio
-                else:
-                    raise RuntimeError(
-                        "Không thể tách giọng hoặc trích xuất âm thanh từ video. "
-                        "Kiểm tra tệp nguồn và FFmpeg rồi thử lại."
-                    )
+                elif os.path.isfile(video_path):
+                    try:
+                        import soundfile as sf
+                        _info = sf.info(video_path)
+                        if _info.frames > 0:
+                            source_audio_for_diarization = video_path
+                    except Exception:
+                        pass
+
+            if not source_audio_for_diarization:
+                raise RuntimeError(
+                    "Không thể tách giọng hoặc trích xuất âm thanh từ video. "
+                    "Kiểm tra tệp nguồn và FFmpeg rồi thử lại."
+                )
 
             # VoiceSeparator có thể đã sử dụng PyTorch/CUDA (ví dụ Demucs).
             # Thu hồi cache của PyTorch trước khi khởi tạo phiên ONNX để giảm tranh chấp VRAM.

@@ -282,6 +282,10 @@ class SpeakerDiarizationCoordinator:
         if not blocks:
             return {}
         if not video_path or not os.path.isfile(video_path):
+            for blk in blocks:
+                if not getattr(blk, "is_speaker_locked", False):
+                    blk.speaker = "Chưa xác định"
+                    blk.confidence_level = ConfidenceLevel.UNASSIGNED.value
             raise FileNotFoundError("Không tìm thấy tệp âm thanh đã trích xuất để nhận diện người nói.")
 
         # Đọc và xác thực âm thanh trước khi nạp bất kỳ mô hình ONNX nào.
@@ -432,6 +436,9 @@ class SpeakerDiarizationCoordinator:
                     rms = float(np.sqrt(np.mean(np.square(chunk, dtype=np.float64))))
                     if duration >= 0.60 and rms >= 1e-4:
                         candidates.append((rms * min(duration, 4.0), chunk))
+                if not candidates and members:
+                    best_pos = max(members, key=lambda p: len(audio_chunks[p]))
+                    candidates.append((1.0, audio_chunks[best_pos]))
                 candidates.sort(key=lambda item: item[0], reverse=True)
 
                 collected: List[np.ndarray] = []

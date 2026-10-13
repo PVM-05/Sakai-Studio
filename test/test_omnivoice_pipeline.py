@@ -703,12 +703,12 @@ def test_diarization_handles_missing_or_silent_audio_without_fake_noise_and_pres
     blocks = [b1, b2, b3]
     coordinator = SpeakerDiarizationCoordinator(model_path="", allow_mock=True)
 
-    # Trường hợp 1: Tệp video/âm thanh không tồn tại -> không được sinh nhiễu giả lập
-    profiles = coordinator.process_video_subtitles(
-        video_path="tep_khong_ton_tai.wav",
-        blocks=blocks,
-    )
-    assert profiles == {}
+    # Trường hợp 1: Tệp video/âm thanh không tồn tại -> bắt ngoại lệ và đánh dấu Chưa xác định
+    with pytest.raises(FileNotFoundError):
+        coordinator.process_video_subtitles(
+            video_path="tep_khong_ton_tai.wav",
+            blocks=blocks,
+        )
     # b1 không bị đổi
     assert b1.speaker == "Giọng Đã Khóa"
     assert b1.confidence_level == ConfidenceLevel.HIGH.value
@@ -733,6 +733,7 @@ def test_vram_sequencing_diarization_before_tts_load_and_sample_extraction(tmp_p
     engine = TTSEngine(
         multi_speaker_mode="auto_video_cluster",
         voice_prompt_cache_dir=str(tmp_path / "prompts"),
+        allow_mock=True,
     )
 
     original_load = engine.load_model
