@@ -1639,7 +1639,7 @@ class OmniVoiceInterface(ScrollArea):
                 issues.append({
                     "severity": "warning",
                     "index": blk.index,
-                    "message": f"Câu {blk.index}: Chưa gán nhân vật hoặc chưa xác định danh tính người nói.",
+                    "message": f"Câu {blk.index}: Chưa xác định danh tính người nói hoặc chưa gán nhân vật.",
                 })
 
             s_sec = parse_timestamp_to_seconds(blk.start_time)

@@ -474,9 +474,11 @@ def test_tts_engine_respects_locked_speaker_and_releases_diarizer_session(tmp_pa
 # 14. KIỂM THỬ QUY TRÌNH GIAO DIỆN 5 BƯỚC VÀ BẢO TOÀN DỮ LIỆU (TÁC VỤ 4)
 # ==============================================================================
 def test_ui_wizard_preserves_state_on_step_navigation():
+    from PySide6.QtWidgets import QApplication
     from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
     from src.ai_engines.tts_engine import SubtitleBlock
 
+    app = QApplication.instance() or QApplication([])
     ui = OmniVoiceInterface()
     assert hasattr(ui, "step_stack")
     assert ui.step_stack.count() == 5
@@ -493,5 +495,44 @@ def test_ui_wizard_preserves_state_on_step_navigation():
     ui._switch_to_step(0)
     assert len(ui.subtitle_blocks) == 1
     assert ui.subtitle_blocks[0].speaker == "Người nói 1"
+
+
+# ==============================================================================
+# 15. KIỂM THỬ RÀ SOÁT CHẤT LƯỢNG TRƯỚC XUẤT (TÁC VỤ 5)
+# ==============================================================================
+def test_pre_export_quality_checks_and_warnings():
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.tts_engine import SubtitleBlock
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+    ui.subtitle_blocks = [
+        SubtitleBlock(index=1, start_time="00:00:01,000", end_time="00:00:02,000", text="Đoạn 1", speaker="Người nói 1"),
+        SubtitleBlock(index=2, start_time="00:00:02,000", end_time="00:00:03,000", text="Đoạn 2", speaker="Chưa xác định"),
+    ]
+    issues = ui._run_pre_export_quality_check()
+    assert len(issues) >= 1
+    assert any("Chưa xác định" in item["message"] or "chưa gán" in item["message"] for item in issues)
+
+    # Thử nghiệm với phụ đề rỗng
+    ui.subtitle_blocks = []
+    empty_issues = ui._run_pre_export_quality_check()
+    assert len(empty_issues) >= 1
+    assert any(item["severity"] == "error" for item in empty_issues)
+
+    # Thử nghiệm với câu thoại quá dài so với thời lượng
+    ui.subtitle_blocks = [
+        SubtitleBlock(
+            index=1,
+            start_time="00:00:01,000",
+            end_time="00:00:02,000",
+            text="Đây là một câu thoại có độ dài rất lớn nhưng mốc thời gian phụ đề chỉ có một giây ngắn ngủi nên chắc chắn sẽ bị đọc tràn ra ngoài.",
+            speaker="Người nói 1",
+        )
+    ]
+    long_issues = ui._run_pre_export_quality_check()
+    assert any("tràn mốc thời gian" in item["message"] or "quá ngắn" in item["message"] for item in long_issues)
+
 
 
