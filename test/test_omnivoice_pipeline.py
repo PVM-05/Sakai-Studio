@@ -377,3 +377,29 @@ def test_ui_worker_partial_status_and_close_event(tmp_path):
 
     ui.closeEvent(QCloseEvent())
 
+
+# ==============================================================================
+# 11. KIỂM THỬ TRÍCH XUẤT VECTOR ĐẶC TRƯNG NGƯỜI NÓI QUA ONNX (TÁC VỤ 1)
+# ==============================================================================
+def test_onnx_speaker_embedding_session_and_extraction():
+    from src.ai_engines.speaker_embedding_onnx import (
+        create_speaker_session,
+        extract_speaker_embedding,
+        batch_extract_speaker_embeddings,
+        close_speaker_session,
+    )
+
+    mock_audio = np.random.randn(16000 * 2).astype(np.float32)
+    session, provider = create_speaker_session(model_path="", prefer_cuda=False)
+    assert provider in ("CPUExecutionProvider", "MockExecutionProvider")
+
+    emb = extract_speaker_embedding(session, mock_audio, sample_rate=16000)
+    assert emb.shape == (192,)
+    assert np.isclose(np.linalg.norm(emb), 1.0, atol=1e-3)
+
+    chunks = [mock_audio, mock_audio]
+    batch_embs = batch_extract_speaker_embeddings(session, chunks, sample_rate=16000, batch_size=2)
+    assert batch_embs.shape == (2, 192)
+
+    close_speaker_session(session)
+
