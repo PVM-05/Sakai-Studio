@@ -183,73 +183,77 @@ def _preprocess_audio(audio_data: np.ndarray, sample_rate: int = 16000) -> np.nd
     return audio
 
 
+def _extract_fbank_features(audio: np.ndarray) -> np.ndarray:
+    """Trích xuất FBank 80 chiều theo hợp đồng CAM++/3D-Speaker."""
+    try:
+        import kaldi_native_fbank as knf
+    except ImportError as exc:
+        raise RuntimeError(
+            "Thiếu kaldi-native-fbank để trích xuất đặc trưng CAM++. "
+            "Cài dependency từ requirements.txt rồi khởi động lại Sakai-Studio."
+        ) from exc
+
+    options = knf.FbankOptions()
+    options.frame_opts.samp_freq = 16000
+    options.frame_opts.dither = 0.0
+    options.mel_opts.num_bins = 80
+    extractor = knf.OnlineFbank(options)
+
+    # kaldi-native-fbank dùng thang biên độ PCM; nguồn SoundFile đang ở [-1, 1].
+    extractor.accept_waveform(16000, audio.astype(np.float32, copy=False) * 32768.0)
+    extractor.input_finished()
+    count = int(extractor.num_frames_ready)
+    if count <= 0:
+        raise RuntimeError("Không trích xuất được khung FBank từ đoạn thoại.")
+
+    features = np.stack(
+        [extractor.get_frame(i) for i in range(count)],
+        axis=0,
+    ).astype(np.float32, copy=False)
+    if features.ndim != 2 or features.shape[1] != 80:
+        raise RuntimeError(f"FBank phải có 80 dải tần, nhận được shape {features.shape}.")
+    # Cepstral mean normalization theo từng dải tần, như pipeline tham chiếu của mô hình.
+    features -= features.mean(axis=0, keepdims=True)
+    if not np.all(np.isfinite(features)):
+        raise RuntimeError("FBank chứa giá trị không hữu hạn.")
+    return features
+
+
 def _make_model_input(session: Any, audio: np.ndarray) -> Tuple[np.ndarray, int]:
     """
-    Tạo tensor theo metadata ONNX.
-    CAM++/3D-Speaker thường nhận FBank 80 dải tần; mô hình waveform có tên/shape
-    khác sẽ được nhận diện riêng. Trả về tensor có batch dimension và trục thời gian.
+    Tạo tensor theo metadata ONNX. CAM++ 3D-Speaker nhận FBank
+    (batch, frames, 80); chỉ dùng sóng âm thô khi metadata xác định rõ kiểu đầu vào.
     """
     meta = session.get_inputs()[0]
     name = (meta.name or "").lower()
     shape = list(meta.shape or [])
     rank = len(shape)
-    wave_input = any(token in name for token in ("speech", "waveform", "audio", "pcm"))
+
+    # Với CAM++ chuẩn, tên input thường là "input" và tensor có 3 chiều.
+    # Chỉ coi là waveform nếu tên hoặc shape xác định rõ kênh đơn ở chiều giữa.
+    wave_name = any(token in name for token in ("waveform", "pcm", "raw_audio"))
+    wave_shape = rank == 3 and shape[1] == 1 and shape[-1] != 80
+    wave_input = wave_name or wave_shape
 
     if rank >= 3 and not wave_input:
-        try:
-            import torch
-            import torchaudio
-        except Exception as exc:
-            raise RuntimeError(
-                "Mô hình CAM++ yêu cầu FBank 80 dải tần nhưng PyTorch/torchaudio không khả dụng."
-            ) from exc
-
-        wav = torch.from_numpy(audio.astype(np.float32, copy=False)).unsqueeze(0)
-        feats = torchaudio.compliance.kaldi.fbank(
-            wav,
-            num_mel_bins=80,
-            sample_frequency=16000,
-            frame_length=25,
-            frame_shift=10,
-            dither=0.0,
-            energy_floor=0.0,
-        )
-        if feats.ndim != 2 or feats.shape[0] == 0:
-            raise RuntimeError("Không thể trích xuất FBank hợp lệ từ đoạn thoại.")
-        feats = feats - feats.mean(dim=0, keepdim=True)
-        feat = feats.cpu().numpy().astype(np.float32, copy=False)
-
-        # Ưu tiên chiều tần số có kích thước cố định bằng 80.
-        if len(shape) >= 3 and shape[1] == 80 and shape[2] != 80:
-            tensor = feat.T[np.newaxis, :, :]
-            return tensor, 2
-        tensor = feat[np.newaxis, :, :]
-        return tensor, 1
+        features = _extract_fbank_features(audio)
+        if shape[1] == 80 and shape[2] != 80:
+            return features.T[np.newaxis, :, :], 2
+        return features[np.newaxis, :, :], 1
 
     if rank == 2 and not wave_input and (
-        "feat" in name or shape[-1] == 80 or shape[0] == 80
+        "feat" in name or "feature" in name or shape[-1] == 80 or shape[0] == 80
     ):
-        try:
-            import torch
-            import torchaudio
-        except Exception as exc:
-            raise RuntimeError("Thiếu PyTorch/torchaudio để tạo FBank cho mô hình ONNX.") from exc
-        wav = torch.from_numpy(audio.astype(np.float32, copy=False)).unsqueeze(0)
-        feat = torchaudio.compliance.kaldi.fbank(
-            wav, num_mel_bins=80, sample_frequency=16000,
-            frame_length=25, frame_shift=10, dither=0.0, energy_floor=0.0,
-        )
-        feat = (feat - feat.mean(dim=0, keepdim=True)).cpu().numpy().astype(np.float32)
+        features = _extract_fbank_features(audio)
         if shape[0] == 80 and shape[1] != 80:
-            return feat.T, 1
-        return feat, 0
+            return features.T, 1
+        return features, 0
 
     if rank >= 3:
         return audio[np.newaxis, np.newaxis, :], 2
     if rank == 2:
         return audio[np.newaxis, :], 1
     return audio, 0
-
 
 def _normalize_embedding(embedding: np.ndarray) -> np.ndarray:
     emb = np.asarray(embedding, dtype=np.float32).reshape(-1)
