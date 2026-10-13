@@ -71,6 +71,34 @@ def _parse_time_to_seconds(time_val: Any) -> float:
     return 0.0
 
 
+def _normalized_choice_probabilities(weights: np.ndarray) -> Optional[np.ndarray]:
+    """Chuẩn hóa trọng số k-means++ thành xác suất float64 hợp lệ cho np.random.choice.
+
+    Trọng số thường xuất phát từ phép tính float32 trên embedding. Nếu giữ float32,
+    tổng xác suất có thể lệch khỏi 1 đủ lớn để NumPy ném lỗi
+    'Probabilities do not sum to 1'.
+    """
+    probs = np.asarray(weights, dtype=np.float64)
+    probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+    np.maximum(probs, 0.0, out=probs)
+    total = float(np.sum(probs, dtype=np.float64))
+    if not np.isfinite(total) or total <= 1e-12:
+        return None
+
+    probs /= total
+    normalized_total = float(np.sum(probs, dtype=np.float64))
+    if not np.isfinite(normalized_total) or normalized_total <= 0.0:
+        return None
+    probs /= normalized_total
+
+    # Bù phần sai số dấu phẩy động tại phần tử lớn nhất, tránh xác suất âm.
+    largest = int(np.argmax(probs))
+    probs[largest] += 1.0 - float(np.sum(probs, dtype=np.float64))
+    if probs[largest] < 0.0 or not np.all(np.isfinite(probs)):
+        return None
+    return probs
+
+
 def cosine_cluster_embeddings(
     embeddings: np.ndarray,
     valid_indices: List[int],
@@ -121,8 +149,12 @@ def cosine_cluster_embeddings(
                 # Các embedding trùng nhau: tránh xác suất toàn số 0 gây lỗi khởi tạo cụm.
                 chosen_idx = int(rng.integers(0, n_samples))
             else:
-                probs = dists / total_dist
-                chosen_idx = int(rng.choice(n_samples, p=probs))
+                probs = _normalized_choice_probabilities(dists)
+                if probs is None:
+                    # Dự phòng an toàn nếu trọng số bị suy biến hoặc không hữu hạn.
+                    chosen_idx = int(rng.integers(0, n_samples))
+                else:
+                    chosen_idx = int(rng.choice(n_samples, p=probs))
             centers[c_i] = norm_embs[chosen_idx]
 
         labels = np.zeros(n_samples, dtype=np.int32)
