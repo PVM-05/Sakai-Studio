@@ -72,9 +72,12 @@ def resolve_speaker_model_path(model_path: Union[str, Path, None] = None) -> str
     appdata = Path(os.environ.get("APPDATA", str(Path.home())))
     candidates = [
         project_root / "models" / "speaker_embedding" / "campplus.onnx",
+        project_root / "models" / "speaker_embedding" / "campplus_cn_en_common_200k.onnx",
+        project_root / "models" / "speaker_embedding" / "campplus_cn_common_200k.onnx",
         project_root / "models" / "speaker_embedding" / "cam++.onnx",
         project_root / "models" / "speaker_embedding" / "cam_plus.onnx",
         appdata / "Sakai-Studio" / "models" / "speaker_embedding" / "campplus.onnx",
+        appdata / "Sakai-Studio" / "models" / "speaker_embedding" / "campplus_cn_en_common_200k.onnx",
         appdata / "Sakai-Studio" / "models" / "speaker_embedding" / "cam++.onnx",
     ]
     for candidate in candidates:
