@@ -765,7 +765,7 @@ def test_vram_sequencing_diarization_before_tts_load_and_sample_extraction(tmp_p
         video_path=test_wav,
     )
     assert report.status == "success"
-    assert report.success_count == 2
+    assert report.succeeded_count == 2
     assert os.path.isfile(out_wav) and os.path.getsize(out_wav) > 0
 
     # Kiểm tra thứ tự tuần tự: detect_speakers phải được gọi TRƯỚC load_model
