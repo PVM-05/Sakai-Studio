@@ -240,7 +240,7 @@ class OmniVoiceTaskWorker(QThread):
             if self.task_type == "detect_speakers":
                 max_spk = int(self.engine_params.get("max_speakers", 4))
                 if self.video_path and os.path.exists(self.video_path):
-                    device_str = "NVIDIA RTX 4050 · CUDA" if self.prefer_cuda else "Vi xử lý trung tâm · CPU"
+                    device_str = "ưu tiên CUDA trên GPU NVIDIA" if self.prefer_cuda else "CPU"
                     self.progressSignal.emit(25, f"Đang nhận diện người nói · {device_str}...")
                     profiles = engine.detect_speakers_from_video(
                         self.video_path,
@@ -271,7 +271,8 @@ class OmniVoiceTaskWorker(QThread):
                         False,
                         self.task_type,
                         "",
-                        "Không thể phân tích danh sách người nói từ dữ liệu hiện tại.",
+                        getattr(engine, "last_diarization_error", "")
+                        or "Không thể phân tích danh sách người nói từ dữ liệu hiện tại.",
                     )
                 return
 
@@ -1111,7 +1112,7 @@ class OmniVoiceInterface(ScrollArea):
         self.combo_hardware_selector.addItems([
             "Ưu tiên card đồ họa NVIDIA RTX 4050",
             "Chế độ vi xử lý trung tâm",
-            "Phân đoạn người nói chuyên sâu",
+            "Phân đoạn người nói chuyên sâu (chưa tích hợp)",
         ])
         self.combo_hardware_selector.setCurrentIndex(0)
         self.combo_hardware_selector.setMinimumWidth(320)
@@ -2238,6 +2239,14 @@ class OmniVoiceInterface(ScrollArea):
     # TỰ ĐỘNG NHẬN DIỆN NHIỀU NGƯỜI NÓI & GÁN GIỌNG NHÂN VẬT
     # =========================================================================
     def _run_auto_detect_speakers(self):
+        if self.combo_hardware_selector.currentIndex() == 2:
+            InfoBar.warning(
+                "Chế độ chưa sẵn sàng",
+                "Phân đoạn người nói chuyên sâu chưa được tích hợp. Hãy chọn CUDA hoặc CPU để tiếp tục.",
+                parent=self,
+                duration=4000,
+            )
+            return
         if not self.subtitle_blocks:
             InfoBar.warning("Chưa có phụ đề", "Vui lòng nạp tệp phụ đề trước khi nhận diện người nói.", parent=self, duration=3000)
             return

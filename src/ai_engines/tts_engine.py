@@ -1209,6 +1209,7 @@ class TTSEngine:
         blocks: List[SubtitleBlock],
         max_speakers: int = 4,
         prefer_cuda: Optional[bool] = None,
+        allow_mock: bool = False,
     ) -> Dict[str, Dict[str, Any]]:
         """
         Tự động nhận diện nhiều người nói trực tiếp từ âm thanh gốc của video theo mốc thời gian phụ đề (.srt).
@@ -1226,26 +1227,50 @@ class TTSEngine:
 
         cuda_avail = bool(torch is not None and getattr(torch, "cuda", None) is not None and torch.cuda.is_available())
         use_cuda = cuda_avail if prefer_cuda is None else bool(prefer_cuda)
-        allow_mock = not bool(self.speaker_model_path and os.path.isfile(self.speaker_model_path))
-        coordinator = SpeakerDiarizationCoordinator(
-            model_path=self.speaker_model_path,
-            prefer_cuda=use_cuda,
-            allow_mock=allow_mock,
-        )
+        coordinator = SpeakerDiarizationCoordinator(prefer_cuda=use_cuda, allow_mock=allow_mock)
 
+        self.last_diarization_error = ""
         self.log(f"Đang tách kênh giọng nói từ video để nhận diện đa nhân vật: {os.path.basename(video_path)}...")
         separator = VoiceSeparator()
         temp_vocals = os.path.join(self.voice_prompt_cache_dir, f"diarize_vocals_{uuid.uuid4().hex[:8]}.wav")
-        ok = separator.separate_from_video(video_path, temp_vocals)
-        source_audio_for_diarization = temp_vocals if (ok and os.path.exists(temp_vocals)) else video_path
+        temp_raw_audio = os.path.join(self.voice_prompt_cache_dir, f"diarize_audio_{uuid.uuid4().hex[:8]}.wav")
+        source_audio_for_diarization = ""
 
         try:
+            ok = separator.separate_from_video(video_path, temp_vocals)
+            if ok and os.path.isfile(temp_vocals) and os.path.getsize(temp_vocals) > 0:
+                source_audio_for_diarization = temp_vocals
+            else:
+                # Nếu tách giọng thất bại, ít nhất trích xuất âm thanh thật bằng FFmpeg.
+                # Không truyền nguyên MP4 cho SoundFile và tuyệt đối không tạo nhiễu giả.
+                self.log("Không tách được giọng sạch; đang thử trích xuất âm thanh gốc để phân tích.")
+                if separator._extract_audio(video_path, temp_raw_audio) and os.path.isfile(temp_raw_audio):
+                    source_audio_for_diarization = temp_raw_audio
+                else:
+                    raise RuntimeError(
+                        "Không thể tách giọng hoặc trích xuất âm thanh từ video. "
+                        "Kiểm tra tệp nguồn và FFmpeg rồi thử lại."
+                    )
+
+            # VoiceSeparator có thể đã sử dụng PyTorch/CUDA (ví dụ Demucs).
+            # Thu hồi cache của PyTorch trước khi khởi tạo phiên ONNX để giảm tranh chấp VRAM.
+            gc.collect()
+            if torch is not None and getattr(torch, "cuda", None) is not None:
+                try:
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                        torch.cuda.empty_cache()
+                except Exception:
+                    self.log("Không thể dọn cache CUDA trước khi chạy ONNX; tiếp tục với kiểm soát lỗi.")
+
             diar_profiles = coordinator.process_video_subtitles(
                 video_path=source_audio_for_diarization,
                 blocks=blocks,
                 max_speakers=max_speakers,
                 prefer_cuda=use_cuda,
+                temp_dir=self.voice_prompt_cache_dir,
             )
+            self.log(f"Nhận diện người nói hoàn tất bằng {coordinator.last_provider}.")
 
             # Đảm bảo mọi câu chưa khóa đều có confidence_level
             for blk in blocks:
@@ -1265,66 +1290,6 @@ class TTSEngine:
                     "confidence_level": "high" if prof.high_confidence_ratio >= 0.7 else "review_needed",
                 }
 
-            if not detected_profiles and blocks:
-                # Gán người nói mặc định cho các câu chưa khóa
-                for blk in blocks:
-                    if not getattr(blk, "is_speaker_locked", False):
-                        blk.speaker = "Người nói 1"
-                        blk.confidence_level = ConfidenceLevel.UNASSIGNED.value
-                detected_profiles["Người nói 1"] = {
-                    "speaker_id": "Người nói 1",
-                    "description": "Mặc định",
-                    "pitch_hz": 150.0,
-                    "ref_audio_path": "",
-                    "source_audio_sample": "",
-                    "instruct": "male, young adult, moderate pitch",
-                    "count": len(blocks),
-                }
-
-            # Trích xuất đoạn âm thanh đại diện thực tế cho từng nhân vật từ âm thanh nguồn
-            if os.path.exists(source_audio_for_diarization) and detected_profiles:
-                try:
-                    src_data, src_sr = sf.read(source_audio_for_diarization)
-                    if src_data.ndim > 1:
-                        src_data = np.mean(src_data, axis=1)
-
-                    for spk_name, prof in detected_profiles.items():
-                        spk_blocks = [b for b in blocks if getattr(b, "speaker", "") == spk_name]
-                        if not spk_blocks:
-                            continue
-                        # Tìm câu thoại tốt nhất (ưu tiên độ tin cậy cao và thời lượng đủ dài)
-                        best_blk = None
-                        best_score = -1.0
-                        for b in spk_blocks:
-                            st_s = parse_timestamp_to_seconds(b.start_time)
-                            et_s = parse_timestamp_to_seconds(b.end_time)
-                            dur = et_s - st_s
-                            is_high = getattr(b, "confidence_level", "") == ConfidenceLevel.HIGH.value
-                            score = dur + (5.0 if is_high else 0.0)
-                            if score > best_score:
-                                best_score = score
-                                best_blk = b
-
-                        if best_blk:
-                            st_s = parse_timestamp_to_seconds(best_blk.start_time)
-                            et_s = parse_timestamp_to_seconds(best_blk.end_time)
-                            s_idx = max(0, int(st_s * src_sr))
-                            e_idx = min(len(src_data), int(et_s * src_sr))
-                            if e_idx > s_idx:
-                                spk_audio = src_data[s_idx:e_idx]
-                                sample_file = os.path.join(
-                                    self.voice_prompt_cache_dir,
-                                    f"ref_sample_{spk_name.replace(' ', '_')}_{uuid.uuid4().hex[:6]}.wav"
-                                )
-                                sf.write(sample_file, spk_audio, src_sr)
-                                prof["ref_audio_path"] = sample_file
-                                prof["source_audio_sample"] = sample_file
-                                for b in spk_blocks:
-                                    if not getattr(b, "voice_ref_path", ""):
-                                        b.voice_ref_path = sample_file
-                except Exception as sample_err:
-                    self.log(f"Cảnh báo: Không thể trích xuất mẫu âm thanh cho nhân vật: {sample_err}")
-
             self.speaker_profiles = detected_profiles
             self.log(
                 f"Đã tự động nhận diện {len(detected_profiles)} người nói từ video: "
@@ -1332,15 +1297,17 @@ class TTSEngine:
             )
             return detected_profiles
         except Exception as e:
+            self.last_diarization_error = str(e)
             self.log(f"Lỗi khi phân tích đa người nói từ video: {e}")
             return {}
         finally:
             self._active_diarizer_session = None
-            if os.path.exists(temp_vocals):
-                try:
-                    os.remove(temp_vocals)
-                except Exception:
-                    pass
+            for temp_path in (temp_vocals, temp_raw_audio):
+                if os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except Exception:
+                        pass
             gc.collect()
 
     def detect_speakers_from_srt_text(
@@ -1645,7 +1612,7 @@ class TTSEngine:
             if issue["type"] != "empty_text":
                 self.log(f"Cảnh báo phụ đề: {issue['message']}")
 
-        # GIAI ĐOẠN 2: Chuẩn bị hồ sơ giọng nhân vật (Chạy TRƯỚC KHI nạp OmniVoice để bảo toàn VRAM GPU)
+        # GIAI ĐOẠN 2: Chuẩn bị hồ sơ giọng nhân vật trước khi nạp OmniVoice
         vocals_waveform: Optional[np.ndarray] = None
         vocals_sr: int = 24000
 
@@ -1671,12 +1638,7 @@ class TTSEngine:
                     except Exception:
                         pass
 
-        # Giải phóng bộ nhớ và dọn rác sau giai đoạn nhận diện người nói
-        gc.collect()
-        if torch is not None and torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-        # Nạp mô hình OmniVoice TTS vào GPU sau khi phiên ONNX nhận diện đã kết thúc hoàn toàn
+        # Nạp mô hình TTS sau khi hoàn tất nhận diện và giải phóng phiên ONNX.
         self.load_model()
 
         if self.mode == "clone" and self.current_prompt is None and self.multi_speaker_mode == "single":
