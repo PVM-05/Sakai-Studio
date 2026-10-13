@@ -440,3 +440,32 @@ def test_cosine_clustering_and_three_confidence_levels():
     # Câu phân vân phải rơi vào mức cần kiểm tra hoặc chưa xác định
     assert conf_levels[10] in (ConfidenceLevel.REVIEW_NEEDED.value, ConfidenceLevel.UNASSIGNED.value)
 
+
+# ==============================================================================
+# 13. KIỂM THỬ KHÓA NHÂN VẬT VÀ GIẢI PHÓNG PHIÊN NHẬN DIỆN TRONG TTSENGINE (TÁC VỤ 3)
+# ==============================================================================
+def test_tts_engine_respects_locked_speaker_and_releases_diarizer_session(tmp_path):
+    from src.ai_engines.tts_engine import TTSEngine, SubtitleBlock
+
+    wav_path = str(tmp_path / "voice_track.wav")
+    sf.write(wav_path, _make_sine_wave(8.0, 16000), 16000)
+
+    engine = TTSEngine(auto_extract_ref=False, mode="design")
+    b1 = SubtitleBlock(index=1, start_time="00:00:01,000", end_time="00:00:03,000", text="Xin chào", translated_text="Xin chào")
+    b2 = SubtitleBlock(index=2, start_time="00:00:04,000", end_time="00:00:06,000", text="Chào bạn", translated_text="Chào bạn")
+    b2.speaker = "Nhân vật đã khóa"
+    b2.is_speaker_locked = True
+
+    blocks = [b1, b2]
+    # Gọi nhận diện
+    res = engine.detect_speakers_from_video(video_path=wav_path, blocks=blocks, max_speakers=3)
+    assert isinstance(res, dict)
+    assert len(res) >= 1
+    # Câu 1 được gán nhận diện từ bộ điều phối
+    assert b1.speaker == "Người nói 1"
+    assert hasattr(b1, "confidence_level")
+    # Câu 2 phải được giữ nguyên nhân vật đã khóa
+    assert b2.speaker == "Nhân vật đã khóa"
+    # Thuộc tính phiên làm việc nhận diện nội bộ phải được thu hồi
+    assert getattr(engine, "_active_diarizer_session", None) is None
+

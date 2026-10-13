@@ -73,6 +73,8 @@ class SubtitleBlock:
     speaker: str = ""
     voice_ref_path: str = ""
     voice_instruct: str = ""
+    confidence_level: str = "high"
+    is_speaker_locked: bool = False
 
     def to_srt(self, use_translated: bool = True) -> str:
         content = self.translated_text if (use_translated and self.translated_text) else self.text

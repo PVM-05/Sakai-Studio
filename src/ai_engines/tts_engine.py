@@ -1202,10 +1202,11 @@ class TTSEngine:
         video_path: str,
         blocks: List[SubtitleBlock],
         max_speakers: int = 4,
+        prefer_cuda: Optional[bool] = None,
     ) -> Dict[str, Dict[str, Any]]:
         """
         Tự động nhận diện nhiều người nói trực tiếp từ âm thanh gốc của video theo mốc thời gian phụ đề (.srt).
-        Trích xuất tệp giọng mẫu (.wav) riêng cho từng nhân vật và gán vào từng dòng SubtitleBlock.
+        Sử dụng bộ điều phối SpeakerDiarizationCoordinator (ONNX Runtime tăng tốc GPU/CPU) và bảo vệ các câu đã khóa.
         """
         if not video_path or not os.path.exists(video_path):
             self.log("Không tìm thấy tệp video để phân tích giọng người nói.")
@@ -1213,132 +1214,63 @@ class TTSEngine:
         if not blocks:
             return {}
 
+        self._active_diarizer_session = None
+
+        from .speaker_diarization import SpeakerDiarizationCoordinator, ConfidenceLevel
+
+        cuda_avail = bool(torch is not None and getattr(torch, "cuda", None) is not None and torch.cuda.is_available())
+        use_cuda = cuda_avail if prefer_cuda is None else bool(prefer_cuda)
+        coordinator = SpeakerDiarizationCoordinator(prefer_cuda=use_cuda)
+
         self.log(f"Đang tách kênh giọng nói từ video để nhận diện đa nhân vật: {os.path.basename(video_path)}...")
         separator = VoiceSeparator()
         temp_vocals = os.path.join(self.voice_prompt_cache_dir, f"diarize_vocals_{uuid.uuid4().hex[:8]}.wav")
         ok = separator.separate_from_video(video_path, temp_vocals)
-        if not ok or not os.path.exists(temp_vocals):
-            self.log("Không thể tách kênh giọng nói từ video nguồn.")
-            return {}
+        source_audio_for_diarization = temp_vocals if (ok and os.path.exists(temp_vocals)) else video_path
 
         try:
-            vocals_data, sr = sf.read(temp_vocals)
-            if vocals_data.ndim > 1:
-                vocals_data = np.mean(vocals_data, axis=1)
-            vocals_data = vocals_data.astype(np.float32)
+            diar_profiles = coordinator.process_video_subtitles(
+                video_path=source_audio_for_diarization,
+                blocks=blocks,
+                max_speakers=max_speakers,
+                prefer_cuda=use_cuda,
+            )
 
-            valid_indices: List[int] = []
-            feature_rows: List[np.ndarray] = []
-            segment_clips: Dict[int, np.ndarray] = {}
+            # Đảm bảo mọi câu chưa khóa đều có confidence_level
+            for blk in blocks:
+                if not hasattr(blk, "confidence_level"):
+                    blk.confidence_level = ConfidenceLevel.HIGH.value if getattr(blk, "speaker", "") else ConfidenceLevel.UNASSIGNED.value
 
-            for i, blk in enumerate(blocks):
-                start_s = parse_timestamp_to_seconds(blk.start_time)
-                end_s = parse_timestamp_to_seconds(getattr(blk, "end_time", start_s))
-                s_idx = max(0, int(start_s * sr))
-                e_idx = min(len(vocals_data), int(end_s * sr))
-                if e_idx - s_idx < int(0.25 * sr):
-                    continue
-                seg = vocals_data[s_idx:e_idx]
-                segment_clips[i] = seg
-                feat = self._extract_acoustic_features(seg, sr)
-                if feat is not None:
-                    valid_indices.append(i)
-                    feature_rows.append(feat)
-
-            if not feature_rows:
-                self.log("Không phát hiện đủ tín hiệu giọng nói trong các mốc phụ đề, gán 1 người nói mặc định.")
-                for blk in blocks:
-                    blk.speaker = "Người nói 1"
-                return {"Người nói 1": {"speaker_id": "Người nói 1", "count": len(blocks)}}
-
-            feat_matrix = np.stack(feature_rows, axis=0)
-            cluster_ids = self._cluster_speaker_features(feat_matrix, max_speakers=max_speakers)
-
-            # Gán nhãn cho các câu hợp lệ và nội suy câu quá ngắn theo câu lân cận
-            block_clusters: Dict[int, int] = {}
-            for idx_pos, blk_idx in enumerate(valid_indices):
-                block_clusters[blk_idx] = int(cluster_ids[idx_pos])
-
-            last_c = 0
-            for i in range(len(blocks)):
-                if i in block_clusters:
-                    last_c = block_clusters[i]
-                else:
-                    block_clusters[i] = last_c
-
-            num_detected = int(np.max(cluster_ids)) + 1 if len(cluster_ids) > 0 else 1
             detected_profiles: Dict[str, Dict[str, Any]] = {}
-
-            for c_id in range(num_detected):
-                spk_name = f"Người nói {c_id + 1}"
-                member_blk_indices = [idx for idx, c in block_clusters.items() if c == c_id]
-                member_f0s = [
-                    float(feat_matrix[pos, 0] * 200.0)
-                    for pos, b_idx in enumerate(valid_indices)
-                    if block_clusters.get(b_idx) == c_id
-                ]
-                median_hz = float(np.median(member_f0s)) if member_f0s else 155.0
-
-                # Phân loại giới tính & cao độ tự động theo tần số cơ bản F0
-                if median_hz < 125.0:
-                    auto_instruct = "male, middle-aged, low pitch"
-                    gender_desc = f"Giọng Nam Trầm (~{int(median_hz)}Hz)"
-                elif median_hz < 170.0:
-                    auto_instruct = "male, young adult, moderate pitch"
-                    gender_desc = f"Giọng Nam (~{int(median_hz)}Hz)"
-                elif median_hz < 235.0:
-                    auto_instruct = "female, young adult, moderate pitch"
-                    gender_desc = f"Giọng Nữ (~{int(median_hz)}Hz)"
-                else:
-                    auto_instruct = "female, teenager, high pitch"
-                    gender_desc = f"Giọng Nữ Cao / Trẻ Em (~{int(median_hz)}Hz)"
-
-                # Gom các đoạn âm thanh rõ nhất của nhân vật này (tối đa 8 giây) để tạo tệp giọng mẫu
-                cand_Pool = [
-                    segment_clips[b_idx]
-                    for b_idx in member_blk_indices
-                    if b_idx in segment_clips and len(segment_clips[b_idx]) >= int(0.6 * sr)
-                ]
-                cand_Pool.sort(key=lambda arr: float(np.sqrt(np.mean(arr ** 2))) * min(len(arr) / sr, 4.0), reverse=True)
-
-                collected: List[np.ndarray] = []
-                collected_samples = 0
-                target_samples = int(7.5 * sr)
-                pause_pad = np.zeros(int(0.15 * sr), dtype=np.float32)
-
-                for clip in cand_Pool:
-                    collected.append(clip)
-                    collected.append(pause_pad)
-                    collected_samples += len(clip) + len(pause_pad)
-                    if collected_samples >= target_samples:
-                        break
-
-                ref_wav_path = ""
-                if collected:
-                    merged_ref = np.concatenate(collected)[:int(8.5 * sr)]
-                    ref_wav_path = os.path.join(
-                        self.voice_prompt_cache_dir,
-                        f"speaker_{c_id + 1}_{Path(video_path).stem}_{uuid.uuid4().hex[:5]}.wav",
-                    )
-                    sf.write(ref_wav_path, merged_ref, sr)
-
+            for spk_name, prof in diar_profiles.items():
                 detected_profiles[spk_name] = {
                     "speaker_id": spk_name,
-                    "description": gender_desc,
-                    "pitch_hz": round(median_hz, 1),
-                    "ref_audio_path": ref_wav_path,
-                    "instruct": auto_instruct,
-                    "count": len(member_blk_indices),
+                    "description": f"Độ tin cậy: {int(prof.high_confidence_ratio * 100)}%",
+                    "pitch_hz": 150.0,
+                    "ref_audio_path": prof.source_audio_sample,
+                    "instruct": prof.instruct,
+                    "count": prof.dialogue_count,
+                    "confidence_level": "high" if prof.high_confidence_ratio >= 0.7 else "review_needed",
                 }
 
-                for b_idx in member_blk_indices:
-                    blocks[b_idx].speaker = spk_name
-                    blocks[b_idx].voice_ref_path = ref_wav_path
-                    blocks[b_idx].voice_instruct = auto_instruct
+            if not detected_profiles and blocks:
+                # Gán người nói mặc định cho các câu chưa khóa
+                for blk in blocks:
+                    if not getattr(blk, "is_speaker_locked", False):
+                        blk.speaker = "Người nói 1"
+                        blk.confidence_level = ConfidenceLevel.UNASSIGNED.value
+                detected_profiles["Người nói 1"] = {
+                    "speaker_id": "Người nói 1",
+                    "description": "Mặc định",
+                    "pitch_hz": 150.0,
+                    "ref_audio_path": "",
+                    "instruct": "male, young adult, moderate pitch",
+                    "count": len(blocks),
+                }
 
             self.speaker_profiles = detected_profiles
             self.log(
-                f"Đã tự động nhận diện {num_detected} người nói từ video: "
+                f"Đã tự động nhận diện {len(detected_profiles)} người nói từ video: "
                 + ", ".join(f"{k} ({v['description']} - {v['count']} câu)" for k, v in detected_profiles.items())
             )
             return detected_profiles
@@ -1346,11 +1278,13 @@ class TTSEngine:
             self.log(f"Lỗi khi phân tích đa người nói từ video: {e}")
             return {}
         finally:
+            self._active_diarizer_session = None
             if os.path.exists(temp_vocals):
                 try:
                     os.remove(temp_vocals)
                 except Exception:
                     pass
+            gc.collect()
 
     def detect_speakers_from_srt_text(
         self,
