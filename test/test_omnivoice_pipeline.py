@@ -512,7 +512,10 @@ def test_tts_engine_respects_locked_speaker_and_releases_diarizer_session(tmp_pa
     assert b2.speaker == "Nhân vật đã khóa"
     # Thuộc tính phiên làm việc nhận diện nội bộ phải được thu hồi
     assert getattr(engine, "_active_diarizer_session", None) is None
-    assert any(Path(p.source_audio_sample).is_file() for p in engine.speaker_profiles.values())
+    assert any(
+        Path(p.get("ref_audio_path", "")).is_file()
+        for p in engine.speaker_profiles.values()
+    )
 
 
 def test_speaker_model_missing_is_not_silently_mocked(tmp_path):
