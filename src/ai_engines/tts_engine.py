@@ -580,6 +580,7 @@ class TTSEngine:
         speaker_profiles: Optional[Dict[str, Dict[str, Any]]] = None,
         resume_cache_dir: Optional[str] = None,
         ducking_mode: str = "dynamic",
+        speaker_model_path: Optional[str] = None,
     ):
         self.model: Optional[OmniVoice] = None
         self.parent_logger = parent_logger
@@ -617,6 +618,11 @@ class TTSEngine:
         self.multi_speaker_mode = multi_speaker_mode or "single"
         self.max_speakers = max(1, min(8, int(max_speakers)))
         self.speaker_profiles: Dict[str, Dict[str, Any]] = speaker_profiles or {}
+        if speaker_model_path:
+            self.speaker_model_path = str(speaker_model_path).strip()
+        else:
+            cfg_item = getattr(app_config, "mmoSpeakerModelPath", None)
+            self.speaker_model_path = str(cfg_item.value).strip() if (cfg_item and hasattr(cfg_item, "value")) else ""
         self._speaker_prompt_cache: Dict[str, VoiceClonePrompt] = {}
         self.resume_cache_dir = str(resume_cache_dir).strip() if resume_cache_dir else None
         self.ducking_mode = ducking_mode if ducking_mode in ("dynamic", "fixed") else "dynamic"
@@ -1278,6 +1284,7 @@ class TTSEngine:
                     "description": f"Độ tin cậy: {int(prof.high_confidence_ratio * 100)}%",
                     "pitch_hz": 150.0,
                     "ref_audio_path": prof.source_audio_sample,
+                    "source_audio_sample": prof.source_audio_sample,
                     "instruct": prof.instruct,
                     "count": prof.dialogue_count,
                     "confidence_level": "high" if prof.high_confidence_ratio >= 0.7 else "review_needed",

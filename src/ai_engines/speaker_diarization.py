@@ -474,3 +474,4 @@ class SpeakerDiarizationCoordinator:
             return detected_profiles
         finally:
             close_speaker_session(session)
+

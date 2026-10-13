@@ -853,6 +853,7 @@ class OmniVoiceInterface(ScrollArea):
         self.casting_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.Stretch)
         self.casting_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.casting_table.setMinimumHeight(200)
+        self.casting_table.itemChanged.connect(self._on_casting_table_item_changed)
         casting_layout.addWidget(self.casting_table, 1)
 
         p1_layout.addWidget(casting_card, 1)
@@ -874,6 +875,17 @@ class OmniVoiceInterface(ScrollArea):
         sub_top_row = QHBoxLayout()
         sub_top_row.addWidget(SubtitleLabel("Danh Sách Câu Thoại Phụ Đề", sub_page_card))
         sub_top_row.addStretch(1)
+
+        sub_top_row.addWidget(BodyLabel("Bộ lọc:", sub_page_card))
+        self.combo_sub_filter = ComboBox(sub_page_card)
+        self.combo_sub_filter.addItems([
+            "Tất cả câu thoại",
+            "Độ tin cậy cao",
+            "Cần rà soát",
+            "Chưa xác định",
+        ])
+        self.combo_sub_filter.currentTextChanged.connect(self._filter_subtitle_table)
+        sub_top_row.addWidget(self.combo_sub_filter)
 
         sub_top_row.addWidget(BodyLabel("Biểu cảm:", sub_page_card))
         self.combo_sub_tag = ComboBox(sub_page_card)
@@ -1020,7 +1032,7 @@ class OmniVoiceInterface(ScrollArea):
 
         param_grid.addWidget(BodyLabel("Tốc độ phát ngôn:", audio_card), 0, 0)
         self.spin_speed = DoubleSpinBox(audio_card)
-        self.spin_speed.setRange(0.5, 2.0)
+        self.spin_speed.setRange(0.8, 1.5)
         self.spin_speed.setSingleStep(0.05)
         self.spin_speed.setValue(1.0)
         param_grid.addWidget(self.spin_speed, 0, 1)
@@ -1080,11 +1092,23 @@ class OmniVoiceInterface(ScrollArea):
         adv_layout = QVBoxLayout(adv_card)
         adv_layout.setContentsMargins(18, 14, 18, 14)
         adv_layout.setSpacing(8)
-        adv_layout.addWidget(SubtitleLabel("Phần Cứng Nhận Diện Và Tham Số Nâng Cao", adv_card))
+
+        adv_header_row = QHBoxLayout()
+        adv_header_row.addWidget(SubtitleLabel("Phần Cứng Nhận Diện Và Tham Số Nâng Cao", adv_card))
+        adv_header_row.addStretch(1)
+        self.btn_toggle_adv = PushButton("Thu Gọn / Mở Rộng", adv_card)
+        self.btn_toggle_adv.setIcon(FluentIcon.CHEVRON_RIGHT)
+        adv_header_row.addWidget(self.btn_toggle_adv)
+        adv_layout.addLayout(adv_header_row)
+
+        self.adv_content_widget = QWidget(adv_card)
+        adv_content_layout = QVBoxLayout(self.adv_content_widget)
+        adv_content_layout.setContentsMargins(0, 4, 0, 0)
+        adv_content_layout.setSpacing(8)
 
         hw_row = QHBoxLayout()
-        hw_row.addWidget(BodyLabel("Bộ xử lý nhận diện người nói:", adv_card))
-        self.combo_hardware_selector = ComboBox(adv_card)
+        hw_row.addWidget(BodyLabel("Bộ xử lý nhận diện người nói:", self.adv_content_widget))
+        self.combo_hardware_selector = ComboBox(self.adv_content_widget)
         self.combo_hardware_selector.addItems([
             "Ưu tiên card đồ họa NVIDIA RTX 4050",
             "Chế độ vi xử lý trung tâm",
@@ -1093,79 +1117,83 @@ class OmniVoiceInterface(ScrollArea):
         self.combo_hardware_selector.setCurrentIndex(0)
         self.combo_hardware_selector.setMinimumWidth(320)
         hw_row.addWidget(self.combo_hardware_selector, 1)
-        adv_layout.addLayout(hw_row)
+        adv_content_layout.addLayout(hw_row)
 
         diff_grid = QGridLayout()
         diff_grid.setSpacing(6)
-        diff_grid.addWidget(BodyLabel("Số bước giải mã khuếch tán:", adv_card), 0, 0)
-        self.spin_num_step = SpinBox(adv_card)
+        diff_grid.addWidget(BodyLabel("Số bước giải mã khuếch tán:", self.adv_content_widget), 0, 0)
+        self.spin_num_step = SpinBox(self.adv_content_widget)
         self.spin_num_step.setRange(4, 64)
         self.spin_num_step.setValue(32)
         diff_grid.addWidget(self.spin_num_step, 0, 1)
 
-        diff_grid.addWidget(BodyLabel("Hệ số dẫn hướng:", adv_card), 0, 2)
-        self.spin_guidance = DoubleSpinBox(adv_card)
+        diff_grid.addWidget(BodyLabel("Hệ số dẫn hướng:", self.adv_content_widget), 0, 2)
+        self.spin_guidance = DoubleSpinBox(self.adv_content_widget)
         self.spin_guidance.setRange(0.0, 4.0)
         self.spin_guidance.setSingleStep(0.1)
         self.spin_guidance.setValue(2.0)
         diff_grid.addWidget(self.spin_guidance, 0, 3)
 
-        diff_grid.addWidget(BodyLabel("Độ dịch bước thời gian:", adv_card), 1, 0)
-        self.spin_t_shift = DoubleSpinBox(adv_card)
+        diff_grid.addWidget(BodyLabel("Độ dịch bước thời gian:", self.adv_content_widget), 1, 0)
+        self.spin_t_shift = DoubleSpinBox(self.adv_content_widget)
         self.spin_t_shift.setRange(0.01, 1.0)
         self.spin_t_shift.setSingleStep(0.05)
         self.spin_t_shift.setValue(0.10)
         diff_grid.addWidget(self.spin_t_shift, 1, 1)
 
-        diff_grid.addWidget(BodyLabel("Hệ số phạt tầng mã hóa:", adv_card), 1, 2)
-        self.spin_layer_penalty = DoubleSpinBox(adv_card)
+        diff_grid.addWidget(BodyLabel("Hệ số phạt tầng mã hóa:", self.adv_content_widget), 1, 2)
+        self.spin_layer_penalty = DoubleSpinBox(self.adv_content_widget)
         self.spin_layer_penalty.setRange(0.0, 20.0)
         self.spin_layer_penalty.setSingleStep(0.5)
         self.spin_layer_penalty.setValue(5.0)
         diff_grid.addWidget(self.spin_layer_penalty, 1, 3)
 
-        diff_grid.addWidget(BodyLabel("Nhiệt độ chọn vị trí:", adv_card), 2, 0)
-        self.spin_pos_temp = DoubleSpinBox(adv_card)
+        diff_grid.addWidget(BodyLabel("Nhiệt độ chọn vị trí:", self.adv_content_widget), 2, 0)
+        self.spin_pos_temp = DoubleSpinBox(self.adv_content_widget)
         self.spin_pos_temp.setRange(0.0, 10.0)
         self.spin_pos_temp.setSingleStep(0.5)
         self.spin_pos_temp.setValue(5.0)
         diff_grid.addWidget(self.spin_pos_temp, 2, 1)
 
-        diff_grid.addWidget(BodyLabel("Nhiệt độ lấy mẫu lớp:", adv_card), 2, 2)
-        self.spin_cls_temp = DoubleSpinBox(adv_card)
+        diff_grid.addWidget(BodyLabel("Nhiệt độ lấy mẫu lớp:", self.adv_content_widget), 2, 2)
+        self.spin_cls_temp = DoubleSpinBox(self.adv_content_widget)
         self.spin_cls_temp.setRange(0.0, 2.0)
         self.spin_cls_temp.setSingleStep(0.1)
         self.spin_cls_temp.setValue(0.0)
         diff_grid.addWidget(self.spin_cls_temp, 2, 3)
 
-        diff_grid.addWidget(BodyLabel("Thời lượng chia đoạn dài:", adv_card), 3, 0)
-        self.spin_chunk_dur = DoubleSpinBox(adv_card)
+        diff_grid.addWidget(BodyLabel("Thời lượng chia đoạn dài:", self.adv_content_widget), 3, 0)
+        self.spin_chunk_dur = DoubleSpinBox(self.adv_content_widget)
         self.spin_chunk_dur.setRange(5.0, 60.0)
         self.spin_chunk_dur.setSingleStep(1.0)
         self.spin_chunk_dur.setValue(15.0)
         diff_grid.addWidget(self.spin_chunk_dur, 3, 1)
 
-        diff_grid.addWidget(BodyLabel("Ngưỡng tự chia đoạn dài:", adv_card), 3, 2)
-        self.spin_chunk_thresh = DoubleSpinBox(adv_card)
+        diff_grid.addWidget(BodyLabel("Ngưỡng tự chia đoạn dài:", self.adv_content_widget), 3, 2)
+        self.spin_chunk_thresh = DoubleSpinBox(self.adv_content_widget)
         self.spin_chunk_thresh.setRange(10.0, 120.0)
         self.spin_chunk_thresh.setSingleStep(5.0)
         self.spin_chunk_thresh.setValue(30.0)
         diff_grid.addWidget(self.spin_chunk_thresh, 3, 3)
 
-        diff_grid.addWidget(BodyLabel("Khoảng lặng đệm hai đầu:", adv_card), 4, 0)
-        self.spin_pad_dur = DoubleSpinBox(adv_card)
+        diff_grid.addWidget(BodyLabel("Khoảng lặng đệm hai đầu:", self.adv_content_widget), 4, 0)
+        self.spin_pad_dur = DoubleSpinBox(self.adv_content_widget)
         self.spin_pad_dur.setRange(0.0, 2.0)
         self.spin_pad_dur.setSingleStep(0.05)
         self.spin_pad_dur.setValue(0.10)
         diff_grid.addWidget(self.spin_pad_dur, 4, 1)
 
-        diff_grid.addWidget(BodyLabel("Thời gian làm mượt đầu cuối:", adv_card), 4, 2)
-        self.spin_fade_dur = DoubleSpinBox(adv_card)
+        diff_grid.addWidget(BodyLabel("Thời gian làm mượt đầu cuối:", self.adv_content_widget), 4, 2)
+        self.spin_fade_dur = DoubleSpinBox(self.adv_content_widget)
         self.spin_fade_dur.setRange(0.0, 1.0)
         self.spin_fade_dur.setSingleStep(0.05)
         self.spin_fade_dur.setValue(0.10)
         diff_grid.addWidget(self.spin_fade_dur, 4, 3)
-        adv_layout.addLayout(diff_grid)
+
+        adv_content_layout.addLayout(diff_grid)
+        adv_layout.addWidget(self.adv_content_widget)
+
+        self.btn_toggle_adv.clicked.connect(self._toggle_advanced_settings)
         p3_layout.addWidget(adv_card)
 
         self.step_stack.addWidget(self.page_step_3)
@@ -1589,11 +1617,89 @@ class OmniVoiceInterface(ScrollArea):
             item_conf.setFlags(item_conf.flags() & ~Qt.ItemIsEditable)
             self.casting_table.setItem(row, 5, item_conf)
 
-            item_act = QTableWidgetItem("Sẵn sàng")
-            item_act.setFlags(item_act.flags() & ~Qt.ItemIsEditable)
-            self.casting_table.setItem(row, 6, item_act)
+            btn_act = PushButton("Nghe Thử", self.casting_table)
+            btn_act.setIcon(FluentIcon.VOLUME)
+            btn_act.clicked.connect(lambda checked=False, s=spk_name: self._preview_character_voice(s))
+            self.casting_table.setCellWidget(row, 6, btn_act)
 
         self.casting_table.blockSignals(False)
+
+    def _on_casting_table_item_changed(self, item: QTableWidgetItem):
+        """Đồng bộ khi người dùng chỉnh sửa trực tiếp tên nhân vật trên bảng phân vai."""
+        if item.column() != 1:
+            return
+        row = item.row()
+        id_item = self.casting_table.item(row, 0)
+        if not id_item:
+            return
+        spk_id = id_item.text().strip()
+        new_name = item.text().strip()
+        if not new_name:
+            return
+
+        old_name = None
+        for name, prof in list(self.speaker_profiles.items()):
+            if prof.get("speaker_id") == spk_id:
+                old_name = name
+                break
+
+        if old_name and old_name != new_name:
+            prof = self.speaker_profiles.pop(old_name)
+            prof["speaker_id"] = spk_id
+            prof["display_name"] = new_name
+            self.speaker_profiles[new_name] = prof
+            for blk in self.subtitle_blocks:
+                if getattr(blk, "speaker", "") == old_name:
+                    blk.speaker = new_name
+            self._populate_subtitle_table()
+        elif not old_name:
+            self.speaker_profiles[new_name] = {
+                "speaker_id": spk_id,
+                "display_name": new_name,
+                "count": 0,
+            }
+            for blk in self.subtitle_blocks:
+                if getattr(blk, "speaker", "") == spk_id:
+                    blk.speaker = new_name
+            self._populate_subtitle_table()
+
+    def _filter_subtitle_table(self, filter_text: str = ""):
+        """Lọc danh sách câu thoại theo độ tin cậy nhận diện người nói tại Bước 3."""
+        if not hasattr(self, "sub_table") or not hasattr(self, "combo_sub_filter"):
+            return
+        selected = filter_text or self.combo_sub_filter.currentText()
+        for row in range(self.sub_table.rowCount()):
+            if row >= len(self.subtitle_blocks):
+                continue
+            blk = self.subtitle_blocks[row]
+            conf = getattr(blk, "confidence_level", "high")
+            if selected == "Độ tin cậy cao":
+                self.sub_table.setRowHidden(row, conf != "high")
+            elif selected == "Cần rà soát":
+                self.sub_table.setRowHidden(row, conf != "review_needed")
+            elif selected == "Chưa xác định":
+                self.sub_table.setRowHidden(row, conf != "unassigned")
+            else:
+                self.sub_table.setRowHidden(row, False)
+
+    def _preview_character_voice(self, spk_name: str):
+        """Nghe thử mẫu âm thanh đại diện hoặc giọng thiết kế của nhân vật."""
+        prof = self.speaker_profiles.get(spk_name, {})
+        ref_path = prof.get("ref_audio_path") or prof.get("source_audio_sample")
+        if ref_path and os.path.exists(ref_path):
+            self._play_audio_file(ref_path)
+            InfoBar.info("Đang phát mẫu giọng", f"Đang nghe thử giọng mẫu gốc của {spk_name}.", parent=self, duration=2500)
+        else:
+            self._preview_speaker_preset_vi()
+
+    def _toggle_advanced_settings(self):
+        """Đóng mở nhóm thiết lập phần cứng và tham số nâng cao."""
+        if not hasattr(self, "adv_content_widget"):
+            return
+        vis = not self.adv_content_widget.isVisible()
+        self.adv_content_widget.setVisible(vis)
+        if hasattr(self, "btn_toggle_adv"):
+            self.btn_toggle_adv.setIcon(FluentIcon.CHEVRON_DOWN if vis else FluentIcon.CHEVRON_RIGHT)
 
     def _reset_all_character_voices(self):
         """Đặt lại toàn bộ phân vai và cấu hình giọng nhân vật."""
@@ -2084,6 +2190,7 @@ class OmniVoiceInterface(ScrollArea):
             txt = blk.translated_text if blk.translated_text else blk.text
             self.sub_table.setItem(row, 5, QTableWidgetItem(txt))
         self.sub_table.blockSignals(False)
+        self._filter_subtitle_table()
 
     def _on_subtitle_table_edited(self, item: QTableWidgetItem):
         row = item.row()

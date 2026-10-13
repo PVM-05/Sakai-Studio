@@ -542,9 +542,23 @@ class TranslationInterface(QWidget):
         def _fetch_worker():
             try:
                 ok, models, msg = fetch_accessible_models(provider_name, key)
+                try:
+                    from shiboken6 import isValid
+                    if not isValid(self):
+                        return
+                except Exception:
+                    pass
                 self._fetch_models_done_signal.emit(req_id, provider_name, ok, models, msg)
+            except RuntimeError:
+                pass
             except Exception as ex:
-                self._fetch_models_done_signal.emit(req_id, provider_name, False, [], f"Lỗi kết nối: {ex}")
+                try:
+                    from shiboken6 import isValid
+                    if not isValid(self):
+                        return
+                    self._fetch_models_done_signal.emit(req_id, provider_name, False, [], f"Lỗi kết nối: {ex}")
+                except Exception:
+                    pass
 
         threading.Thread(target=_fetch_worker, daemon=True).start()
 
@@ -838,19 +852,31 @@ class TranslationInterface(QWidget):
                 if engine_type in ("llm", "gguf") and custom_prompt and hasattr(translator.translator, 'custom_prompt'):
                     translator.translator.custom_prompt = custom_prompt + "\nRespond ONLY with a JSON array of translated strings matching the input array order."
 
+                def _safe_prog(p, m):
+                    try:
+                        self.progress_signal.emit(p, m)
+                    except RuntimeError:
+                        pass
+
                 translator.translator.translate_blocks(
                     self.subtitle_blocks,
                     source_lang=source_lang,
                     target_lang=target_lang,
-                    progress_callback=lambda p, m: self.progress_signal.emit(p, m),
+                    progress_callback=_safe_prog,
                     cancel_callback=_cancel_check,
                 )
-                if self._is_stopped:
-                    self.finished_signal.emit(True, "Đã dừng dịch thuật theo yêu cầu!")
-                else:
-                    self.finished_signal.emit(True, "Dịch thành công tất cả phụ đề!")
+                try:
+                    if self._is_stopped:
+                        self.finished_signal.emit(True, "Đã dừng dịch thuật theo yêu cầu!")
+                    else:
+                        self.finished_signal.emit(True, "Dịch thành công tất cả phụ đề!")
+                except RuntimeError:
+                    pass
             except Exception as e:
-                self.finished_signal.emit(False, str(e))
+                try:
+                    self.finished_signal.emit(False, str(e))
+                except RuntimeError:
+                    pass
 
         threading.Thread(target=_worker, daemon=True).start()
 
