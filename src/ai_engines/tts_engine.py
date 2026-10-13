@@ -1253,6 +1253,7 @@ class TTSEngine:
                 prefer_cuda=use_cuda,
                 temp_dir=self.voice_prompt_cache_dir,
             )
+            self.log(f"Nhận diện người nói hoàn tất bằng {coordinator.last_provider}.")
 
             # Đảm bảo mọi câu chưa khóa đều có confidence_level
             for blk in blocks:
