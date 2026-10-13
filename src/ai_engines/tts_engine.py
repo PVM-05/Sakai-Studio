@@ -1246,6 +1246,17 @@ class TTSEngine:
                         "Kiểm tra tệp nguồn và FFmpeg rồi thử lại."
                     )
 
+            # VoiceSeparator có thể đã sử dụng PyTorch/CUDA (ví dụ Demucs).
+            # Thu hồi cache của PyTorch trước khi khởi tạo phiên ONNX để giảm tranh chấp VRAM.
+            gc.collect()
+            if torch is not None and getattr(torch, "cuda", None) is not None:
+                try:
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                        torch.cuda.empty_cache()
+                except Exception:
+                    self.log("Không thể dọn cache CUDA trước khi chạy ONNX; tiếp tục với kiểm soát lỗi.")
+
             diar_profiles = coordinator.process_video_subtitles(
                 video_path=source_audio_for_diarization,
                 blocks=blocks,
