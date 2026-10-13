@@ -217,11 +217,13 @@ class SpeakerDiarizationCoordinator:
         device_id: int = 0,
         gpu_mem_limit_mb: int = 768,
         prefer_cuda: bool = True,
+        allow_mock: bool = False,
     ):
         self.model_path = model_path
         self.device_id = device_id
         self.gpu_mem_limit_mb = gpu_mem_limit_mb
         self.prefer_cuda = prefer_cuda
+        self.allow_mock = allow_mock
 
     def process_video_subtitles(
         self,
@@ -234,17 +236,27 @@ class SpeakerDiarizationCoordinator:
         """
         Thực thi quy trình nhận diện người nói từ âm thanh video và đối chiếu với mốc phụ đề.
         Tự động giải phóng phiên làm việc ONNX trước khi trả về kết quả.
+        Tuyệt đối không sinh nhiễu giả lập khi lỗi âm thanh; bảo toàn các câu đã khóa.
         """
         if not blocks:
             return {}
 
         use_cuda = self.prefer_cuda if prefer_cuda is None else prefer_cuda
-        session, provider = create_speaker_session(
-            model_path=self.model_path,
-            device_id=self.device_id,
-            gpu_mem_limit_mb=self.gpu_mem_limit_mb,
-            prefer_cuda=use_cuda,
-        )
+        try:
+            session, provider = create_speaker_session(
+                model_path=self.model_path,
+                device_id=self.device_id,
+                gpu_mem_limit_mb=self.gpu_mem_limit_mb,
+                prefer_cuda=use_cuda,
+                allow_mock=self.allow_mock,
+            )
+        except Exception as e:
+            logger.warning(f"Không thể khởi tạo phiên làm việc nhận diện người nói: {e}")
+            for blk in blocks:
+                if not getattr(blk, "is_speaker_locked", False):
+                    blk.speaker = "Chưa xác định"
+                    blk.confidence_level = ConfidenceLevel.UNASSIGNED.value
+            return {}
 
         try:
             # Tách dữ liệu âm thanh từ tệp video hoặc tệp âm thanh nguồn nếu tồn tại
@@ -266,6 +278,14 @@ class SpeakerDiarizationCoordinator:
                 except Exception:
                     audio_data = None
 
+            # Nếu không trích xuất được âm thanh, đánh dấu Chưa xác định thay vì sinh nhiễu giả
+            if audio_data is None:
+                for blk in blocks:
+                    if not getattr(blk, "is_speaker_locked", False):
+                        blk.speaker = "Chưa xác định"
+                        blk.confidence_level = ConfidenceLevel.UNASSIGNED.value
+                return {}
+
             # Cắt lát các đoạn âm thanh theo mốc phụ đề có đệm an toàn 0.15s
             audio_chunks: List[np.ndarray] = []
             valid_indices: List[int] = []
@@ -286,21 +306,30 @@ class SpeakerDiarizationCoordinator:
                         blk.speaker = "Chưa xác định"
                     continue
 
-                if audio_data is not None:
-                    # Bổ sung đệm thời gian 0.15 giây ở hai đầu
-                    padded_start = max(0.0, start_s - 0.15)
-                    padded_end = min(len(audio_data) / sr, end_s + 0.15)
-                    s_idx = int(padded_start * sr)
-                    e_idx = int(padded_end * sr)
-                    chunk = audio_data[s_idx:e_idx]
-                else:
-                    # Giả lập mẫu âm thanh cho bài kiểm thử
-                    chunk = np.random.randn(int(max(0.5, duration) * sr)).astype(np.float32)
+                # Bổ sung đệm thời gian 0.15 giây ở hai đầu
+                padded_start = max(0.0, start_s - 0.15)
+                padded_end = min(len(audio_data) / sr, end_s + 0.15)
+                s_idx = int(padded_start * sr)
+                e_idx = int(padded_end * sr)
+                chunk = audio_data[s_idx:e_idx]
+
+                # Nếu câu hoàn toàn im lặng, đánh dấu Chưa xác định
+                if len(chunk) == 0 or float(np.max(np.abs(chunk))) < 1e-4:
+                    blk.confidence_level = ConfidenceLevel.UNASSIGNED.value
+                    if not getattr(blk, "speaker", ""):
+                        blk.speaker = "Chưa xác định"
+                    continue
 
                 audio_chunks.append(chunk)
                 valid_indices.append(i)
 
             if not audio_chunks:
+                for blk in blocks:
+                    if not getattr(blk, "is_speaker_locked", False):
+                        if not getattr(blk, "speaker", ""):
+                            blk.speaker = "Chưa xác định"
+                        if not getattr(blk, "confidence_level", ""):
+                            blk.confidence_level = ConfidenceLevel.UNASSIGNED.value
                 return {}
 
             # Trích xuất vector đặc trưng hàng loạt theo lô
@@ -347,3 +376,4 @@ class SpeakerDiarizationCoordinator:
         finally:
             # Luôn giải phóng tài nguyên phiên làm việc ONNX trước khi kết thúc
             close_speaker_session(session)
+

@@ -845,6 +845,7 @@ class Config(QConfig):
     mmoTTSChunkThreshold = ConfigItem("MMO", "TTSChunkThreshold", 12.0)
     mmoTTSPadDuration = ConfigItem("MMO", "TTSPadDuration", 0.08)
     mmoTTSFadeDuration = ConfigItem("MMO", "TTSFadeDuration", 0.03)
+    mmoSpeakerModelPath = ConfigItem("MMO", "SpeakerModelPath", "", ConfigValidator())
 CONFIG_FILE = 'config/config.json'
 if not os.path.exists(CONFIG_FILE):
     os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)

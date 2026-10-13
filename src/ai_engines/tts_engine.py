@@ -580,6 +580,7 @@ class TTSEngine:
         speaker_profiles: Optional[Dict[str, Dict[str, Any]]] = None,
         resume_cache_dir: Optional[str] = None,
         ducking_mode: str = "dynamic",
+        speaker_model_path: Optional[str] = None,
     ):
         self.model: Optional[OmniVoice] = None
         self.parent_logger = parent_logger
@@ -617,6 +618,11 @@ class TTSEngine:
         self.multi_speaker_mode = multi_speaker_mode or "single"
         self.max_speakers = max(1, min(8, int(max_speakers)))
         self.speaker_profiles: Dict[str, Dict[str, Any]] = speaker_profiles or {}
+        if speaker_model_path:
+            self.speaker_model_path = str(speaker_model_path).strip()
+        else:
+            cfg_item = getattr(app_config, "mmoSpeakerModelPath", None)
+            self.speaker_model_path = str(cfg_item.value).strip() if (cfg_item and hasattr(cfg_item, "value")) else ""
         self._speaker_prompt_cache: Dict[str, VoiceClonePrompt] = {}
         self.resume_cache_dir = str(resume_cache_dir).strip() if resume_cache_dir else None
         self.ducking_mode = ducking_mode if ducking_mode in ("dynamic", "fixed") else "dynamic"
@@ -1220,7 +1226,12 @@ class TTSEngine:
 
         cuda_avail = bool(torch is not None and getattr(torch, "cuda", None) is not None and torch.cuda.is_available())
         use_cuda = cuda_avail if prefer_cuda is None else bool(prefer_cuda)
-        coordinator = SpeakerDiarizationCoordinator(prefer_cuda=use_cuda)
+        allow_mock = not bool(self.speaker_model_path and os.path.isfile(self.speaker_model_path))
+        coordinator = SpeakerDiarizationCoordinator(
+            model_path=self.speaker_model_path,
+            prefer_cuda=use_cuda,
+            allow_mock=allow_mock,
+        )
 
         self.log(f"Đang tách kênh giọng nói từ video để nhận diện đa nhân vật: {os.path.basename(video_path)}...")
         separator = VoiceSeparator()
@@ -1248,6 +1259,7 @@ class TTSEngine:
                     "description": f"Độ tin cậy: {int(prof.high_confidence_ratio * 100)}%",
                     "pitch_hz": 150.0,
                     "ref_audio_path": prof.source_audio_sample,
+                    "source_audio_sample": prof.source_audio_sample,
                     "instruct": prof.instruct,
                     "count": prof.dialogue_count,
                     "confidence_level": "high" if prof.high_confidence_ratio >= 0.7 else "review_needed",
@@ -1264,9 +1276,54 @@ class TTSEngine:
                     "description": "Mặc định",
                     "pitch_hz": 150.0,
                     "ref_audio_path": "",
+                    "source_audio_sample": "",
                     "instruct": "male, young adult, moderate pitch",
                     "count": len(blocks),
                 }
+
+            # Trích xuất đoạn âm thanh đại diện thực tế cho từng nhân vật từ âm thanh nguồn
+            if os.path.exists(source_audio_for_diarization) and detected_profiles:
+                try:
+                    src_data, src_sr = sf.read(source_audio_for_diarization)
+                    if src_data.ndim > 1:
+                        src_data = np.mean(src_data, axis=1)
+
+                    for spk_name, prof in detected_profiles.items():
+                        spk_blocks = [b for b in blocks if getattr(b, "speaker", "") == spk_name]
+                        if not spk_blocks:
+                            continue
+                        # Tìm câu thoại tốt nhất (ưu tiên độ tin cậy cao và thời lượng đủ dài)
+                        best_blk = None
+                        best_score = -1.0
+                        for b in spk_blocks:
+                            st_s = parse_timestamp_to_seconds(b.start_time)
+                            et_s = parse_timestamp_to_seconds(b.end_time)
+                            dur = et_s - st_s
+                            is_high = getattr(b, "confidence_level", "") == ConfidenceLevel.HIGH.value
+                            score = dur + (5.0 if is_high else 0.0)
+                            if score > best_score:
+                                best_score = score
+                                best_blk = b
+
+                        if best_blk:
+                            st_s = parse_timestamp_to_seconds(best_blk.start_time)
+                            et_s = parse_timestamp_to_seconds(best_blk.end_time)
+                            s_idx = max(0, int(st_s * src_sr))
+                            e_idx = min(len(src_data), int(et_s * src_sr))
+                            if e_idx > s_idx:
+                                spk_audio = src_data[s_idx:e_idx]
+                                sample_file = os.path.join(
+                                    self.voice_prompt_cache_dir,
+                                    f"ref_sample_{spk_name.replace(' ', '_')}_{uuid.uuid4().hex[:6]}.wav"
+                                )
+                                sf.write(sample_file, spk_audio, src_sr)
+                                prof["ref_audio_path"] = sample_file
+                                prof["source_audio_sample"] = sample_file
+                                for b in spk_blocks:
+                                    if not getattr(b, "voice_ref_path", ""):
+                                        b.voice_ref_path = sample_file
+                except Exception as sample_err:
+                    self.log(f"Cảnh báo: Không thể trích xuất mẫu âm thanh cho nhân vật: {sample_err}")
 
             self.speaker_profiles = detected_profiles
             self.log(
@@ -1588,9 +1645,7 @@ class TTSEngine:
             if issue["type"] != "empty_text":
                 self.log(f"Cảnh báo phụ đề: {issue['message']}")
 
-        self.load_model()
-
-        # GIAI ĐOẠN 2: Chuẩn bị hồ sơ giọng nhân vật
+        # GIAI ĐOẠN 2: Chuẩn bị hồ sơ giọng nhân vật (Chạy TRƯỚC KHI nạp OmniVoice để bảo toàn VRAM GPU)
         vocals_waveform: Optional[np.ndarray] = None
         vocals_sr: int = 24000
 
@@ -1615,6 +1670,14 @@ class TTSEngine:
                         os.remove(temp_voc)
                     except Exception:
                         pass
+
+        # Giải phóng bộ nhớ và dọn rác sau giai đoạn nhận diện người nói
+        gc.collect()
+        if torch is not None and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        # Nạp mô hình OmniVoice TTS vào GPU sau khi phiên ONNX nhận diện đã kết thúc hoàn toàn
+        self.load_model()
 
         if self.mode == "clone" and self.current_prompt is None and self.multi_speaker_mode == "single":
             if not self.auto_extract_ref and self.ref_audio_path and os.path.exists(self.ref_audio_path):

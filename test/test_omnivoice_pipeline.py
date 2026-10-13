@@ -390,7 +390,7 @@ def test_onnx_speaker_embedding_session_and_extraction():
     )
 
     mock_audio = np.random.randn(16000 * 2).astype(np.float32)
-    session, provider = create_speaker_session(model_path="", prefer_cuda=False)
+    session, provider = create_speaker_session(model_path="", prefer_cuda=False, allow_mock=True)
     assert provider in ("CPUExecutionProvider", "MockExecutionProvider")
 
     emb = extract_speaker_embedding(session, mock_audio, sample_rate=16000)
@@ -533,6 +533,195 @@ def test_pre_export_quality_checks_and_warnings():
     ]
     long_issues = ui._run_pre_export_quality_check()
     assert any("tràn mốc thời gian" in item["message"] or "quá ngắn" in item["message"] for item in long_issues)
+
+
+# ==============================================================================
+# 16. KIỂM THỬ TIỀN XỬ LÝ FBANK VÀ CƠ CHẾ QUẢN LÝ MÔ HÌNH CAM++ ONNX (P0-A)
+# ==============================================================================
+def test_fbank_feature_extraction_and_cmvn():
+    from src.ai_engines.speaker_embedding_onnx import extract_fbank_features
+
+    audio = np.random.randn(int(1.5 * 16000)).astype(np.float32)
+    feats = extract_fbank_features(audio, sample_rate=16000)
+    assert feats.ndim == 2
+    assert feats.shape[1] == 80
+    assert feats.shape[0] > 50
+    col_means = np.mean(feats, axis=0)
+    assert np.allclose(col_means, 0.0, atol=1e-3)
+
+
+def test_create_speaker_session_rejects_missing_model_when_mock_disallowed():
+    import pytest
+    from src.ai_engines.speaker_embedding_onnx import create_speaker_session, MockSpeakerSession
+
+    with pytest.raises(FileNotFoundError) as exc_info:
+        create_speaker_session(model_path="khong_ton_tai_campplus.onnx", allow_mock=False)
+    assert "Không tìm thấy" in str(exc_info.value) or "mô hình" in str(exc_info.value)
+
+    session, provider = create_speaker_session(model_path="khong_ton_tai_campplus.onnx", allow_mock=True)
+    assert isinstance(session, MockSpeakerSession)
+    assert provider in ("CPUExecutionProvider", "MockExecutionProvider")
+
+
+def test_config_has_mmo_speaker_model_path():
+    from src.core.config import config
+    assert hasattr(config, "mmoSpeakerModelPath")
+
+
+# ==============================================================================
+# 17. KIỂM THỬ XỬ LÝ LỖI ÂM THANH VÀ BẢO TOÀN CÂU KHÓA (P0-B)
+# ==============================================================================
+def test_diarization_handles_missing_or_silent_audio_without_fake_noise_and_preserves_locked():
+    from src.ai_engines.speaker_diarization import SpeakerDiarizationCoordinator, ConfidenceLevel
+    from src.ai_engines.tts_engine import SubtitleBlock
+
+    b1 = SubtitleBlock(index=1, start_time="00:00:01,000", end_time="00:00:03,000", text="Câu 1 đã khóa")
+    b1.speaker = "Giọng Đã Khóa"
+    b1.is_speaker_locked = True
+    b1.confidence_level = ConfidenceLevel.HIGH.value
+
+    b2 = SubtitleBlock(index=2, start_time="00:00:04,000", end_time="00:00:06,000", text="Câu 2 bình thường")
+    b3 = SubtitleBlock(index=3, start_time="00:00:07,000", end_time="00:00:07,200", text="Câu 3 quá ngắn")
+
+    blocks = [b1, b2, b3]
+    coordinator = SpeakerDiarizationCoordinator(model_path="", allow_mock=True)
+
+    # Trường hợp 1: Tệp video/âm thanh không tồn tại -> không được sinh nhiễu giả lập
+    profiles = coordinator.process_video_subtitles(
+        video_path="tep_khong_ton_tai.wav",
+        blocks=blocks,
+    )
+    assert profiles == {}
+    # b1 không bị đổi
+    assert b1.speaker == "Giọng Đã Khóa"
+    assert b1.confidence_level == ConfidenceLevel.HIGH.value
+    # b2 và b3 được đánh dấu Chưa xác định / unassigned
+    assert b2.speaker == "Chưa xác định"
+    assert b2.confidence_level == ConfidenceLevel.UNASSIGNED.value
+    assert b3.speaker == "Chưa xác định"
+    assert b3.confidence_level == ConfidenceLevel.UNASSIGNED.value
+
+
+# ==============================================================================
+# 18. KIỂM THỬ TUẦN TỰ HÓA VRAM GPU VÀ TRÍCH XUẤT MẪU GIỌNG NHÂN VẬT (P1)
+# ==============================================================================
+def test_vram_sequencing_diarization_before_tts_load_and_sample_extraction(tmp_path):
+    from src.ai_engines.tts_engine import TTSEngine, SubtitleBlock
+
+    call_order = []
+
+    test_wav = str(tmp_path / "interview.wav")
+    sf.write(test_wav, _make_sine_wave(6.0, 16000), 16000)
+
+    engine = TTSEngine(
+        multi_speaker_mode="auto_video_cluster",
+        voice_prompt_cache_dir=str(tmp_path / "prompts"),
+    )
+
+    original_load = engine.load_model
+    original_detect = engine.detect_speakers_from_video
+
+    def mock_detect(*args, **kwargs):
+        call_order.append(("detect_speakers", engine.model is None))
+        return original_detect(*args, **kwargs)
+
+    def mock_load(*args, **kwargs):
+        call_order.append(("load_model", True))
+        # Không tải model thật trong unit test
+        engine.sample_rate = 24000
+
+    engine.detect_speakers_from_video = mock_detect
+    engine.load_model = mock_load
+
+    b1 = SubtitleBlock(index=1, start_time="00:00:01,000", end_time="00:00:03,000", text="Người 1 nói")
+    b2 = SubtitleBlock(index=2, start_time="00:00:03,500", end_time="00:00:05,500", text="Người 2 nói")
+
+    out_wav = str(tmp_path / "output.wav")
+    # Thay thế generate_single để không nạp mô hình thật
+    engine.generate_single = lambda *a, **k: np.zeros(24000, dtype=np.float32)
+
+    report = engine.synthesize_blocks(
+        blocks=[b1, b2],
+        total_duration=6.0,
+        output_path=out_wav,
+        video_path=test_wav,
+    )
+
+    # Kiểm tra thứ tự tuần tự: detect_speakers phải được gọi TRƯỚC load_model
+    # và tại thời điểm detect_speakers, engine.model phải là None (chưa nạp OmniVoice vào VRAM)
+    action_names = [item[0] for item in call_order]
+    assert "detect_speakers" in action_names
+    assert "load_model" in action_names
+    idx_detect = action_names.index("detect_speakers")
+    idx_load = action_names.index("load_model")
+    assert idx_detect < idx_load, "Nhận diện người nói ONNX phải chạy và hoàn tất TRƯỚC KHI nạp OmniVoice TTS lên GPU!"
+    assert call_order[idx_detect][1] is True, "Tại thời điểm nhận diện người nói, mô hình OmniVoice TTS phải chưa được nạp vào VRAM!"
+
+    # Kiểm tra trích xuất mẫu giọng cho nhân vật
+    assert len(engine.speaker_profiles) >= 1
+    for spk_name, prof in engine.speaker_profiles.items():
+        ref_path = prof.get("ref_audio_path")
+        assert ref_path and os.path.exists(ref_path), f"Mẫu giọng nhân vật cho {spk_name} phải được lưu thành tệp thực tế"
+
+
+# ==============================================================================
+# 19. KIỂM THỬ ĐỒNG BỘ PHÂN VAI, BỘ LỌC PHỤ ĐỀ VÀ THIẾT LẬP TỐC ĐỘ (P2)
+# ==============================================================================
+def test_casting_table_sync_and_subtitle_filter():
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.tts_engine import SubtitleBlock
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+
+    # Kiểm tra dải tốc độ từ 0.8 đến 1.5
+    assert ui.spin_speed.minimum() >= 0.8
+    assert ui.spin_speed.maximum() <= 1.5
+
+    # Thiết lập dữ liệu phụ đề và hồ sơ nhân vật
+    ui.subtitle_blocks = [
+        SubtitleBlock(index=1, start_time="00:00:01,000", end_time="00:00:02,000", text="Đoạn 1", speaker="Người nói 1"),
+        SubtitleBlock(index=2, start_time="00:00:03,000", end_time="00:00:04,000", text="Đoạn 2", speaker="Người nói 2"),
+    ]
+    ui.subtitle_blocks[0].confidence_level = "high"
+    ui.subtitle_blocks[1].confidence_level = "review_needed"
+
+    ui.speaker_profiles = {
+        "Người nói 1": {"speaker_id": "spk_0", "count": 1, "confidence": "high"},
+        "Người nói 2": {"speaker_id": "spk_1", "count": 1, "confidence": "review_needed"},
+    }
+
+    ui._update_casting_table()
+    ui._populate_subtitle_table()
+
+    # Kiểm tra có bộ lọc phụ đề
+    assert hasattr(ui, "combo_sub_filter")
+
+    # Khi lọc "Cần rà soát", hàng 0 phải ẩn và hàng 1 phải hiện
+    ui.combo_sub_filter.setCurrentText("Cần rà soát")
+    assert ui.sub_table.isRowHidden(0) is True
+    assert ui.sub_table.isRowHidden(1) is False
+
+    # Khi lọc "Tất cả câu thoại", cả 2 hàng phải hiện
+    ui.combo_sub_filter.setCurrentText("Tất cả câu thoại")
+    assert ui.sub_table.isRowHidden(0) is False
+    assert ui.sub_table.isRowHidden(1) is False
+
+    # Thử đổi tên nhân vật trong casting_table hàng 0 từ "Người nói 1" thành "Đạo Diễn Nam"
+    item = ui.casting_table.item(0, 1)
+    assert item is not None
+    item.setText("Đạo Diễn Nam")
+    ui._on_casting_table_item_changed(item)
+
+    # Hồ sơ và câu phụ đề phải được cập nhật đồng bộ sang tên mới
+    assert "Đạo Diễn Nam" in ui.speaker_profiles
+    assert "Người nói 1" not in ui.speaker_profiles
+    assert ui.subtitle_blocks[0].speaker == "Đạo Diễn Nam"
+
+
+
+
 
 
 
