@@ -2,7 +2,7 @@
 
 - **Mã tính năng**: `auto-voice-casting`
 - **Ngày lập**: 13/10/2026
-- **Trạng thái**: Đã phê duyệt bản thiết kế, chuẩn bị lập kế hoạch thực thi
+- **Trạng thái**: Đã cập nhật hỗ trợ tăng tốc đồ họa NVIDIA GeForce RTX 4050 Laptop GPU và quản lý tuần tự bộ nhớ đồ họa
 
 ---
 
@@ -10,15 +10,18 @@
 
 Hệ thống lồng tiếng hiện tại trong Sakai Studio hỗ trợ chế độ đa người nói, tạo mẫu nhái giọng và tái sử dụng cấu hình giọng. Tuy nhiên, cơ chế nhận diện người nói hiện tại chỉ dựa trên ước tính cao độ tần số cơ bản F0 và đặc trưng phổ thô sơ. Điều này dẫn đến nguy cơ nhận diện nhầm lẫn khi người nói thay đổi cảm xúc, nói to nhỏ, hoặc khi hai người có cao độ gần nhau.
 
-Tính năng **Tự động phân vai và chọn giọng** nâng cấp toàn diện khả năng phân biệt người nói bằng kiến trúc lai hai tầng, chuẩn hóa hồ sơ giọng của từng nhân vật, tự động gán giọng nhất quán qua mọi câu thoại và quy hoạch lại giao diện trang Lồng Tiếng theo quy trình 5 bước trực quan.
+Tính năng **Tự động phân vai và chọn giọng** nâng cấp toàn diện khả năng phân biệt người nói bằng kiến trúc lai hai tầng, tối ưu hóa tăng tốc trên bộ xử lý đồ họa NVIDIA GeForce RTX 4050 Laptop GPU (dung lượng 6 gigabyte), chuẩn hóa hồ sơ giọng của từng nhân vật, tự động gán giọng nhất quán qua mọi câu thoại và quy hoạch lại giao diện trang Lồng Tiếng theo quy trình 5 bước trực quan.
 
 ---
 
 ## 2. Kiến Trúc Kỹ Thuật Hai Tầng
 
-### 2.1 Tầng 1: Trích Xuất Đặc Trưng Giọng Nói Ngoại Tuyến (Mặc Định)
+### 2.1 Tầng 1: Trích Xuất Đặc Trưng Giọng Nói Ngoại Tuyến (Mặc Định Ưu Tiên GPU)
 - **Tệp nguồn mới**: `src/ai_engines/speaker_embedding_onnx.py`
-- **Bộ máy thực thi**: ONNX Runtime chạy trên vi xử lý trung tâm, hoàn toàn ngoại tuyến, không yêu cầu kết nối mạng và không chiếm dụng bộ nhớ đồ họa trước khi lồng tiếng.
+- **Bộ máy thực thi**: ONNX Runtime ưu tiên `CUDAExecutionProvider` trên bộ xử lý đồ họa NVIDIA GeForce RTX 4050 Laptop GPU. Khi môi trường chưa có gói thư viện đồ họa hoặc phát sinh lỗi phần cứng, hệ thống thông báo trạng thái rõ ràng và hỗ trợ chuyển sang `CPUExecutionProvider` (không âm thầm chuyển đổi khi người dùng yêu cầu bắt buộc dùng GPU).
+- **Cấu hình tài nguyên bộ nhớ đồ họa**:
+  - Giới hạn bộ cấp phát bộ nhớ đồ họa của ONNX Runtime ở mức 512 đến 768 megabyte (`gpu_mem_limit: 768 * 1024 * 1024`).
+  - Xử lý theo lô nhỏ (mặc định 8 câu thoại mỗi lượt) để tối ưu hóa thông lượng và kiểm soát mức tiêu thụ bộ nhớ đồ họa.
 - **Mô hình mục tiêu**:
   - Mô hình chính: CAM++ ONNX (kích thước khoảng 28.3 megabyte, đầu ra vector đặc trưng 192 chiều).
   - Mô hình đối chứng: ECAPA-TDNN ONNX (kích thước khoảng 83.4 megabyte, 192 chiều).
@@ -30,7 +33,7 @@ Tính năng **Tự động phân vai và chọn giọng** nâng cấp toàn di�
 
 ### 2.2 Tầng 2: Phân Đoạn Người Nói Chuyên Sâu (Tùy Chọn Nâng Cao)
 - **Tệp nguồn mới**: `src/ai_engines/speaker_diarization.py`
-- Cung cấp giao diện chuẩn hóa `SpeakerDiarizationEngine` làm cầu nối chung.
+- Cung cấp giao diện chuẩn hóa `SpeakerDiarizationEngine` làm cầu nối chung giữa tầng trích xuất vector đặc trưng ONNX và pipeline phân đoạn người nói.
 - Cho phép nạp pipeline phân đoạn người nói Pyannote chạy ngoại tuyến từ thư mục mô hình cục bộ khi người dùng kích hoạt chế độ chuyên sâu trong phần cài đặt nâng cao.
 - Hiển thị 4 trạng thái mô hình rõ ràng trên giao diện:
   1. Chưa cài đặt mô hình nâng cao.
@@ -107,13 +110,18 @@ Quy hoạch lại `OmniVoiceInterface` tại `src/desktop/ui/omnivoice_interface
   - Tốc độ đọc (0.8x đến 1.5x).
   - Tỷ lệ âm lượng video gốc và âm lượng giọng lồng tiếng.
   - Chế độ tự động hạ âm lượng video gốc khi có giọng đọc.
-- Ngăn **Cài đặt nâng cao** có thể thu gọn: Chứa toàn bộ các tham số kỹ thuật khuếch tán, số bước khử nhiễu, nhiệt độ lấy mẫu và lựa chọn bộ xử lý đồ họa.
+- Ngăn **Cài đặt nâng cao** có thể thu gọn:
+  - Tùy chọn phần cứng nhận diện người nói:
+    - *Ưu tiên NVIDIA RTX 4050 Laptop GPU (Khuyến nghị)*: Chạy CUDA. Báo lỗi và cho phép chuyển CPU nếu CUDA gặp sự cố.
+    - *Chế độ vi xử lý trung tâm*: Chạy hoàn toàn trên CPU.
+    - *Phân đoạn người nói chuyên sâu*: Kích hoạt mô hình Pyannote cục bộ.
+  - Các tham số kỹ thuật khuếch tán, số bước khử nhiễu, nhiệt độ lấy mẫu.
 
 ### Bước 5: Kiểm Tra Chất Lượng Và Xuất Video
 - Bảng kiểm tra tự động trước khi xuất:
   - Báo cáo số câu chưa gán nhân vật.
   - Cảnh báo các câu có thời lượng đọc vượt quá giới hạn mốc thời gian phụ đề.
-- Thanh tiến trình tổng hợp chi tiết theo từng câu thoại.
+- Thanh tiến trình chi tiết: Hiển thị cụ thể thiết bị đang chạy (ví dụ: `Nhận diện giọng · NVIDIA RTX 4050 · CUDA`). Nếu CUDA khởi tạo thất bại, cập nhật trạng thái thực tế chính xác.
 - Nút hủy an toàn giải phóng tiến trình nền.
 - Nút mở tệp video đầu ra và mở thư mục chứa tệp sau khi hoàn tất.
 
@@ -121,18 +129,40 @@ Quy hoạch lại `OmniVoiceInterface` tại `src/desktop/ui/omnivoice_interface
 
 ---
 
-## 5. Quản Lý Tài Nguyên Và Tối Ưu Hiệu Năng
+## 5. Quản Lý Tuần Tự Bộ Nhớ Đồ Họa Trên NVIDIA RTX 4050 (6 GB)
 
-1. **Bộ nhớ đồ họa**:
-   - Bước nhận diện và trích xuất vector đặc trưng chạy hoàn toàn trên vi xử lý trung tâm qua ONNX Runtime CPU.
-   - Chỉ nạp mô hình tổng hợp giọng nói lên bộ xử lý đồ họa khi người dùng nhấn nghe thử hoặc bắt đầu xuất video ở Bước 5.
-2. **Bộ nhớ đệm thông minh**:
-   - Lưu trữ các vector đặc trưng và tệp âm thanh mẫu trong thư mục tạm có gắn mã băm của tệp video nguồn.
-   - Khi người dùng đổi giọng của Người nói 2, hệ thống chỉ hủy bộ nhớ đệm âm thanh của Người nói 2, không phải tổng hợp lại âm thanh của các nhân vật khác.
+Nhằm triệt tiêu nguy cơ tràn bộ nhớ đồ họa 6 gigabyte, toàn bộ hệ thống tuân thủ chu trình thực thi tuần tự 3 giai đoạn:
+
+```mermaid
+sequenceDiagram
+    participant User as Người Dùng
+    participant Diarize as Worker Nhận Diện (GPU ONNX)
+    participant VRAM as Bộ Nhớ Đồ Họa (RTX 4050)
+    participant TTS as Worker Lồng Tiếng (OmniVoice)
+
+    User->>Diarize: Kích hoạt nhận diện người nói
+    Diarize->>VRAM: Nạp CAM++ (Giới hạn 768 MiB)
+    Diarize->>Diarize: Xử lý lô 8 câu thoại
+    Diarize->>VRAM: Đóng Session ONNX & Giải phóng VRAM
+    Note over Diarize,VRAM: Bộ nhớ đồ họa được thu hồi hoàn toàn
+    User->>TTS: Nghe thử hoặc Xuất video lồng tiếng
+    TTS->>VRAM: Nạp mô hình OmniVoice GPU
+    TTS->>TTS: Tổng hợp giọng đọc
+    TTS->>VRAM: Giải phóng VRAM sau khi hoàn tất
+```
+
+1. **Giai đoạn A — Nhận diện giọng nói**:
+   - Nạp mô hình CAM++ ONNX trên CUDA với giới hạn bộ cấp phát 768 MiB.
+   - Xử lý trích xuất vector đặc trưng theo từng lô 8 câu và lưu trữ vào bộ nhớ đệm.
+   - Nếu kích hoạt tách giọng Demucs, bước tách giọng chạy trước và giải phóng bộ nhớ đồ họa trước khi bước nhận diện bắt đầu.
+2. **Giai đoạn B — Thu hồi tài nguyên triệt để**:
+   - Đóng phiên làm việc ONNX, hủy bỏ tham chiếu mô hình và dọn dẹp bộ nhớ trước khi chuyển sang bước tổng hợp giọng.
+3. **Giai đoạn C — Tổng hợp giọng nói OmniVoice**:
+   - Nạp mô hình tổng hợp giọng nói lên bộ xử lý đồ họa khi người dùng bấm nghe thử giọng hoặc bấm xuất video ở Bước 5.
 
 ---
 
-## 6. Kế Hoạch Kiểm Thử Tự Động
+## 6. Kế Hoạch Kiểm Thử Tự Động Toàn Diện
 
 Thực thi bộ kiểm thử trong `test/test_omnivoice_pipeline.py`:
 1. `test_onnx_speaker_embedding_extraction`: Kiểm tra trích xuất vector đặc trưng với kích thước chuẩn 192 chiều.
@@ -140,3 +170,7 @@ Thực thi bộ kiểm thử trong `test/test_omnivoice_pipeline.py`:
 3. `test_short_and_silent_segments_marked_unassigned`: Đảm bảo các đoạn dưới 0.3 giây được đánh dấu Chưa xác định, không gán bừa vào cụm lân cận.
 4. `test_ui_wizard_preserves_state_on_backward_navigation`: Kiểm tra việc điều hướng qua lại giữa các bước không làm mất nhãn nhân vật và danh sách phụ đề.
 5. `test_pre_export_quality_checks_and_warnings`: Xác minh các cảnh báo trước khi xuất hoạt động chính xác khi còn câu chưa có nhân vật.
+6. `test_cuda_provider_detection_and_fallback`: Kiểm tra phát hiện nhà cung cấp CUDA và cơ chế hiển thị thông báo chuyển đổi CPU minh bạch.
+7. `test_gpu_memory_released_before_tts`: Xác minh phiên làm việc nhận diện được giải phóng hoàn toàn trước khi nạp mô hình lồng tiếng.
+8. `test_onnx_batch_oom_recovery`: Xác minh cơ chế giảm kích thước lô hoặc báo lỗi an toàn khi vượt ngưỡng bộ nhớ, không làm treo giao diện.
+9. `test_cuda_and_cpu_embedding_consistency`: Kiểm tra độ đồng nhất của vector đặc trưng trích xuất giữa môi trường CUDA và CPU trong sai số cho phép.
