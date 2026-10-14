@@ -1118,6 +1118,86 @@ def test_process_video_subtitles_returns_character_voice_profiles(tmp_path):
         assert os.path.exists(prof.source_audio_path)
 
 
+def test_profile_prompt_pre_initialization_and_failover(tmp_path):
+    """
+    Kiểm tra khởi tạo trước và khóa vĩnh viễn prompt âm sắc cho từng nhân vật:
+    - Trước khi tổng hợp câu thoại, các nhân vật có tệp mẫu hợp lệ phải được tạo trước VoiceClonePrompt.
+    - Với nhân vật tạo prompt thất bại, hệ thống tự động khóa sang preset tiếng Việt dự phòng,
+      tất cả các câu của nhân vật đó đều dùng chung preset dự phòng này.
+    """
+    from src.ai_engines.tts_engine import TTSEngine, SubtitleBlock, VIETNAMESE_VOICE_CATALOG
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    engine = TTSEngine(auto_extract_ref=False, allow_mock=True)
+    engine.load_model = MagicMock()
+    engine.model = MagicMock()
+
+    mock_prompt = MagicMock()
+    def fake_get_or_create(audio_input, cache_key=None, ref_text=None):
+        if "speaker_01" in str(audio_input) or (cache_key and "speaker_01" in cache_key):
+            return mock_prompt
+        # speaker_02 lỗi
+        return None
+
+    engine._get_or_create_prompt_for_audio = MagicMock(side_effect=fake_get_or_create)
+
+    ref_1 = str(tmp_path / "speaker_01_ref.wav")
+    ref_2 = str(tmp_path / "speaker_02_ref.wav")
+    sf.write(ref_1, _make_sine_wave(1.0, 16000), 16000)
+    sf.write(ref_2, _make_sine_wave(1.0, 16000), 16000)
+
+    prof1 = CharacterVoiceProfile(
+        speaker_id="speaker_01",
+        display_name="Nhân vật 1",
+        source_audio_path=ref_1,
+        method="clone",
+        status="locked",
+    )
+    prof2 = CharacterVoiceProfile(
+        speaker_id="speaker_02",
+        display_name="Nhân vật 2",
+        source_audio_path=ref_2,
+        method="clone",
+        status="locked",
+    )
+    engine.speaker_profiles = {"Nhân vật 1": prof1, "Nhân vật 2": prof2}
+
+    blocks = [
+        SubtitleBlock(1, "00:00:01,000", "00:00:03,000", "Câu 1 của nhân vật 1", speaker="Nhân vật 1"),
+        SubtitleBlock(2, "00:00:03,500", "00:00:05,000", "Câu 2 của nhân vật 2", speaker="Nhân vật 2"),
+        SubtitleBlock(3, "00:00:05,500", "00:00:07,000", "Câu 3 của nhân vật 1", speaker="Nhân vật 1"),
+        SubtitleBlock(4, "00:00:07,500", "00:00:09,000", "Câu 4 của nhân vật 2", speaker="Nhân vật 2"),
+    ]
+
+    gen_calls = []
+    def fake_generate_single(text, **kwargs):
+        gen_calls.append((text, kwargs))
+        return _make_sine_wave(1.0, engine.sample_rate)
+
+    engine.generate_single = MagicMock(side_effect=fake_generate_single)
+
+    out_wav = str(tmp_path / "out_dub.wav")
+    report = engine.synthesize_blocks(blocks, total_duration=10.0, output_path=out_wav)
+
+    # Xác nhận trước khi tổng hợp, prompt của speaker 1 đã được tạo và lưu cache
+    assert "character_Nhân vật 1" in engine._speaker_prompt_cache
+    assert engine._speaker_prompt_cache["character_Nhân vật 1"] is mock_prompt
+
+    # Nhân vật 2 tạo thất bại nên phải có preset/instruct được khóa
+    assert hasattr(engine, "_speaker_instruct_cache")
+    assert "Nhân vật 2" in engine._speaker_instruct_cache
+    fallback_instruct = engine._speaker_instruct_cache["Nhân vật 2"]
+    assert fallback_instruct != ""
+
+    # Kiểm tra tất cả các câu của nhân vật 1 đều nhận đúng mock_prompt
+    assert gen_calls[0][1]["override_prompt"] is mock_prompt
+    assert gen_calls[2][1]["override_prompt"] is mock_prompt
+
+    # Kiểm tra tất cả các câu của nhân vật 2 đều nhận đúng cùng một fallback_instruct đã khóa
+    assert gen_calls[1][1]["override_instruct"] == fallback_instruct
+    assert gen_calls[3][1]["override_instruct"] == fallback_instruct
+
+
 
 
 
