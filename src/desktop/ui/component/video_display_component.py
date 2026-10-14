@@ -783,7 +783,7 @@ class VideoDisplayComponent(QWidget):
 
     def clear_freehand_strokes(self):
         """Xóa tất cả các nét cọ vẽ tự do"""
-        self.freehand_strokes.clear()
+        self.freehand_strokes = []
         self.current_stroke = None
         self.update_preview_with_rect()
 

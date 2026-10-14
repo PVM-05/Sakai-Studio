@@ -514,3 +514,34 @@ def test_task_queue_isolation_and_partial_warning_status():
     assert TaskStatus.WARNING.value == "Hoàn thành (Cần kiểm tra)"
     assert TaskOptions.TRACKING_REPORT.value == "tracking_report"
 
+
+def test_clear_freehand_strokes_persists_empty_list_to_task_options():
+    """
+    Xác minh khi bấm nút 'Xóa nét cọ':
+    1. Cấu hình TaskOptions.FREEHAND_STROKES của tác vụ đang chọn được cập nhật thành [].
+    2. Khi khởi chạy hàng đợi, danh sách nét cọ truyền vào options['strokes'] là rỗng,
+       không bị khôi phục lại các nét cọ cũ đã lưu trước đó.
+    """
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.home_interface import HomeInterface
+    from src.desktop.ui.component.task_list_component import TaskItem, TaskOptions
+
+    app = QApplication.instance() or QApplication([])
+    ui = HomeInterface()
+
+    # Tạo tác vụ giả lập có chứa nét cọ cũ
+    ui.task_list_component.add_task("dummy.mp4")
+    ui.task_list_component.select_task(0)
+    old_strokes = [{"radius": 0.02, "points": [(10, 10), (20, 20)], "is_eraser": False}]
+    ui.task_list_component.update_task_option(0, TaskOptions.FREEHAND_STROKES, old_strokes)
+    ui.video_display_component.freehand_strokes = list(old_strokes)
+
+    # Kích hoạt hành động xóa nét cọ
+    ui._handle_clear_brush_clicked()
+
+    # Xác minh nét cọ trong cả giao diện và cấu hình tác vụ đều đã thành rỗng
+    assert len(ui.video_display_component.freehand_strokes) == 0
+    saved_strokes = ui.task_list_component.get_task_option(0, TaskOptions.FREEHAND_STROKES, None)
+    assert saved_strokes == []
+
+

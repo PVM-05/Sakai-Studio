@@ -178,7 +178,7 @@ class HomeInterface(QWidget):
             self.video_display_component.red_mask_btn = self.setting_interface.red_mask_btn
             self.setting_interface.red_mask_btn.clicked.connect(self.video_display_component.toggle_red_mask)
         if hasattr(self.setting_interface, 'clear_brush_btn'):
-            self.setting_interface.clear_brush_btn.clicked.connect(self.video_display_component.clear_freehand_strokes)
+            self.setting_interface.clear_brush_btn.clicked.connect(self._handle_clear_brush_clicked)
         
         # Kết nối sự kiện bật/tắt công tắc Tự động (Tracking)
         if getattr(config, 'movingSubtitleTracking', None):
@@ -459,6 +459,14 @@ class HomeInterface(QWidget):
 
         if hasattr(self, 'video_display_component'):
             self.video_display_component.sync_audio_position(value)
+
+    def _handle_clear_brush_clicked(self):
+        """Xóa sạch nét cọ trên màn hình và lập tức đồng bộ danh sách rỗng vào tác vụ hiện tại"""
+        if hasattr(self, 'video_display_component'):
+            self.video_display_component.clear_freehand_strokes()
+        cur_idx = self.task_list_component.get_current_task_index()
+        if cur_idx >= 0:
+            self.task_list_component.update_task_option(cur_idx, TaskOptions.FREEHAND_STROKES, [])
 
     def _on_track_motion_clicked(self):
         if getattr(self, '_is_tracked', False):
@@ -1091,8 +1099,7 @@ class HomeInterface(QWidget):
             selected_idx = self.task_list_component.get_current_task_index()
             if selected_idx >= 0 and hasattr(self, 'video_display_component'):
                 cur_strokes = list(getattr(self.video_display_component, 'freehand_strokes', []))
-                if cur_strokes:
-                    self.task_list_component.update_task_option(selected_idx, TaskOptions.FREEHAND_STROKES, cur_strokes)
+                self.task_list_component.update_task_option(selected_idx, TaskOptions.FREEHAND_STROKES, cur_strokes)
 
             self._stop_event.clear()
             self.toggle_buttons_signal.emit(False)
