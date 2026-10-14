@@ -1522,6 +1522,265 @@ def test_audition_button_recovers_on_playback_end():
     assert ui._active_audition_button is None
 
 
+def test_synthesize_blocks_strictly_respects_preset_method_over_stale_clone_path(tmp_path):
+    """
+    Xác minh synthesize_blocks tôn trọng tuyệt đối phương pháp preset:
+    - Khi nhân vật được đặt method='preset', ngay cả khi hồ sơ còn source_audio_path hoặc _speaker_prompt_cache,
+      hệ thống bắt buộc phải truyền override_mode='design', xóa override_prompt và override_ref_audio,
+      và chỉ sử dụng override_instruct.
+    """
+    from unittest.mock import MagicMock
+    from src.ai_engines.tts_engine import TTSEngine, SubtitleBlock
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    engine = TTSEngine(mode="clone")
+    ref_audio = tmp_path / "stale_sample.wav"
+    ref_audio.write_bytes(b"RIFFdummydata")
+
+    prof = CharacterVoiceProfile(
+        speaker_id="spk_preset",
+        display_name="Nhân vật 1",
+        method="preset",
+        preset_name="Nam Thanh Niên",
+        voice_instruct="male, young adult, clear",
+        source_audio_path=str(ref_audio),
+    )
+    engine.speaker_profiles = {"Nhân vật 1": prof}
+    engine._speaker_prompt_cache["character_Nhân vật 1"] = MagicMock()
+
+    blocks = [
+        SubtitleBlock(
+            1,
+            "00:00:01,000",
+            "00:00:03,000",
+            "Xin chào các bạn",
+            speaker="Nhân vật 1",
+            voice_instruct="male, young adult, clear",
+            voice_ref_path="",
+        )
+    ]
+
+    captured_calls = []
+
+    def fake_generate_single(text, **kwargs):
+        captured_calls.append(kwargs)
+        return np.zeros(24000, dtype=np.float32)
+
+    engine.generate_single = fake_generate_single
+
+    out_wav = str(tmp_path / "out.wav")
+    engine.synthesize_blocks(blocks, 5.0, out_wav)
+
+    assert len(captured_calls) == 1
+    call = captured_calls[0]
+    assert call.get("override_mode") == "design"
+    assert call.get("override_prompt") is None
+    assert call.get("override_ref_audio") is None
+    assert call.get("override_instruct") == "male, young adult, clear"
+
+
+def test_compute_block_cache_path_includes_method_and_mtime(tmp_path):
+    """
+    Xác minh khóa bộ nhớ đệm checkpoint thay đổi khi phương pháp hoặc tệp mẫu thay đổi.
+    """
+    from src.ai_engines.tts_engine import TTSEngine
+
+    engine = TTSEngine(mode="clone")
+    engine.resume_cache_dir = str(tmp_path)
+
+    sample_wav = tmp_path / "sample.wav"
+    sample_wav.write_bytes(b"123")
+
+    p1 = engine._compute_block_cache_path(
+        0, "Xin chào", "Nhân vật 1", str(sample_wav), "", 2.0, method_or_mode="clone"
+    )
+    p2 = engine._compute_block_cache_path(
+        0, "Xin chào", "Nhân vật 1", "", "male voice", 2.0, method_or_mode="preset"
+    )
+
+    # Đổi phương pháp từ clone sang preset phải sinh ra khóa cache khác nhau
+    assert p1 != p2
+
+
+def test_assign_target_speaker_clears_stale_ref_audio_and_instruct():
+    """
+    Xác minh khi gán dòng sang nhân vật mới (dùng preset),
+    mẫu giọng cũ (voice_ref_path) của dòng đó phải được xóa hoàn toàn về rỗng.
+    """
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+    ui.subtitle_blocks = [
+        SubtitleBlock(
+            1,
+            "00:00:01,000",
+            "00:00:03,000",
+            "Câu của Nhân vật 1",
+            speaker="Nhân vật 1",
+            voice_ref_path="C:/voices/sample_1.wav",
+            voice_instruct="",
+        )
+    ]
+    ui._populate_subtitle_table()
+
+    # Thiết lập Nhân vật 2 là preset
+    ui.speaker_profiles = {
+        "Nhân vật 1": CharacterVoiceProfile("spk_1", "Nhân vật 1", source_audio_path="C:/voices/sample_1.wav", method="clone"),
+        "Nhân vật 2": CharacterVoiceProfile("spk_2", "Nhân vật 2", method="preset", voice_instruct="female voice"),
+    }
+
+    # Chọn Nhân vật 2 trong combo mục tiêu và bôi đen dòng 0
+    ui.combo_target_speaker.clear()
+    ui.combo_target_speaker.addItems(["Nhân vật 1", "Nhân vật 2"])
+    ui.combo_target_speaker.setCurrentText("Nhân vật 2")
+    ui.sub_table.selectRow(0)
+
+    ui._assign_target_speaker_to_selected_rows()
+
+    blk = ui.subtitle_blocks[0]
+    assert blk.speaker == "Nhân vật 2"
+    # Mẫu giọng clone cũ phải bị xóa sạch, không được giữ lại!
+    assert blk.voice_ref_path == ""
+    assert blk.voice_instruct == "female voice"
+    assert blk.is_speaker_locked is True
+
+
+def test_apply_preset_to_target_speaker_switches_method_and_clears_source_audio():
+    """
+    Xác minh khi bấm 'Áp dụng thiết kế giọng cho nhân vật',
+    hồ sơ nhân vật phải chuyển hẳn sang method='preset' và xóa sạch source_audio_path/ref_audio_path.
+    """
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+    prof = CharacterVoiceProfile(
+        "spk_1",
+        "Nhân vật 1",
+        source_audio_path="C:/voices/sample_1.wav",
+        method="clone",
+        status="locked",
+    )
+    ui.speaker_profiles = {"Nhân vật 1": prof}
+    ui.subtitle_blocks = [
+        SubtitleBlock(
+            1,
+            "00:00:01,000",
+            "00:00:03,000",
+            "Câu một",
+            speaker="Nhân vật 1",
+            voice_ref_path="C:/voices/sample_1.wav",
+        )
+    ]
+    ui._populate_subtitle_table()
+
+    ui.combo_target_speaker.clear()
+    ui.combo_target_speaker.addItem("Nhân vật 1")
+    ui.combo_target_speaker.setCurrentText("Nhân vật 1")
+
+    # Chọn một preset giọng
+    first_preset = ui.combo_speaker_voice_preset.itemText(0)
+    ui.combo_speaker_voice_preset.setCurrentText(first_preset)
+
+    ui._apply_preset_to_target_speaker()
+
+    p = ui.speaker_profiles["Nhân vật 1"]
+    assert p.method == "preset"
+    assert p.source_audio_path == ""
+    assert getattr(p, "ref_audio_path", "") == ""
+    # Dòng phụ đề cũng phải xóa sạch voice_ref_path
+    assert ui.subtitle_blocks[0].voice_ref_path == ""
+    assert ui.subtitle_blocks[0].voice_instruct != ""
+
+
+def test_detect_speakers_from_srt_text_strips_prefix_clears_ref_and_preserves_locked():
+    """
+    Xác minh detect_speakers_from_srt_text:
+    - Loại bỏ tiền tố tên người nói khỏi văn bản (để TTS không phát âm tên người nói).
+    - Xóa voice_ref_path cũ khỏi các dòng vừa phân vai.
+    - Bảo toàn các dòng đã khóa (is_speaker_locked=True).
+    - Thiết lập method='preset' cho các hồ sơ được nhận diện.
+    """
+    from src.ai_engines.tts_engine import TTSEngine, SubtitleBlock
+
+    engine = TTSEngine(mode="clone")
+    b1 = SubtitleBlock(
+        1,
+        "00:00:01,000",
+        "00:00:03,000",
+        "[Nam]: Chào mọi người!",
+        voice_ref_path="C:/old_stale_ref.wav",
+    )
+    b2 = SubtitleBlock(
+        2,
+        "00:00:03,500",
+        "00:00:05,000",
+        "Em chào anh ạ",
+        speaker="Nữ Chính",
+        voice_instruct="female sweet",
+        is_speaker_locked=True,
+    )
+
+    profiles = engine.detect_speakers_from_srt_text([b1, b2])
+
+    # Block 1 phải được loại bỏ tiền tố [Nam]:
+    assert b1.text == "Chào mọi người!"
+    assert b1.speaker == "Người nói 1"
+    # Mẫu giọng clone cũ phải bị xóa vì phân vai từ SRT dùng preset
+    assert b1.voice_ref_path == ""
+
+    # Block 2 đã khóa phải giữ nguyên
+    assert b2.speaker == "Nữ Chính"
+    assert b2.voice_instruct == "female sweet"
+    assert b2.is_speaker_locked is True
+
+    # Hồ sơ tạo ra phải mang method='preset'
+    assert profiles["Người nói 1"]["method"] == "preset"
+
+
+def test_character_overview_card_marks_review_needed_even_with_sample(tmp_path):
+    """
+    Xác minh thẻ nhân vật phân biệt chất lượng nhận diện:
+    - Nếu status='review_needed', ngay cả khi có tệp mẫu WAV hợp lệ,
+      thẻ vẫn phải hiển thị huy hiệu 'Cần kiểm tra' và chi tiết 'Mẫu giọng cần rà soát'.
+    """
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+
+    valid_wav = tmp_path / "valid_sample.wav"
+    valid_wav.write_bytes(b"RIFFheaderdata")
+
+    ui.speaker_profiles = {
+        "Nhân vật Cần Rà Soát": CharacterVoiceProfile(
+            "spk_rv",
+            "Nhân vật Cần Rà Soát",
+            source_audio_path=str(valid_wav),
+            method="clone",
+            status="review_needed",
+        )
+    }
+    ui.is_speakers_detected = True
+    ui.subtitle_blocks = [
+        SubtitleBlock(1, "00:00:01,000", "00:00:03,000", "Xin chào", speaker="Nhân vật Cần Rà Soát")
+    ]
+
+    ui._update_character_profiles_overview()
+
+    assert len(ui._character_cards) == 1
+    card_info = ui._character_cards[0]
+    assert card_info["status"] == "Cần kiểm tra"
+    assert card_info["detail"] == "Mẫu giọng cần rà soát"
+
+
 
 
 

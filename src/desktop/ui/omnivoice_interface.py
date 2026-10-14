@@ -1736,6 +1736,10 @@ class OmniVoiceInterface(ScrollArea):
                 prof.preset_name = matching_preset
                 prof.voice_instruct = ins
                 prof.status = "locked"
+                prof.custom_audio_path = ""
+                prof.voice_clone_prompt_path = ""
+                if hasattr(prof, "ref_audio_path"):
+                    setattr(prof, "ref_audio_path", "")
             else:
                 prof["method"] = "preset"
                 prof["preset_name"] = matching_preset
@@ -1743,6 +1747,8 @@ class OmniVoiceInterface(ScrollArea):
                 prof["voice_instruct"] = ins
                 prof["instruct"] = ins
                 prof["status"] = "locked"
+                prof["ref_audio_path"] = ""
+                prof["prompt"] = None
 
             for blk in self.subtitle_blocks:
                 if getattr(blk, "speaker", "") == spk_name:
@@ -1751,6 +1757,8 @@ class OmniVoiceInterface(ScrollArea):
                     blk.is_speaker_locked = True
 
         self._populate_subtitle_table()
+        self._update_casting_table()
+        self._update_character_profiles_overview()
 
     def _choose_custom_reference_audio(self, spk_name: str):
         """Cho phép người dùng chọn tệp âm thanh mẫu từ máy tính cho nhân vật."""
@@ -1949,13 +1957,22 @@ class OmniVoiceInterface(ScrollArea):
             has_valid_ref = bool(ref_audio and os.path.exists(ref_audio))
             has_valid_ins = bool(voice_ins)
 
-            # Phân biệt rõ ba trạng thái theo đúng yêu cầu kiểm thử
+            # Phân biệt rõ các trạng thái theo độ tin cậy và sự sẵn sàng của mẫu giọng
+            is_review_needed = (status_val in ("review_needed", "unassigned"))
+            if hasattr(prof, "high_confidence_ratio") and getattr(prof, "high_confidence_ratio", 1.0) < 0.7:
+                is_review_needed = True
+
             if method == "clone":
-                if has_valid_ref:
+                if has_valid_ref and not is_review_needed:
                     type_text = "Nhân bản giọng từ video"
                     detail_text = "Mẫu giọng đã tạo"
                     badge_text = "Sẵn sàng"
                     badge_bg = "#107c41"
+                elif has_valid_ref and is_review_needed:
+                    type_text = "Nhân bản giọng từ video"
+                    detail_text = "Mẫu giọng cần rà soát"
+                    badge_text = "Cần kiểm tra"
+                    badge_bg = "#d83b01"
                 else:
                     type_text = "Nhân bản giọng chưa có mẫu"
                     detail_text = "Thiếu tệp âm thanh mẫu từ video"
@@ -2752,9 +2769,30 @@ class OmniVoiceInterface(ScrollArea):
 
         if target_spk not in self.speaker_profiles:
             self.speaker_profiles[target_spk] = {"speaker_id": target_spk, "count": 0}
-        self.speaker_profiles[target_spk]["instruct"] = instruct_val
-        self.speaker_profiles[target_spk]["ref_audio_path"] = ""
-        self.speaker_profiles[target_spk]["description"] = preset_label
+
+        prof = self.speaker_profiles[target_spk]
+        if hasattr(prof, "method"):
+            prof.method = "preset"
+            prof.preset_name = preset_label
+            prof.voice_instruct = instruct_val
+            prof.source_audio_path = ""
+            prof.custom_audio_path = ""
+            prof.voice_clone_prompt_path = ""
+            prof.status = "locked"
+            if hasattr(prof, "ref_audio_path"):
+                setattr(prof, "ref_audio_path", "")
+        else:
+            prof["method"] = "preset"
+            prof["preset_name"] = preset_label
+            prof["voice_preset"] = preset_label
+            prof["instruct"] = instruct_val
+            prof["voice_instruct"] = instruct_val
+            prof["ref_audio_path"] = ""
+            prof["source_audio_path"] = ""
+            prof["source_audio_sample"] = ""
+            prof["prompt"] = None
+            prof["description"] = preset_label
+            prof["status"] = "locked"
 
         updated = 0
         for blk in self.subtitle_blocks:
@@ -2762,11 +2800,14 @@ class OmniVoiceInterface(ScrollArea):
                 blk.speaker = target_spk
                 blk.voice_instruct = instruct_val
                 blk.voice_ref_path = ""
+                blk.is_speaker_locked = True
                 updated += 1
 
         if self.combo_multi_speaker_mode.currentIndex() == 0:
             self.combo_multi_speaker_mode.setCurrentIndex(4)  # Phân vai tùy chỉnh theo bảng
         self._populate_subtitle_table()
+        self._update_casting_table()
+        self._update_character_profiles_overview()
         InfoBar.success(
             "Đã cập nhật thiết kế giọng nhân vật",
             f"Đã gán '{preset_label}' cho {target_spk} ({updated} câu).",
@@ -2787,19 +2828,40 @@ class OmniVoiceInterface(ScrollArea):
 
         if target_spk not in self.speaker_profiles:
             self.speaker_profiles[target_spk] = {"speaker_id": target_spk, "count": 0}
-        self.speaker_profiles[target_spk]["ref_audio_path"] = filepath
-        self.speaker_profiles[target_spk]["description"] = os.path.basename(filepath)
+
+        prof = self.speaker_profiles[target_spk]
+        if hasattr(prof, "method"):
+            prof.method = "clone"
+            prof.source_audio_path = filepath
+            prof.custom_audio_path = filepath
+            prof.voice_instruct = ""
+            prof.status = "locked"
+            if hasattr(prof, "ref_audio_path"):
+                setattr(prof, "ref_audio_path", filepath)
+        else:
+            prof["method"] = "clone"
+            prof["source_audio_path"] = filepath
+            prof["ref_audio_path"] = filepath
+            prof["source_audio_sample"] = filepath
+            prof["custom_audio_path"] = filepath
+            prof["voice_instruct"] = ""
+            prof["description"] = os.path.basename(filepath)
+            prof["status"] = "locked"
 
         updated = 0
         for blk in self.subtitle_blocks:
             if (getattr(blk, "speaker", "") or "Người nói 1") == target_spk:
                 blk.speaker = target_spk
                 blk.voice_ref_path = filepath
+                blk.voice_instruct = ""
+                blk.is_speaker_locked = True
                 updated += 1
 
         if self.combo_multi_speaker_mode.currentIndex() == 0:
             self.combo_multi_speaker_mode.setCurrentIndex(4)
         self._populate_subtitle_table()
+        self._update_casting_table()
+        self._update_character_profiles_overview()
         InfoBar.success(
             "Đã gán tệp giọng mẫu cho nhân vật",
             f"{target_spk} sử dụng mẫu: {os.path.basename(filepath)} ({updated} câu).",
@@ -2815,21 +2877,34 @@ class OmniVoiceInterface(ScrollArea):
 
         target_spk = self.combo_target_speaker.currentText().strip()
         prof = self.speaker_profiles.get(target_spk, {})
-        ref_path = prof.get("ref_audio_path", "")
-        ins_val = prof.get("instruct", "") or DEFAULT_SPEAKER_PRESETS.get(target_spk, {}).get("instruct", "")
+        is_dict = isinstance(prof, dict)
+        method = (prof.get("method") if is_dict else getattr(prof, "method", "preset")) if prof else "preset"
+
+        if method == "clone":
+            ref_path = (prof.get("ref_audio_path") or prof.get("source_audio_path") if is_dict else (getattr(prof, "source_audio_path", "") or getattr(prof, "ref_audio_path", ""))) if prof else ""
+            ins_val = ""
+        else:
+            ref_path = ""
+            ins_val = (prof.get("voice_instruct") or prof.get("instruct") if is_dict else getattr(prof, "voice_instruct", "")) if prof else ""
+            if not ins_val:
+                preset_name = (prof.get("preset_name") if is_dict else getattr(prof, "preset_name", "")) if prof else ""
+                if preset_name in VIETNAMESE_VOICE_CATALOG:
+                    ins_val = VIETNAMESE_VOICE_CATALOG[preset_name].get("instruct", "")
+                elif target_spk in DEFAULT_SPEAKER_PRESETS:
+                    ins_val = DEFAULT_SPEAKER_PRESETS[target_spk].get("instruct", "")
 
         for r in selected_rows:
             if 0 <= r < len(self.subtitle_blocks):
                 blk = self.subtitle_blocks[r]
                 blk.speaker = target_spk
-                if ref_path:
-                    blk.voice_ref_path = ref_path
-                if ins_val:
-                    blk.voice_instruct = ins_val
+                blk.voice_ref_path = ref_path
+                blk.voice_instruct = ins_val
+                blk.is_speaker_locked = True
 
         if self.combo_multi_speaker_mode.currentIndex() == 0:
             self.combo_multi_speaker_mode.setCurrentIndex(4)
         self._populate_subtitle_table()
+        self._update_character_profiles_overview()
         InfoBar.success(
             "Đã gán nhân vật",
             f"Đã gán {len(selected_rows)} câu thoại đang chọn cho {target_spk}.",
@@ -3232,6 +3307,17 @@ class OmniVoiceInterface(ScrollArea):
         if state == QMediaPlayer.PlayingState:
             self.btn_play_pause_output.setText("Tạm Dừng")
             self.btn_play_pause_output.setIcon(FluentIcon.PAUSE)
+            if hasattr(self, "_active_audition_button") and self._active_audition_button:
+                self._active_audition_button.setEnabled(True)
+                self._active_audition_button.setText("Dừng Phát")
+                self._active_audition_button.setIcon(FluentIcon.PAUSE)
+        elif state == QMediaPlayer.PausedState:
+            self.btn_play_pause_output.setText("Tiếp Tục")
+            self.btn_play_pause_output.setIcon(FluentIcon.PLAY)
+            if hasattr(self, "_active_audition_button") and self._active_audition_button:
+                self._active_audition_button.setEnabled(True)
+                self._active_audition_button.setText("Tiếp Tục")
+                self._active_audition_button.setIcon(FluentIcon.PLAY)
         else:
             self.btn_play_pause_output.setText("Phát Nghe Thử")
             self.btn_play_pause_output.setIcon(FluentIcon.PLAY)
