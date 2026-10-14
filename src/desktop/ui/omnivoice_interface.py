@@ -54,6 +54,7 @@ from qfluentwidgets import (
     CheckBox,
     Pivot,
     Slider,
+    ToolButton,
 )
 
 from src.core.config import config, BASE_DIR
@@ -839,16 +840,16 @@ class OmniVoiceInterface(ScrollArea):
             "Mã Nhân Vật",
             "Tên Nhân Vật",
             "Số Câu Thoại",
-            "Giọng Gốc Video",
-            "Giọng Lồng Tiếng",
-            "Độ Tin Cậy",
+            "Mẫu Giọng Nguồn",
+            "Phương Pháp & Giọng",
+            "Trạng Thái",
             "Thao Tác",
         ])
         self.casting_table.setColumnWidth(0, 100)
         self.casting_table.setColumnWidth(1, 140)
-        self.casting_table.setColumnWidth(2, 100)
-        self.casting_table.setColumnWidth(3, 160)
-        self.casting_table.setColumnWidth(4, 200)
+        self.casting_table.setColumnWidth(2, 110)
+        self.casting_table.setColumnWidth(3, 190)
+        self.casting_table.setColumnWidth(4, 210)
         self.casting_table.setColumnWidth(5, 120)
         self.casting_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.Stretch)
         self.casting_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -1583,7 +1584,8 @@ class OmniVoiceInterface(ScrollArea):
 
         self.casting_table.setRowCount(len(speaker_map))
         for row, (spk_name, data) in enumerate(speaker_map.items()):
-            spk_id = self.speaker_profiles.get(spk_name, {}).get("speaker_id", f"spk_{row}")
+            prof_info = self.speaker_profiles.get(spk_name, {})
+            spk_id = prof_info.get("speaker_id", f"spk_{row}")
             item_id = QTableWidgetItem(spk_id)
             item_id.setFlags(item_id.flags() & ~Qt.ItemIsEditable)
             self.casting_table.setItem(row, 0, item_id)
@@ -1591,38 +1593,166 @@ class OmniVoiceInterface(ScrollArea):
             item_name = QTableWidgetItem(spk_name)
             self.casting_table.setItem(row, 1, item_name)
 
-            item_cnt = QTableWidgetItem(f"{data['count']} câu")
+            dur_val = data.get("total_duration") or prof_info.get("total_duration", 0.0)
+            dur_str = f" ({dur_val:.1f}s)" if dur_val > 0 else ""
+            item_cnt = QTableWidgetItem(f"{data['count']} câu{dur_str}")
             item_cnt.setFlags(item_cnt.flags() & ~Qt.ItemIsEditable)
             self.casting_table.setItem(row, 2, item_cnt)
 
-            ref_txt = os.path.basename(data["ref_audio"]) if data.get("ref_audio") else "Trích xuất từ video"
-            item_ref = QTableWidgetItem(ref_txt)
-            item_ref.setFlags(item_ref.flags() & ~Qt.ItemIsEditable)
-            self.casting_table.setItem(row, 3, item_ref)
+            # Cột 3: Mẫu Giọng Nguồn kèm nút chọn tệp ngoài
+            ref_path = data.get("ref_audio") or prof_info.get("source_audio_path") or prof_info.get("ref_audio_path") or ""
+            ref_name = os.path.basename(ref_path) if ref_path else "Trích từ video"
+            cell_widget_ref = QWidget(self.casting_table)
+            layout_ref = QHBoxLayout(cell_widget_ref)
+            layout_ref.setContentsMargins(4, 2, 4, 2)
+            layout_ref.setSpacing(4)
+            lbl_ref = BodyLabel(ref_name, cell_widget_ref)
+            lbl_ref.setToolTip(ref_path or "Chưa có tệp âm thanh mẫu")
+            btn_browse_ref = ToolButton(cell_widget_ref)
+            btn_browse_ref.setIcon(FluentIcon.FOLDER)
+            btn_browse_ref.setToolTip("Chọn tệp âm thanh mẫu khác từ máy tính")
+            btn_browse_ref.clicked.connect(lambda checked=False, s=spk_name: self._choose_custom_reference_audio(s))
+            layout_ref.addWidget(lbl_ref, 1)
+            layout_ref.addWidget(btn_browse_ref, 0)
+            self.casting_table.setCellWidget(row, 3, cell_widget_ref)
 
-            prof_info = self.speaker_profiles.get(spk_name, {})
-            preset_name = prof_info.get("voice_preset", "Giọng đọc mặc định")
-            item_preset = QTableWidgetItem(preset_name)
-            item_preset.setFlags(item_preset.flags() & ~Qt.ItemIsEditable)
-            self.casting_table.setItem(row, 4, item_preset)
+            # Cột 4: Phương Pháp & Giọng (ComboBox tương tác trực tiếp)
+            combo_method = ComboBox(self.casting_table)
+            combo_method.addItem("Nhân bản giọng từ video")
+            for preset_k in VIETNAMESE_VOICE_CATALOG.keys():
+                combo_method.addItem(preset_k)
 
-            conf_code = data.get("confidence", "high")
-            if conf_code == "high":
-                conf_str = "Độ tin cậy cao"
-            elif conf_code == "review_needed":
-                conf_str = "Cần kiểm tra"
+            curr_method = prof_info.get("method") or prof_info.get("assigned_strategy") or "clone"
+            curr_preset = prof_info.get("preset_name") or prof_info.get("voice_preset") or ""
+            if curr_method == "preset" and curr_preset in VIETNAMESE_VOICE_CATALOG:
+                combo_method.setCurrentText(curr_preset)
             else:
-                conf_str = "Chưa xác định"
-            item_conf = QTableWidgetItem(conf_str)
-            item_conf.setFlags(item_conf.flags() & ~Qt.ItemIsEditable)
-            self.casting_table.setItem(row, 5, item_conf)
+                combo_method.setCurrentText("Nhân bản giọng từ video")
 
+            combo_method.currentTextChanged.connect(
+                lambda txt, s=spk_name: self._on_character_method_changed(s, txt)
+            )
+            self.casting_table.setCellWidget(row, 4, combo_method)
+
+            # Cột 5: Trạng Thái
+            status_val = prof_info.get("status", "locked")
+            conf_code = data.get("confidence", "high")
+            if status_val == "locked":
+                status_str = "Đã khóa"
+            elif conf_code == "review_needed" or status_val == "review_needed":
+                status_str = "Cần kiểm tra"
+            else:
+                status_str = "Chưa xác định"
+            item_status = QTableWidgetItem(status_str)
+            item_status.setFlags(item_status.flags() & ~Qt.ItemIsEditable)
+            self.casting_table.setItem(row, 5, item_status)
+
+            # Cột 6: Thao Tác (Nghe Thử)
             btn_act = PushButton("Nghe Thử", self.casting_table)
             btn_act.setIcon(FluentIcon.VOLUME)
             btn_act.clicked.connect(lambda checked=False, s=spk_name: self._preview_character_voice(s))
             self.casting_table.setCellWidget(row, 6, btn_act)
 
         self.casting_table.blockSignals(False)
+
+    def _on_character_method_changed(self, spk_name: str, chosen_method_text: str):
+        """Đồng bộ khi người dùng đổi phương pháp tạo giọng hoặc chọn preset trên Bảng hồ sơ giọng."""
+        prof = self.speaker_profiles.get(spk_name)
+        if not prof:
+            return
+
+        matching_preset = None
+        if chosen_method_text in VIETNAMESE_VOICE_CATALOG:
+            matching_preset = chosen_method_text
+        elif chosen_method_text != "Nhân bản giọng từ video":
+            for k in VIETNAMESE_VOICE_CATALOG.keys():
+                if chosen_method_text.lower() in k.lower() or k.lower() in chosen_method_text.lower():
+                    matching_preset = k
+                    break
+
+        if chosen_method_text == "Nhân bản giọng từ video":
+            if hasattr(prof, "method"):
+                prof.method = "clone"
+                prof.status = "locked"
+                ref_path = prof.source_audio_path
+            else:
+                prof["method"] = "clone"
+                prof["status"] = "locked"
+                ref_path = prof.get("ref_audio_path") or prof.get("source_audio_sample") or prof.get("source_audio_path", "")
+
+            for blk in self.subtitle_blocks:
+                if getattr(blk, "speaker", "") == spk_name:
+                    blk.voice_ref_path = ref_path
+                    blk.voice_instruct = ""
+                    blk.is_speaker_locked = True
+        elif matching_preset:
+            ins = VIETNAMESE_VOICE_CATALOG[matching_preset]["instruct"]
+            if hasattr(prof, "method"):
+                prof.method = "preset"
+                prof.preset_name = matching_preset
+                prof.voice_instruct = ins
+                prof.status = "locked"
+            else:
+                prof["method"] = "preset"
+                prof["preset_name"] = matching_preset
+                prof["voice_preset"] = matching_preset
+                prof["voice_instruct"] = ins
+                prof["instruct"] = ins
+                prof["status"] = "locked"
+
+            for blk in self.subtitle_blocks:
+                if getattr(blk, "speaker", "") == spk_name:
+                    blk.voice_ref_path = ""
+                    blk.voice_instruct = ins
+                    blk.is_speaker_locked = True
+
+        self._populate_subtitle_table()
+
+    def _choose_custom_reference_audio(self, spk_name: str):
+        """Cho phép người dùng chọn tệp âm thanh mẫu từ máy tính cho nhân vật."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            f"Chọn tệp âm thanh mẫu cho {spk_name}",
+            "",
+            "Tệp âm thanh (*.wav *.mp3 *.m4a *.aac *.flac);;Tất cả tệp (*.*)",
+        )
+        if not file_path or not os.path.isfile(file_path):
+            return
+
+        prof = self.speaker_profiles.get(spk_name)
+        if not prof:
+            prof = {
+                "speaker_id": spk_name,
+                "display_name": spk_name,
+                "method": "clone",
+                "status": "locked",
+                "source_audio_path": file_path,
+            }
+            self.speaker_profiles[spk_name] = prof
+
+        if hasattr(prof, "source_audio_path"):
+            prof.source_audio_path = file_path
+            prof.custom_audio_path = file_path
+            prof.method = "clone"
+            prof.status = "locked"
+        else:
+            prof["source_audio_path"] = file_path
+            prof["source_audio_sample"] = file_path
+            prof["ref_audio_path"] = file_path
+            prof["ref_audio"] = file_path
+            prof["custom_audio_path"] = file_path
+            prof["method"] = "clone"
+            prof["status"] = "locked"
+
+        for blk in self.subtitle_blocks:
+            if getattr(blk, "speaker", "") == spk_name:
+                blk.voice_ref_path = file_path
+                blk.voice_instruct = ""
+                blk.is_speaker_locked = True
+
+        self._update_casting_table()
+        self._populate_subtitle_table()
+        InfoBar.success("Đã nạp mẫu giọng", f"Đã gán tệp âm thanh mẫu cho {spk_name}.", parent=self, duration=2500)
 
     def _on_casting_table_item_changed(self, item: QTableWidgetItem):
         """Đồng bộ khi người dùng chỉnh sửa trực tiếp tên nhân vật trên bảng phân vai."""
@@ -1645,8 +1775,12 @@ class OmniVoiceInterface(ScrollArea):
 
         if old_name and old_name != new_name:
             prof = self.speaker_profiles.pop(old_name)
-            prof["speaker_id"] = spk_id
-            prof["display_name"] = new_name
+            if hasattr(prof, "speaker_id"):
+                prof.speaker_id = spk_id
+                prof.display_name = new_name
+            else:
+                prof["speaker_id"] = spk_id
+                prof["display_name"] = new_name
             self.speaker_profiles[new_name] = prof
             for blk in self.subtitle_blocks:
                 if getattr(blk, "speaker", "") == old_name:
@@ -2219,7 +2353,23 @@ class OmniVoiceInterface(ScrollArea):
                 else:
                     blk.end_time = new_val
             elif col == 3:
-                blk.speaker = item.text().strip()
+                new_spk = item.text().strip()
+                blk.speaker = new_spk
+                prof = self.speaker_profiles.get(new_spk)
+                if prof:
+                    method = prof.get("method") or prof.get("assigned_strategy") or "clone"
+                    if method == "preset":
+                        blk.voice_ref_path = ""
+                        blk.voice_instruct = prof.get("voice_instruct") or prof.get("instruct") or ""
+                    else:
+                        blk.voice_ref_path = prof.get("source_audio_path") or prof.get("ref_audio_path") or prof.get("source_audio_sample") or ""
+                        blk.voice_instruct = ""
+                    blk.is_speaker_locked = True
+                else:
+                    blk.voice_ref_path = ""
+                    blk.voice_instruct = ""
+                    blk.is_speaker_locked = False
+                self._update_casting_table()
             elif col == 5:
                 blk.translated_text = item.text()
                 if not blk.text:

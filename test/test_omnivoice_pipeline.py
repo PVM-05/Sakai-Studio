@@ -1198,6 +1198,70 @@ def test_profile_prompt_pre_initialization_and_failover(tmp_path):
     assert gen_calls[3][1]["override_instruct"] == fallback_instruct
 
 
+def test_casting_table_profile_sync(tmp_path):
+    """
+    Kiểm tra giao diện Bảng hồ sơ giọng nhân vật:
+    1. Khi đổi phương pháp/preset của nhân vật trên bảng phân vai, mọi câu thoại của nhân vật
+       trong danh sách phụ đề được cập nhật tức thì (xóa đường dẫn cũ, nạp chỉ dẫn mới).
+    2. Khi đổi tên nhân vật trên bảng phân vai, danh sách phụ đề và hồ sơ nhân vật đồng bộ chính xác.
+    3. Khi đổi nhân vật của một câu thoại trên bảng phụ đề, câu thoại tự động kế thừa cấu hình giọng của nhân vật mới.
+    """
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.tts_engine import SubtitleBlock, VIETNAMESE_VOICE_CATALOG
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+
+    ref_file = str(tmp_path / "ref_char1.wav")
+    sf.write(ref_file, _make_sine_wave(1.0, 16000), 16000)
+
+    prof = CharacterVoiceProfile(
+        speaker_id="speaker_01",
+        display_name="Nhân vật 1",
+        source_audio_path=ref_file,
+        method="clone",
+        status="locked",
+    )
+    ui.speaker_profiles = {"Nhân vật 1": prof}
+    ui.subtitle_blocks = [
+        SubtitleBlock(1, "00:00:01,000", "00:00:03,000", "Xin chào", speaker="Nhân vật 1", voice_ref_path=ref_file),
+        SubtitleBlock(2, "00:00:04,000", "00:00:06,000", "Tạm biệt", speaker="Nhân vật 1", voice_ref_path=ref_file),
+    ]
+
+    ui._update_casting_table()
+    assert ui.casting_table.rowCount() == 1
+
+    # 1. Thử đổi phương pháp từ clone sang preset chuẩn từ danh mục tiếng Việt
+    preset_choice = list(VIETNAMESE_VOICE_CATALOG.keys())[2]
+    ui._on_character_method_changed("Nhân vật 1", preset_choice)
+
+    assert prof.method == "preset"
+    assert prof.preset_name == preset_choice
+    for blk in ui.subtitle_blocks:
+        assert blk.voice_ref_path == ""
+        assert blk.voice_instruct == VIETNAMESE_VOICE_CATALOG[preset_choice]["instruct"]
+        assert blk.is_speaker_locked is True
+
+    # 2. Thử đổi phương pháp ngược lại về clone
+    ui._on_character_method_changed("Nhân vật 1", "Nhân bản giọng từ video")
+    assert prof.method == "clone"
+    for blk in ui.subtitle_blocks:
+        assert blk.voice_ref_path == ref_file
+        assert blk.voice_instruct == ""
+
+    # 3. Thử đổi tên nhân vật từ "Nhân vật 1" thành "Người dẫn chuyện"
+    item = ui.casting_table.item(0, 1)
+    item.setText("Người dẫn chuyện")
+    # itemChanged kích hoạt _on_casting_table_item_changed
+    assert "Người dẫn chuyện" in ui.speaker_profiles
+    assert "Nhân vật 1" not in ui.speaker_profiles
+    for blk in ui.subtitle_blocks:
+        assert blk.speaker == "Người dẫn chuyện"
+
+
 
 
 
