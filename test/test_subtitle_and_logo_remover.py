@@ -638,3 +638,34 @@ def test_adaptive_mask_dilation_scales_with_text_height():
     assert y_indices.max() - y_indices.min() + 1 == 26
 
 
+def test_preview_loads_actual_adjacent_video_frames_with_boundary_clamp(tmp_path):
+    """
+    Xác minh hàm tải khung hình lân cận cho xem trước:
+    1. Đọc đúng 5 khung hình thực tế quanh vị trí hiện tại (current_frame_no).
+    2. Khi ở đầu video (frame 0 hoặc 1) hoặc cuối video, kẹp chỉ số an toàn không gây crash.
+    """
+    from src.desktop.ui.home_interface import _load_adjacent_video_frames
+
+    # Tạo tệp video ngắn 10 frame thử nghiệm với màu sắc thay đổi
+    video_file = str(tmp_path / "test_frames.avi")
+    out = cv2.VideoWriter(video_file, cv2.VideoWriter_fourcc(*'MJPG'), 25.0, (100, 100))
+    for f in range(10):
+        frame = np.full((100, 100, 3), f * 20, dtype=np.uint8)
+        out.write(frame)
+    out.release()
+
+    # Vị trí giữa video: frame 5 (0-indexed) -> lấy frames [3, 4, 5, 6, 7]
+    frames = _load_adjacent_video_frames(video_file, current_frame_idx=5, count=5)
+    assert len(frames) == 5
+    # Các khung hình phải có màu sắc khác nhau thực tế
+    assert int(frames[0][0, 0, 0]) == 3 * 20
+    assert int(frames[2][0, 0, 0]) == 5 * 20
+    assert int(frames[4][0, 0, 0]) == 7 * 20
+
+    # Vị trí đầu video: frame 0 -> kẹp chỉ số [0, 0, 0, 1, 2]
+    first_frames = _load_adjacent_video_frames(video_file, current_frame_idx=0, count=5)
+    assert len(first_frames) == 5
+    assert int(first_frames[2][0, 0, 0]) == 0
+
+
+

@@ -29,7 +29,45 @@ from src.ai_engines.ocr_engine import VideoOcrEngine
 
 
 
+from typing import List, Optional
+
 # FastSrtExtractThread has been refactored and moved to ui/extractor_interface.py to prevent code duplication.
+
+
+def _load_adjacent_video_frames(video_path: str, current_frame_idx: int, count: int = 5) -> List[np.ndarray]:
+    """
+    Tải danh sách các khung hình lân cận quanh vị trí hiện tại với việc kẹp biên an toàn.
+    """
+    if not video_path:
+        return []
+    target_path = get_readable_path(video_path) if 'get_readable_path' in globals() else video_path
+    cap = cv2.VideoCapture(target_path)
+    if not cap.isOpened():
+        return []
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if total <= 0:
+        cap.release()
+        return []
+
+    half = count // 2
+    indices = [max(0, min(total - 1, current_frame_idx + offset)) for offset in range(-half, half + 1)]
+    frame_cache = {}
+    frames = []
+    for idx in indices:
+        if idx not in frame_cache:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            ret, frame = cap.read()
+            if ret and frame is not None:
+                frame_cache[idx] = frame
+            else:
+                frame_cache[idx] = None
+        cached = frame_cache.get(idx)
+        if cached is not None:
+            frames.append(cached.copy())
+
+    cap.release()
+    return frames
+
 
 class HomeInterface(QWidget):
     progress_signal = Signal(int, bool, int)
@@ -52,6 +90,8 @@ class HomeInterface(QWidget):
         self.setObjectName("HomeInterface")
         # 初始化一些变量
         self.video_path = None
+        self.current_video_path = None
+        self.current_frame_no = 0
         self.video_cap = None
         self.fps = None
         self.frame_count = None
@@ -330,6 +370,7 @@ class HomeInterface(QWidget):
 
         # Lưu vị trí tua cần chuyển tới
         self._pending_seek_value = value
+        self.current_frame_no = max(0, value - 1)
 
         # Cập nhật ngay giao diện đồng hồ thời gian & Đồng bộ GPU Hardware Video Player (1ms YouTube-style Hardware Seek)
         if hasattr(self, 'video_display_component'):
@@ -1555,6 +1596,8 @@ class HomeInterface(QWidget):
 
     def load_video(self, video_path):
         self.video_path = video_path
+        self.current_video_path = video_path
+        self.current_frame_no = 0
         with self._video_cap_lock:
             if self.video_cap:
                 self.video_cap.release()
@@ -1802,6 +1845,41 @@ class HomeInterface(QWidget):
             )
             return
 
+        if not hasattr(self, 'current_video_path') or not self.current_video_path:
+            self.current_video_path = getattr(self, 'video_path', None)
+        if not hasattr(self, 'current_frame_no') or self.current_frame_no is None:
+            self.current_frame_no = (self.video_display_component.video_slider.value() - 1) if hasattr(self, 'video_display_component') and hasattr(self.video_display_component, 'video_slider') else 0
+
+        # Sao chép khung hình hiện tại trước khi xử lý
+        preview_frame = self.current_frame.copy()
+
+        # Chuyển đổi từ format UI (ymin, ymax, xmin, xmax) sang format mask (xmin, xmax, ymin, ymax)
+        mask_coords = [(xmin, xmax, ymin, ymax) for (ymin, ymax, xmin, xmax) in selections]
+
+        # Đồng bộ hóa quy trình nhận diện: Lọc chữ phụ đề thực tế thay vì dùng toàn bộ vùng khoanh thô
+        detect_mode = config.subtitleDetectMode.value
+        detect_mode_val = detect_mode.value if hasattr(detect_mode, 'value') else str(detect_mode)
+        none_val = SubtitleDetectMode.NONE.value if hasattr(SubtitleDetectMode.NONE, 'value') else str(SubtitleDetectMode.NONE)
+
+        if detect_mode_val != none_val and selections:
+            from src.core.tools.subtitle_detect import SubtitleDetect
+            video_src = self.current_video_path or getattr(self, 'video_path', None) or ""
+            sub_detector = SubtitleDetect(video_src, sub_areas=selections)
+            detected_boxes = sub_detector.detect_subtitle(preview_frame)
+            if detected_boxes:
+                mask_coords = detected_boxes
+            elif not strokes or len(strokes) == 0:
+                InfoBar.warning(
+                    title="Không phát hiện chữ phụ đề",
+                    content="Không tìm thấy chữ phụ đề trong vùng khoanh tại khung hình này. Bạn có thể điều chỉnh lại vùng chọn hoặc chuyển sang chế độ xóa thủ công không dùng nhận diện chữ.",
+                    position=InfoBarPosition.TOP,
+                    parent=self,
+                    duration=4000
+                )
+                return
+            else:
+                mask_coords = []
+
         # 2. Tạo mặt nạ tổng hợp
         from src.core.tools.inpaint_tools import create_combined_mask
         
@@ -1810,9 +1888,6 @@ class HomeInterface(QWidget):
         feather = config.maskFeather.value
         mask_type = getattr(config, 'maskType', None)
         mask_type_val = mask_type.value if hasattr(mask_type, 'value') else (str(mask_type) if mask_type else 'stroke')
-        
-        # Chuyển đổi từ format UI (ymin, ymax, xmin, xmax) sang format mask (xmin, xmax, ymin, ymax)
-        mask_coords = [(xmin, xmax, ymin, ymax) for (ymin, ymax, xmin, xmax) in selections]
         
         # Luôn sử dụng mask tổng hợp kết hợp cả hình hộp và nét cọ theo đúng chế độ maskType đã chọn
         combined_mask = create_combined_mask(
@@ -1826,7 +1901,6 @@ class HomeInterface(QWidget):
         )
             
         # 3. Sao chép các giá trị cần thiết trước khi vào thread
-        preview_frame = self.current_frame.copy()
         inpaint_mode = config.inpaintMode.value
         sharpen_enabled = config.sharpenInpaintedArea.value
         
@@ -1878,6 +1952,17 @@ class HomeInterface(QWidget):
                         work_mask = cv2.resize(combined_mask, (new_w, new_h))
                     self.append_log_signal.emit([f"Chuẩn hóa kích thước frame từ {orig_w}×{orig_h} → {new_w}×{new_h} để tương thích mô hình AI"])
 
+                def _get_temporal_frames():
+                    video_src = getattr(self, 'current_video_path', getattr(self, 'video_path', None))
+                    current_idx = getattr(self, 'current_frame_no', 0)
+                    if video_src:
+                        raw_frames = _load_adjacent_video_frames(video_src, current_idx, count=5)
+                        if len(raw_frames) == 5:
+                            if new_w != orig_w or new_h != orig_h:
+                                return [cv2.resize(f, (new_w, new_h)) for f in raw_frames]
+                            return raw_frames
+                    return [work_frame.copy() for _ in range(5)]
+
                 def _do_inpaint(dev):
                     """Thực hiện inpaint trên thiết bị chỉ định, trả về frame đã xử lý"""
                     # Removed unused nonlocal
@@ -1907,7 +1992,7 @@ class HomeInterface(QWidget):
                             return STTNDetInpaint(dev, model_config.STTN_DET_MODEL_PATH)
                         sttn_model = ModelCacheManager.get_model(f"sttn_det_{dev}", load_sttn_det)
                         self.append_log_signal.emit([f"Mô hình STTN_DET sẵn sàng ({_time.time()-_t0:.1f}s). Đang xóa phụ đề trên 5 frame..."])
-                        frames = [work_frame.copy() for _ in range(5)]
+                        frames = _get_temporal_frames()
                         results = sttn_model(frames, work_mask)
                         result = results[2]
                     elif inpaint_mode == InpaintMode.STTN_AUTO:
@@ -1917,7 +2002,7 @@ class HomeInterface(QWidget):
                             return STTNInpaint(dev, model_config.STTN_AUTO_MODEL_PATH)
                         sttn_model = ModelCacheManager.get_model(f"sttn_auto_{dev}", load_sttn_auto)
                         self.append_log_signal.emit([f"Mô hình STTN_AUTO sẵn sàng ({_time.time()-_t0:.1f}s). Đang xóa phụ đề trên 5 frame..."])
-                        frames = [work_frame.copy() for _ in range(5)]
+                        frames = _get_temporal_frames()
                         results = sttn_model(work_mask, input_frames=frames)
                         result = results[2]
                     elif inpaint_mode == InpaintMode.PROPAINTER:
@@ -1927,7 +2012,7 @@ class HomeInterface(QWidget):
                             return PropainterInpaint(dev, model_config.PROPAINTER_MODEL_DIR)
                         propainter_model = ModelCacheManager.get_model(f"propainter_{dev}", load_propainter)
                         self.append_log_signal.emit([f"Mô hình ProPainter sẵn sàng ({_time.time()-_t0:.1f}s). Đang xóa phụ đề trên 5 frame..."])
-                        frames = [work_frame.copy() for _ in range(5)]
+                        frames = _get_temporal_frames()
                         results = propainter_model.inpaint(frames, work_mask)
                         result = results[2]
                     else:
