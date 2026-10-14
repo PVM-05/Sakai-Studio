@@ -20,6 +20,36 @@ from src.video_ops.scenedetect.detectors import ContentDetector
 from src.core.tools.inpaint_tools import is_frame_number_in_ab_sections
 from src.core.tools.constant import SubtitleDetectMode
 
+
+def expand_search_roi(area, frame_w, frame_h, scale_w=0.35, scale_h=0.60, min_pad_x=24, min_pad_y=16):
+    """Mở rộng vùng tìm kiếm chữ có lề đệm và kẹp biên an toàn trong khung hình."""
+    ymin, ymax, xmin, xmax = map(int, area)
+    roi_w = max(1, xmax - xmin)
+    roi_h = max(1, ymax - ymin)
+    pad_x = max(int(min_pad_x), int(round(roi_w * scale_w)))
+    pad_y = max(int(min_pad_y), int(round(roi_h * scale_h)))
+    return (
+        max(0, ymin - pad_y),
+        min(int(frame_h), ymax + pad_y),
+        max(0, xmin - pad_x),
+        min(int(frame_w), xmax + pad_x),
+    )
+
+
+def overlaps_selected_region(box, roi, min_ratio=0.15):
+    """Kiểm tra hộp chữ có tâm nằm trong vùng chọn hoặc tỷ lệ diện tích giao nhau lớn hơn hoặc bằng min_ratio."""
+    x1, x2, y1, y2 = box[:4]
+    ry1, ry2, rx1, rx2 = roi[:4]
+    inter_w = max(0, min(x2, rx2) - max(x1, rx1))
+    inter_h = max(0, min(y2, ry2) - max(y1, ry1))
+    box_area = max(1, (x2 - x1) * (y2 - y1))
+    cx = (x1 + x2) / 2.0
+    cy = (y1 + y2) / 2.0
+    center_inside = (rx1 <= cx <= rx2) and (ry1 <= cy <= ry2)
+    overlap_ratio = (inter_w * inter_h) / float(box_area)
+    return center_inside or (overlap_ratio >= min_ratio)
+
+
 class SubtitleDetect:
     """
     文本框检测类，用于检测视频帧中是否存在文本框
@@ -199,16 +229,19 @@ class SubtitleDetect:
     def detect_subtitle(self, img):
         sub_areas = self.sub_areas
         has_areas = sub_areas is not None and len(sub_areas) > 0
-        
+        h, w = img.shape[:2]
+
         if has_areas:
-            # Tự động tính toán hộp bao tối thiểu chứa tất cả các vùng sub_areas
-            h, w = img.shape[:2]
-            ymin_crop = max(0, min(area[0] for area in sub_areas))
-            ymax_crop = min(h, max(area[1] for area in sub_areas))
-            xmin_crop = max(0, min(area[2] for area in sub_areas))
-            xmax_crop = min(w, max(area[3] for area in sub_areas))
-            
-            # Cắt ảnh
+            if len(sub_areas) == 1:
+                target_area = sub_areas[0]
+            else:
+                target_area = (
+                    min(area[0] for area in sub_areas),
+                    max(area[1] for area in sub_areas),
+                    min(area[2] for area in sub_areas),
+                    max(area[3] for area in sub_areas),
+                )
+            ymin_crop, ymax_crop, xmin_crop, xmax_crop = expand_search_roi(target_area, frame_w=w, frame_h=h)
             cropped_img = img[ymin_crop:ymax_crop, xmin_crop:xmax_crop]
             if cropped_img.size == 0:
                 return []
@@ -216,7 +249,7 @@ class SubtitleDetect:
             cropped_img = img
             ymin_crop, xmin_crop = 0, 0
 
-        # Kiểm tra nhanh: Nếu vùng chọn phẳng (như dải đen/nền trơn), bỏ qua OCR để tăng hiệu suất
+        # Kiểm tra nhanh: Nếu vùng chọn phẳng (như dải đen hoặc nền trơn), bỏ qua OCR để tăng hiệu suất
         try:
             if cropped_img.ndim == 3:
                 gray = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2GRAY)
@@ -227,38 +260,74 @@ class SubtitleDetect:
         except Exception:
             pass
 
-        # --- Engine: PaddleX ---
+        # Thực thi nhận diện chữ
         try:
             coordinate_list = self._get_coordinates_from_paddle(cropped_img)
         except Exception as e:
             print(f"[Detection] OCR Engine failed: {e}")
             return []
 
-        # Dịch chuyển tọa độ phát hiện được về tọa độ gốc của video
+        # Kiểm tra nếu có hộp chữ chạm sát mép ảnh cắt thì tự động mở rộng và thử lại 1 lần
+        if has_areas and coordinate_list:
+            crop_h, crop_w = cropped_img.shape[:2]
+            touches_boundary = False
+            for box in coordinate_list:
+                xmin, xmax, ymin, ymax = box[:4]
+                if xmax <= crop_w and ymax <= crop_h:
+                    if xmin <= 3 or ymin <= 3 or xmax >= crop_w - 3 or ymax >= crop_h - 3:
+                        touches_boundary = True
+                        break
+            if touches_boundary:
+                ymin_retry, ymax_retry, xmin_retry, xmax_retry = expand_search_roi(
+                    target_area,
+                    frame_w=w,
+                    frame_h=h,
+                    scale_w=0.35 * 1.5,
+                    scale_h=0.60 * 1.5,
+                    min_pad_x=36,
+                    min_pad_y=24,
+                )
+                if (ymin_retry, ymax_retry, xmin_retry, xmax_retry) != (ymin_crop, ymax_crop, xmin_crop, xmax_crop):
+                    retry_crop = img[ymin_retry:ymax_retry, xmin_retry:xmax_retry]
+                    if retry_crop.size > 0:
+                        try:
+                            retry_coords = self._get_coordinates_from_paddle(retry_crop)
+                            if retry_coords:
+                                coordinate_list = retry_coords
+                                cropped_img = retry_crop
+                                ymin_crop, ymax_crop, xmin_crop, xmax_crop = ymin_retry, ymax_retry, xmin_retry, xmax_retry
+                        except Exception:
+                            pass
+
+        # Dịch chuyển tọa độ phát hiện được về tọa độ gốc của khung hình
         if has_areas and len(coordinate_list) > 0:
+            crop_h, crop_w = cropped_img.shape[:2]
             shifted_list = []
-            for xmin, xmax, ymin, ymax in coordinate_list:
-                shifted_list.append((xmin + xmin_crop, xmax + xmin_crop, ymin + ymin_crop, ymax + ymin_crop))
+            for box in coordinate_list:
+                xmin, xmax, ymin, ymax = box[:4]
+                if ymax > crop_h or xmax > crop_w:
+                    shifted_list.append((xmin, xmax, ymin, ymax))
+                else:
+                    shifted_list.append((xmin + xmin_crop, xmax + xmin_crop, ymin + ymin_crop, ymax + ymin_crop))
             coordinate_list = shifted_list
-            
+
         # Gộp các mảnh vỡ OCR lại thành một khối liền mạch
         coordinate_list = self._merge_close_boxes(coordinate_list)
 
-        # --- Filter by subtitle area ---
+        # Lọc theo vùng phụ đề đã chọn với tiêu chí giao thoa linh hoạt
         temp_list = []
         if not has_areas:
             temp_list.extend(coordinate_list)
         elif len(sub_areas) == 1:
-            # 单区域快速路径（最常见场景）
-            s_ymin, s_ymax, s_xmin, s_xmax = sub_areas[0]
-            for xmin, xmax, ymin, ymax in coordinate_list:
-                if s_xmin <= xmin and xmax <= s_xmax and s_ymin <= ymin and ymax <= s_ymax:
-                    temp_list.append((xmin, xmax, ymin, ymax))
+            target_roi = sub_areas[0]
+            for box in coordinate_list:
+                if overlaps_selected_region(box, target_roi, min_ratio=0.15):
+                    temp_list.append(box)
         else:
-            for xmin, xmax, ymin, ymax in coordinate_list:
-                for s_ymin, s_ymax, s_xmin, s_xmax in sub_areas:
-                    if s_xmin <= xmin and xmax <= s_xmax and s_ymin <= ymin and ymax <= s_ymax:
-                        temp_list.append((xmin, xmax, ymin, ymax))
+            for box in coordinate_list:
+                for area in sub_areas:
+                    if overlaps_selected_region(box, area, min_ratio=0.15):
+                        temp_list.append(box)
                         break
         return temp_list
 

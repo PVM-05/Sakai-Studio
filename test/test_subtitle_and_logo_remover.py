@@ -545,3 +545,76 @@ def test_clear_freehand_strokes_persists_empty_list_to_task_options():
     assert saved_strokes == []
 
 
+def test_expand_search_roi_adds_margins_and_clips_boundary():
+    """Kiểm tra mở rộng lề tìm kiếm theo tỷ lệ cạnh và kẹp biên an toàn trong khung hình."""
+    from src.core.tools.subtitle_detect import expand_search_roi
+
+    # Vùng chọn 300x40 tại vị trí (ymin=100, ymax=140, xmin=200, xmax=500), khung hình 1920x1080
+    area = (100, 140, 200, 500)
+    # pad_x = max(24, round(300 * 0.35)) = 105
+    # pad_y = max(16, round(40 * 0.60)) = 24
+    exp_area = expand_search_roi(area, frame_w=1920, frame_h=1080)
+    assert exp_area == (100 - 24, 140 + 24, 200 - 105, 500 + 105)
+
+    # Trường hợp sát biên trái và trên (phải được kẹp ở 0)
+    edge_area = (10, 50, 5, 200)
+    clipped_area = expand_search_roi(edge_area, frame_w=1920, frame_h=1080)
+    assert clipped_area[0] == 0  # ymin kẹp về 0
+    assert clipped_area[2] == 0  # xmin kẹp về 0
+
+
+def test_detect_subtitle_accepts_partially_overlapping_box():
+    """
+    Xác minh detect_subtitle chấp nhận hộp chữ tràn nhẹ ra ngoài vùng khoanh
+    khi có tâm nằm trong vùng khoanh hoặc tỷ lệ giao thoa >= 15%.
+    """
+    from unittest.mock import MagicMock
+    from src.core.tools.subtitle_detect import SubtitleDetect
+
+    detector = SubtitleDetect("dummy.mp4", sub_areas=[(100, 150, 100, 300)])
+    # Giả lập hộp chữ phát hiện được (xmin=90, xmax=310, ymin=95, ymax=155) tràn nhẹ cả 4 phía nhưng tâm nằm trong
+    dummy_img = np.full((300, 500, 3), 128, dtype=np.uint8)
+    dummy_img[100:150, 100:300] = 255
+    
+    # PaddleOCR trả về tọa độ trên cropped_img; detector sẽ cộng lại xmin_crop, ymin_crop
+    # Ta mock _get_coordinates_from_paddle trả về hộp chữ tương ứng
+    def fake_paddle(crop):
+        return [(90, 310, 95, 155)]
+        
+    detector._get_coordinates_from_paddle = MagicMock(side_effect=fake_paddle)
+    
+    results = detector.detect_subtitle(dummy_img)
+    assert len(results) == 1
+    # Hộp chữ tràn biên không bị loại bỏ
+    assert results[0][0] <= 100 and results[0][1] >= 300
+
+
+def test_detect_subtitle_retries_when_text_touches_crop_boundary():
+    """
+    Xác minh detect_subtitle tự động thử lại 1 lần với vùng mở rộng thêm
+    khi phát hiện hộp chữ chạm sát mép crop của lần nhận diện đầu tiên.
+    """
+    from unittest.mock import MagicMock
+    from src.core.tools.subtitle_detect import SubtitleDetect
+
+    detector = SubtitleDetect("dummy.mp4", sub_areas=[(100, 140, 100, 200)])
+    dummy_img = np.full((400, 400, 3), 128, dtype=np.uint8)
+    dummy_img[80:160, 80:250] = 255
+
+    call_count = 0
+    def fake_paddle(crop):
+        nonlocal call_count
+        call_count += 1
+        # Lần 1 trả về hộp chạm sát biên crop
+        if call_count == 1:
+            return [(0, crop.shape[1], 0, crop.shape[0])]
+        # Lần 2 trả về hộp hoàn chỉnh
+        return [(10, crop.shape[1] - 10, 10, crop.shape[0] - 10)]
+
+    detector._get_coordinates_from_paddle = MagicMock(side_effect=fake_paddle)
+    results = detector.detect_subtitle(dummy_img)
+    # Phải gọi thử lại lần 2 do chạm sát biên crop
+    assert call_count >= 2
+    assert len(results) >= 1
+
+
