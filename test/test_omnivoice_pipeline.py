@@ -1405,6 +1405,7 @@ def test_character_audition_finds_first_dialogue_line(tmp_path):
     ui.speaker_profiles = {
         "Nhân vật 1": CharacterVoiceProfile("spk_1", "Nhân vật 1", source_audio_path=ref_wav, method="clone"),
         "Nhân vật 2": CharacterVoiceProfile("spk_2", "Nhân vật 2", method="preset", voice_instruct="Nữ dịu dàng"),
+        "Nhân vật 3": CharacterVoiceProfile("spk_3", "Nhân vật 3", method="preset", voice_instruct="Nữ trẻ trung"),
     }
     ui.subtitle_blocks = [
         SubtitleBlock(1, "00:00:01,000", "00:00:03,000", "Lời mở đầu của nhân vật 2", speaker="Nhân vật 2"),
@@ -1431,6 +1432,95 @@ def test_character_audition_finds_first_dialogue_line(tmp_path):
     ui._audition_character_voice("Nhân vật 3")
     assert captured_args["task_type"] == "character_audition"
     assert "Xin chào, đây là giọng nói thử nghiệm của Nhân vật 3." in captured_args["text"]
+    assert captured_args["override_instruct"] == "Nữ trẻ trung"
+
+
+def test_character_voice_profiles_overview_unanalyzed_state():
+    """
+    Xác minh trạng thái khi chưa phân tích nhân vật:
+    - Tiêu đề phụ: 'Âm thanh video chưa phân tích nhân vật'
+    - Nhãn trạng thái: 'Trạng thái: Chưa phân tích'
+    - Danh sách thẻ con rỗng (hiển thị văn bản hướng dẫn chạy nhận diện).
+    """
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+    ui.speaker_profiles = {}
+    ui.is_speakers_detected = False
+    ui.subtitle_blocks = [
+        SubtitleBlock(1, "00:00:01,000", "00:00:03,000", "Câu một", speaker=""),
+    ]
+
+    ui._update_character_profiles_overview()
+
+    assert ui.lbl_char_overview_title.text() == "Âm thanh video chưa phân tích nhân vật"
+    assert ui.lbl_char_count.text() == "Trạng thái: Chưa phân tích"
+    assert len(ui._character_cards) == 0
+
+
+def test_audition_rejects_missing_clone_audio_sample():
+    """
+    Xác minh kiểm tra tính hợp lệ của mẫu nhân bản trước khi nghe thử:
+    - Nếu nhân vật đặt phương pháp clone nhưng tệp mẫu không tồn tại, tuyệt đối không âm thầm chạy hay đổi giọng.
+    - Không khởi chạy worker tổng hợp và khôi phục nút nghe thử.
+    """
+    from PySide6.QtWidgets import QApplication
+    from qfluentwidgets import PushButton
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+    ui.speaker_profiles = {
+        "Nhân vật Thiếu Mẫu": CharacterVoiceProfile(
+            "spk_x",
+            "Nhân vật Thiếu Mẫu",
+            source_audio_path="C:/non_existent_folder/missing_audio.wav",
+            method="clone",
+        )
+    }
+
+    launch_called = []
+    ui._launch_worker = lambda *a, **k: launch_called.append(True)
+
+    btn = PushButton("Nghe Thử Giọng")
+    ui._audition_character_voice("Nhân vật Thiếu Mẫu", btn)
+
+    # Worker không được phép chạy
+    assert len(launch_called) == 0
+    # Nút phải được mở khóa và phục hồi văn bản
+    assert btn.text() == "Nghe Thử Giọng"
+    assert btn.isEnabled() is True
+
+
+def test_audition_button_recovers_on_playback_end():
+    """
+    Xác minh phục hồi trạng thái nút nghe thử sau khi phát xong hoặc dừng phát:
+    - Khi phát xong (EndOfMedia), nút phải tự động chuyển về 'Nghe Thử Giọng' và được mở khóa.
+    """
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtMultimedia import QMediaPlayer
+    from qfluentwidgets import PushButton
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+    btn = PushButton("Nghe Thử Giọng")
+    ui._active_audition_button = btn
+
+    # Giả lập trạng thái đang phát
+    btn.setText("Dừng Phát")
+    btn.setEnabled(True)
+
+    # Báo hiệu phát xong qua mediaStatusChanged
+    ui._on_player_media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+
+    assert btn.text() == "Nghe Thử Giọng"
+    assert btn.isEnabled() is True
+    assert ui._active_audition_button is None
+
 
 
 

@@ -1486,7 +1486,18 @@ class TTSEngine:
 
         active_mode = override_mode or self.mode
 
-        if override_prompt is not None:
+        if override_mode == "clone":
+            if override_prompt is not None:
+                gen_kwargs["voice_clone_prompt"] = override_prompt
+            elif override_ref_audio and os.path.exists(override_ref_audio):
+                prompt = self._get_or_create_prompt_for_audio(override_ref_audio, cache_key=override_ref_audio)
+                if prompt is not None:
+                    gen_kwargs["voice_clone_prompt"] = prompt
+                else:
+                    raise RuntimeError(f"Không thể tạo đặc trưng giọng từ tệp mẫu: {override_ref_audio}")
+            else:
+                raise FileNotFoundError(f"Tệp âm thanh mẫu nhân bản giọng không tồn tại hoặc chưa được chỉ định: {override_ref_audio or 'chưa có'}")
+        elif override_prompt is not None:
             gen_kwargs["voice_clone_prompt"] = override_prompt
         elif override_ref_audio and os.path.exists(override_ref_audio):
             prompt = self._get_or_create_prompt_for_audio(override_ref_audio, cache_key=override_ref_audio)
