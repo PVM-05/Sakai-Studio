@@ -668,4 +668,46 @@ def test_preview_loads_actual_adjacent_video_frames_with_boundary_clamp(tmp_path
     assert int(first_frames[2][0, 0, 0]) == 0
 
 
+def test_verify_media_quality_detects_residual_text(tmp_path):
+    """
+    Xác minh hàm kiểm soát chất lượng sau xuất:
+    Nếu video đầu ra vẫn còn chữ rõ ràng trong vùng đã xử lý,
+    hệ thống trả về passed=False, residual_text_found=True kèm khuyến nghị xử lý.
+    """
+    from src.desktop.ui.home_interface import verify_media_quality
+
+    # Tạo video đầu ra giả lập vẫn còn chữ 'RESIDUAL' trong vùng (ymin=80, ymax=120, xmin=50, xmax=250)
+    video_path = str(tmp_path / "bad_cleaned.mp4")
+    out = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*'mp4v'), 25.0, (300, 200))
+    for _ in range(10):
+        frame = np.full((200, 300, 3), 128, dtype=np.uint8)
+        cv2.putText(frame, "RESIDUAL TEXT", (60, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        out.write(frame)
+    out.release()
+
+    res = verify_media_quality(video_path, sub_areas=[(80, 120, 50, 250)])
+    assert res["passed"] is False
+    assert res["residual_text_found"] is True
+    assert "chưa sạch" in res["message"] or "Cần kiểm tra" in res["message"]
+
+
+def test_verify_media_quality_passes_when_clean(tmp_path):
+    """
+    Xác minh hàm kiểm soát chất lượng sau xuất trả về passed=True khi vùng đã xử lý sạch sẽ.
+    """
+    from src.desktop.ui.home_interface import verify_media_quality
+
+    video_path = str(tmp_path / "clean_cleaned.mp4")
+    out = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*'mp4v'), 25.0, (300, 200))
+    for _ in range(10):
+        frame = np.full((200, 300, 3), 128, dtype=np.uint8)
+        out.write(frame)
+    out.release()
+
+    res = verify_media_quality(video_path, sub_areas=[(80, 120, 50, 250)])
+    assert res["passed"] is True
+    assert res["residual_text_found"] is False
+
+
+
 

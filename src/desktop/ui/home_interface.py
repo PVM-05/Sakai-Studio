@@ -29,7 +29,7 @@ from src.ai_engines.ocr_engine import VideoOcrEngine
 
 
 
-from typing import List, Optional
+from typing import List, Optional, Tuple, Dict, Any
 
 # FastSrtExtractThread has been refactored and moved to ui/extractor_interface.py to prevent code duplication.
 
@@ -67,6 +67,150 @@ def _load_adjacent_video_frames(video_path: str, current_frame_idx: int, count: 
 
     cap.release()
     return frames
+
+
+def verify_media_quality(video_path: str, sub_areas: List[Tuple[int, int, int, int]]) -> Dict[str, Any]:
+    """
+    Cổng kiểm soát chất lượng sau xuất:
+    Lấy mẫu các khung hình trong tệp kết quả và kiểm tra xem có còn dấu vết chữ chưa sạch
+    trong các vùng đã xử lý hay không.
+    Trả về từ điển gồm:
+      - passed: bool (False nếu phát hiện chữ còn sót)
+      - residual_text_found: bool
+      - flicker_score: float
+      - message: str
+    """
+    default_pass = {
+        "passed": True,
+        "residual_text_found": False,
+        "flicker_score": 0.0,
+        "message": "",
+    }
+    if not video_path or not sub_areas:
+        return default_pass
+
+    target_path = get_readable_path(video_path) if 'get_readable_path' in globals() else video_path
+    cap = cv2.VideoCapture(target_path)
+    sampled_frames = []
+    total_frames = 0
+    frame_h, frame_w = 0, 0
+
+    if cap.isOpened():
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if total_frames > 0:
+            sample_count = min(10, max(5, total_frames))
+            indices = np.linspace(0, total_frames - 1, sample_count, dtype=int).tolist()
+            indices = sorted(list(dict.fromkeys(indices)))
+            for idx in indices:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    if frame_h == 0 or frame_w == 0:
+                        frame_h, frame_w = frame.shape[:2]
+                    sampled_frames.append((idx, frame))
+        cap.release()
+    else:
+        cap.release()
+        if 'is_image_file' in globals() and is_image_file(video_path):
+            img = read_image(video_path) if 'read_image' in globals() else cv2.imread(video_path)
+            if img is not None:
+                frame_h, frame_w = img.shape[:2]
+                sampled_frames = [(0, img)]
+                total_frames = 1
+
+    if not sampled_frames:
+        return default_pass
+
+    # Chuẩn hóa và kẹp biên an toàn cho tọa độ sub_areas
+    parsed_sub_areas = []
+    for area in sub_areas:
+        y1, y2, x1, x2 = area[:4]
+        if all(isinstance(v, (float, int)) and 0.0 <= v <= 1.0 for v in (y1, y2, x1, x2)) and max(y2, x2) <= 1.0 and (y2 > 0 or x2 > 0):
+            y1 = int(round(y1 * frame_h))
+            y2 = int(round(y2 * frame_h))
+            x1 = int(round(x1 * frame_w))
+            x2 = int(round(x2 * frame_w))
+        else:
+            y1, y2, x1, x2 = int(round(y1)), int(round(y2)), int(round(x1)), int(round(x2))
+        y1 = max(0, min(frame_h, y1))
+        y2 = max(0, min(frame_h, y2))
+        x1 = max(0, min(frame_w, x1))
+        x2 = max(0, min(frame_w, x2))
+        if y2 > y1 and x2 > x1:
+            parsed_sub_areas.append((y1, y2, x1, x2))
+
+    if not parsed_sub_areas:
+        return default_pass
+
+    # Tính độ nhấp nháy khung hình (temporal flicker score) nếu khả dụng
+    flicker_val = 0.0
+    try:
+        from src.core.quality import temporal_flicker_score
+        roi_samples = []
+        ymin_all = min(a[0] for a in parsed_sub_areas)
+        ymax_all = max(a[1] for a in parsed_sub_areas)
+        xmin_all = min(a[2] for a in parsed_sub_areas)
+        xmax_all = max(a[3] for a in parsed_sub_areas)
+        for idx, frame in sampled_frames:
+            roi = frame[ymin_all:ymax_all, xmin_all:xmax_all]
+            if roi.size > 0:
+                roi_samples.append((idx, roi))
+        if len(roi_samples) >= 2:
+            score = temporal_flicker_score(roi_samples, max_frame_gap=max(1, total_frames))
+            if score is not None:
+                flicker_val = float(score)
+    except Exception:
+        pass
+
+    # Khởi tạo bộ nhận diện phụ đề SubtitleDetect
+    detector = None
+    try:
+        from src.core.tools.subtitle_detect import SubtitleDetect
+        detector = SubtitleDetect(video_path, parsed_sub_areas)
+    except Exception:
+        detector = None
+
+    text_detected_count = 0
+    for idx, frame in sampled_frames:
+        frame_has_text = False
+        if detector is not None:
+            try:
+                boxes = detector.detect_subtitle(frame)
+                if boxes and len(boxes) > 0:
+                    frame_has_text = True
+            except Exception:
+                pass
+        if not frame_has_text:
+            try:
+                from src.core.quality import residual_text_score
+                for (y1, y2, x1, x2) in parsed_sub_areas:
+                    crop = frame[y1:y2, x1:x2]
+                    r_score = residual_text_score(crop)
+                    if r_score is not None and r_score > 0.25:
+                        frame_has_text = True
+                        break
+            except Exception:
+                pass
+        if frame_has_text:
+            text_detected_count += 1
+
+    threshold = 2 if len(sampled_frames) >= 2 else 1
+    if text_detected_count >= threshold:
+        return {
+            "passed": False,
+            "residual_text_found": True,
+            "flicker_score": flicker_val,
+            "message": "Phát hiện dấu vết chữ chưa sạch tại các khung hình đã xử lý. Khuyến nghị: tăng khoảng đệm mặt nạ hoặc chuyển đổi mô hình phục hồi nền.",
+        }
+
+    return {
+        "passed": True,
+        "residual_text_found": False,
+        "flicker_score": flicker_val,
+        "message": "",
+    }
 
 
 class HomeInterface(QWidget):
@@ -1403,6 +1547,14 @@ class HomeInterface(QWidget):
             detail = ""
             if run_status == "partial" and isinstance(getattr(sr, 'tracking_report', None), dict):
                 detail = sr.tracking_report.get("warning_message", "")
+
+            # Cổng kiểm soát chất lượng sau xuất: kiểm tra vết chữ còn sót
+            quality_res = verify_media_quality(output_path, getattr(sr, 'sub_areas', []))
+            if not quality_res.get("passed", True):
+                run_status = "partial"
+                msg = quality_res.get("message", "")
+                detail = f"{detail}. {msg}".strip(". ") if detail else msg
+
             SubtitleRemoverRemoteCall.remote_call_report_result(queue, run_status, output_path, detail)
         except Exception as e:
             exit_code = 1
