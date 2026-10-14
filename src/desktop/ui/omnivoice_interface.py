@@ -13,6 +13,7 @@ Cung cấp toàn bộ tính năng của mã nguồn OmniVoice chạy trực ti�
 from __future__ import annotations
 
 import os
+import re
 import copy
 import time
 import shutil
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QFileDialog,
     QAbstractItemView,
+    QFrame,
 )
 from PySide6.QtCore import Qt, Signal, QThread, QUrl
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
@@ -42,6 +44,7 @@ from qfluentwidgets import (
     TableWidget,
     TitleLabel,
     SubtitleLabel,
+    StrongBodyLabel,
     BodyLabel,
     CaptionLabel,
     InfoBar,
@@ -60,6 +63,7 @@ from qfluentwidgets import (
 from src.core.config import config, BASE_DIR
 from src.core.tools.folder_memory import FolderMemoryDialog
 from src.ai_engines.translator import SubtitleBlock, parse_srt
+from src.ai_engines.speaker_diarization import CharacterVoiceProfile
 from src.ai_engines.tts_engine import (
     TTSEngine,
     VIETNAMESE_VOICE_CATALOG,
@@ -322,7 +326,7 @@ class OmniVoiceTaskWorker(QThread):
                 )
                 return
 
-            if self.task_type in ("single_synth", "block_preview", "vn_catalog_preview"):
+            if self.task_type in ("single_synth", "block_preview", "vn_catalog_preview", "character_audition"):
                 self.progressSignal.emit(25, "Đang nạp mô hình và tổng hợp giọng nói tiếng Việt trên GPU...")
                 if self.task_type == "vn_catalog_preview":
                     engine.language = "vi"
@@ -868,6 +872,39 @@ class OmniVoiceInterface(ScrollArea):
         p2_layout.setContentsMargins(0, 0, 0, 0)
         p2_layout.setSpacing(12)
 
+        # Khối Tổng Quan Hồ Sơ Giọng Nhân Vật
+        self.char_overview_card = CardWidget(self.page_step_2)
+        char_card_layout = QVBoxLayout(self.char_overview_card)
+        char_card_layout.setContentsMargins(14, 12, 14, 12)
+        char_card_layout.setSpacing(8)
+
+        char_top_row = QHBoxLayout()
+        self.lbl_char_overview_title = SubtitleLabel("Video đã phân tích âm thanh · Đã nhận diện", self.char_overview_card)
+        self.lbl_char_count = StrongBodyLabel("Tổng số nhân vật nhận diện: 0 nhân vật", self.char_overview_card)
+        char_top_row.addWidget(self.lbl_char_overview_title)
+        char_top_row.addStretch(1)
+        char_top_row.addWidget(self.lbl_char_count)
+        char_card_layout.addLayout(char_top_row)
+
+        self.char_scroll = ScrollArea(self.char_overview_card)
+        self.char_scroll.setWidgetResizable(True)
+        self.char_scroll.setFrameShape(QFrame.NoFrame)
+        self.char_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.char_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.char_scroll.setStyleSheet("background: transparent; border: none;")
+        self.char_cards_container = QWidget()
+        self.char_cards_container.setStyleSheet("background: transparent;")
+        self.char_cards_layout = QHBoxLayout(self.char_cards_container)
+        self.char_cards_layout.setContentsMargins(0, 4, 0, 4)
+        self.char_cards_layout.setSpacing(10)
+        self.char_cards_layout.setAlignment(Qt.AlignLeft)
+        self.char_scroll.setWidget(self.char_cards_container)
+        self.char_scroll.setFixedHeight(125)
+        char_card_layout.addWidget(self.char_scroll)
+        p2_layout.addWidget(self.char_overview_card, 0)
+
+        self._character_cards: List[Dict[str, Any]] = []
+
         sub_page_card = CardWidget(self.page_step_2)
         sub_layout = QVBoxLayout(sub_page_card)
         sub_layout.setContentsMargins(14, 12, 14, 12)
@@ -911,7 +948,7 @@ class OmniVoiceInterface(ScrollArea):
             "Bắt Đầu",
             "Kết Thúc",
             "Nhân Vật",
-            "Nguồn Giọng Nhân Vật",
+            "Loại Giọng & Nguồn",
             "Nội Dung Câu Thoại Lồng Tiếng",
         ])
         self.sub_table.setColumnWidth(0, 50)
@@ -1816,6 +1853,178 @@ class OmniVoiceInterface(ScrollArea):
             else:
                 self.sub_table.setRowHidden(row, False)
 
+    def _update_character_profiles_overview(self):
+        """Cập nhật khối tổng quan hồ sơ giọng nhân vật ở Bước 2."""
+        if not hasattr(self, "char_cards_layout"):
+            return
+
+        speaker_names: List[str] = []
+        seen = set()
+        for blk in self.subtitle_blocks:
+            spk = (getattr(blk, "speaker", "") or "Người nói 1").strip()
+            if spk and spk not in seen:
+                seen.add(spk)
+                speaker_names.append(spk)
+        for spk in self.speaker_profiles.keys():
+            if spk not in seen:
+                seen.add(spk)
+                speaker_names.append(spk)
+
+        # Cập nhật nhãn đếm số lượng nhân vật thực tế nhận diện
+        count = len(speaker_names)
+        if hasattr(self, "lbl_char_count"):
+            self.lbl_char_count.setText(f"Tổng số nhân vật nhận diện: {count} nhân vật")
+
+        # Xóa các thẻ cũ
+        while self.char_cards_layout.count():
+            item = self.char_cards_layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        self._character_cards = []
+
+        if not speaker_names:
+            lbl_empty = BodyLabel("Chưa nhận diện được nhân vật nào từ dữ liệu hiện tại.", self.char_cards_container)
+            self.char_cards_layout.addWidget(lbl_empty)
+            return
+
+        for spk_name in speaker_names:
+            prof = self.speaker_profiles.get(spk_name)
+            is_dict = isinstance(prof, dict)
+            method = (prof.get("method") if is_dict else getattr(prof, "method", "clone")) if prof else "clone"
+            status_val = (prof.get("status") if is_dict else getattr(prof, "status", "unassigned")) if prof else "unassigned"
+            ref_audio = (prof.get("source_audio_path") or prof.get("ref_audio_path") if is_dict else getattr(prof, "source_audio_path", "")) if prof else ""
+            voice_ins = (prof.get("voice_instruct") or prof.get("instruct") if is_dict else getattr(prof, "voice_instruct", "")) if prof else ""
+            preset_name = (prof.get("preset_name") if is_dict else getattr(prof, "preset_name", "")) if prof else ""
+            desc = (prof.get("description") if is_dict else getattr(prof, "preset_name", "")) if prof else ""
+
+            # Kiểm tra thêm từ các khối phụ đề nếu profile chưa ghi
+            for blk in self.subtitle_blocks:
+                if (getattr(blk, "speaker", "") or "Người nói 1").strip() == spk_name:
+                    if not ref_audio and getattr(blk, "voice_ref_path", ""):
+                        ref_audio = blk.voice_ref_path
+                    if not voice_ins and getattr(blk, "voice_instruct", ""):
+                        voice_ins = blk.voice_instruct
+                    break
+
+            has_valid_ref = bool(ref_audio and os.path.exists(ref_audio))
+            has_valid_ins = bool(voice_ins)
+
+            # Xác định huy hiệu trạng thái: "Sẵn sàng" vs "Cần kiểm tra"
+            if status_val == "unassigned":
+                badge_text = "Cần kiểm tra"
+                badge_bg = "#d83b01"
+            elif has_valid_ref or (method == "preset" and has_valid_ins):
+                badge_text = "Sẵn sàng"
+                badge_bg = "#107c41"
+            elif status_val == "locked":
+                badge_text = "Sẵn sàng"
+                badge_bg = "#107c41"
+            else:
+                badge_text = "Cần kiểm tra"
+                badge_bg = "#d83b01"
+
+            # Xác định loại giọng và mô tả
+            if has_valid_ref or method == "clone":
+                type_text = "Nhân bản giọng từ video"
+                detail_text = "Mẫu giọng đã tạo" if has_valid_ref else "Mẫu giọng cần kiểm tra"
+            elif method == "preset" or has_valid_ins:
+                type_text = "Giọng thiết kế"
+                detail_text = preset_name or desc or voice_ins or "Giọng danh mục"
+            else:
+                type_text = "Chưa có giọng"
+                detail_text = "Chưa gán giọng"
+
+            card = CardWidget(self.char_cards_container)
+            card.setMinimumWidth(230)
+            card.setMaximumWidth(290)
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(12, 10, 12, 10)
+            card_layout.setSpacing(6)
+
+            # Dòng 1: Tên nhân vật + Huy hiệu
+            row1 = QHBoxLayout()
+            lbl_name = StrongBodyLabel(spk_name, card)
+            badge = CaptionLabel(badge_text, card)
+            badge.setStyleSheet(
+                f"color: white; background-color: {badge_bg}; border-radius: 4px; padding: 2px 6px; font-weight: bold;"
+            )
+            row1.addWidget(lbl_name)
+            row1.addStretch(1)
+            row1.addWidget(badge)
+            card_layout.addLayout(row1)
+
+            # Dòng 2: Loại giọng & Mô tả chi tiết
+            lbl_type = CaptionLabel(f"{type_text} · {detail_text}", card)
+            lbl_type.setWordWrap(True)
+            card_layout.addWidget(lbl_type)
+
+            # Dòng 3: Nút Nghe Thử Giọng
+            btn_audition = PushButton("Nghe Thử Giọng", card)
+            btn_audition.setIcon(FluentIcon.VOLUME)
+            btn_audition.clicked.connect(lambda checked=False, s=spk_name, b=btn_audition: self._audition_character_voice(s, b))
+            card_layout.addWidget(btn_audition)
+
+            self.char_cards_layout.addWidget(card)
+            self._character_cards.append({
+                "name": spk_name,
+                "status": badge_text,
+                "type": type_text,
+                "detail": detail_text,
+                "widget": card,
+                "button": btn_audition,
+            })
+
+    def _audition_character_voice(self, spk_name: str, btn: Optional[PushButton] = None):
+        """Nghe thử giọng nhân vật bằng cách tổng hợp câu thoại đầu tiên của nhân vật trong video."""
+        first_line = ""
+        target_blk = None
+        for blk in self.subtitle_blocks:
+            spk = (getattr(blk, "speaker", "") or "Người nói 1").strip()
+            if spk == spk_name:
+                txt = (blk.translated_text if blk.translated_text else blk.text or "").strip()
+                if txt:
+                    first_line = txt
+                    target_blk = blk
+                    break
+
+        if not first_line:
+            first_line = f"Xin chào, đây là giọng nói thử nghiệm của {spk_name}."
+
+        prof = self.speaker_profiles.get(spk_name)
+        is_dict = isinstance(prof, dict)
+        method = (prof.get("method") if is_dict else getattr(prof, "method", "clone")) if prof else "clone"
+        ref_audio = (prof.get("source_audio_path") or prof.get("ref_audio_path") if is_dict else getattr(prof, "source_audio_path", "")) if prof else ""
+        voice_ins = (prof.get("voice_instruct") or prof.get("instruct") if is_dict else getattr(prof, "voice_instruct", "")) if prof else ""
+
+        if target_blk:
+            if getattr(target_blk, "voice_ref_path", ""):
+                ref_audio = target_blk.voice_ref_path
+            if getattr(target_blk, "voice_instruct", ""):
+                voice_ins = target_blk.voice_instruct
+
+        if not ref_audio and not voice_ins:
+            voice_ins = DEFAULT_SPEAKER_PRESETS.get(spk_name, {}).get("instruct", "")
+
+        if btn is not None:
+            self._active_audition_button = btn
+            btn.setText("Đang tạo giọng...")
+            btn.setIcon(FluentIcon.SYNC)
+            btn.setEnabled(False)
+
+        out_dir = os.path.join(BASE_DIR, "output", "omnivoice_studio", "auditions")
+        os.makedirs(out_dir, exist_ok=True)
+        safe_spk = re.sub(r'[^\w\-_\.]', '_', spk_name)
+        out_wav = os.path.join(out_dir, f"audition_{safe_spk}.wav")
+
+        self._launch_worker(
+            "character_audition",
+            text=first_line,
+            output_path=out_wav,
+            override_ref_audio=ref_audio if method == "clone" or ref_audio else "",
+            override_instruct=voice_ins if method == "preset" or voice_ins else "",
+        )
+
     def _preview_character_voice(self, spk_name: str):
         """Nghe thử mẫu âm thanh đại diện hoặc giọng thiết kế của nhân vật."""
         prof = self.speaker_profiles.get(spk_name, {})
@@ -2298,11 +2507,13 @@ class OmniVoiceInterface(ScrollArea):
 
     @staticmethod
     def _format_voice_source_display(blk: SubtitleBlock) -> str:
-        if getattr(blk, "voice_ref_path", "") and os.path.exists(blk.voice_ref_path):
-            return f"Mẫu: {os.path.basename(blk.voice_ref_path)}"
-        if getattr(blk, "voice_instruct", ""):
-            return f"Thiết kế: {blk.voice_instruct}"
-        return "Theo cấu hình chung"
+        ref_path = getattr(blk, "voice_ref_path", "")
+        if ref_path and os.path.exists(ref_path):
+            return "Nhân bản giọng từ video"
+        instruct = getattr(blk, "voice_instruct", "")
+        if instruct:
+            return f"Giọng thiết kế: {instruct}"
+        return "Chưa có giọng"
 
     def _populate_subtitle_table(self):
         self.sub_table.blockSignals(True)
@@ -2325,6 +2536,7 @@ class OmniVoiceInterface(ScrollArea):
             self.sub_table.setItem(row, 5, QTableWidgetItem(txt))
         self.sub_table.blockSignals(False)
         self._filter_subtitle_table()
+        self._update_character_profiles_overview()
 
     def _on_subtitle_table_edited(self, item: QTableWidgetItem):
         row = item.row()
@@ -2357,19 +2569,28 @@ class OmniVoiceInterface(ScrollArea):
                 blk.speaker = new_spk
                 prof = self.speaker_profiles.get(new_spk)
                 if prof:
-                    method = prof.get("method") or prof.get("assigned_strategy") or "clone"
+                    is_dict = isinstance(prof, dict)
+                    method = (prof.get("method") if is_dict else getattr(prof, "method", "clone")) or "clone"
                     if method == "preset":
                         blk.voice_ref_path = ""
-                        blk.voice_instruct = prof.get("voice_instruct") or prof.get("instruct") or ""
+                        blk.voice_instruct = (prof.get("voice_instruct") or prof.get("instruct") if is_dict else getattr(prof, "voice_instruct", "")) or ""
                     else:
-                        blk.voice_ref_path = prof.get("source_audio_path") or prof.get("ref_audio_path") or prof.get("source_audio_sample") or ""
+                        blk.voice_ref_path = (prof.get("source_audio_path") or prof.get("ref_audio_path") or prof.get("source_audio_sample") if is_dict else getattr(prof, "source_audio_path", "")) or ""
                         blk.voice_instruct = ""
                     blk.is_speaker_locked = True
                 else:
                     blk.voice_ref_path = ""
                     blk.voice_instruct = ""
                     blk.is_speaker_locked = False
+
+                item_src = QTableWidgetItem(self._format_voice_source_display(blk))
+                item_src.setFlags(item_src.flags() & ~Qt.ItemIsEditable)
+                self.sub_table.blockSignals(True)
+                self.sub_table.setItem(row, 4, item_src)
+                self.sub_table.blockSignals(False)
+
                 self._update_casting_table()
+                self._update_character_profiles_overview()
             elif col == 5:
                 blk.translated_text = item.text()
                 if not blk.text:
@@ -2840,6 +3061,11 @@ class OmniVoiceInterface(ScrollArea):
         self.lbl_status.setText(clean_msg)
         if not ok:
             self.progress_bar.setValue(0)
+            if task_type == "character_audition" and hasattr(self, "_active_audition_button") and self._active_audition_button:
+                self._active_audition_button.setText("Nghe Thử Giọng")
+                self._active_audition_button.setIcon(FluentIcon.VOLUME)
+                self._active_audition_button.setEnabled(True)
+                self._active_audition_button = None
             InfoBar.error("Không thành công", clean_msg, parent=self, duration=4500)
             return
 
@@ -2864,6 +3090,19 @@ class OmniVoiceInterface(ScrollArea):
             if task_type == "vn_catalog_preview":
                 self.btn_use_vn_voice_as_ref.setEnabled(True)
             self._play_audio_file(result_path)
+        elif task_type == "character_audition":
+            if ok and result_path and os.path.exists(result_path):
+                self.last_generated_audio_path = result_path
+                if hasattr(self, "_active_audition_button") and self._active_audition_button:
+                    self._active_audition_button.setText("Đang phát...")
+                    self._active_audition_button.setIcon(FluentIcon.PLAY)
+                self._play_audio_file(result_path)
+            else:
+                if hasattr(self, "_active_audition_button") and self._active_audition_button:
+                    self._active_audition_button.setText("Nghe Thử Giọng")
+                    self._active_audition_button.setIcon(FluentIcon.VOLUME)
+                    self._active_audition_button.setEnabled(True)
+                    self._active_audition_button = None
 
     def closeEvent(self, event):
         """Dừng phát âm thanh và dọn dẹp luồng nền an toàn khi đóng cửa sổ."""
@@ -2908,6 +3147,11 @@ class OmniVoiceInterface(ScrollArea):
         else:
             self.btn_play_pause_output.setText("Phát Nghe Thử")
             self.btn_play_pause_output.setIcon(FluentIcon.PLAY)
+            if hasattr(self, "_active_audition_button") and self._active_audition_button:
+                self._active_audition_button.setText("Nghe Thử Giọng")
+                self._active_audition_button.setIcon(FluentIcon.VOLUME)
+                self._active_audition_button.setEnabled(True)
+                self._active_audition_button = None
 
     def _on_player_position_changed(self, pos_ms: int):
         dur_ms = self._media_player.duration()

@@ -1262,6 +1262,178 @@ def test_casting_table_profile_sync(tmp_path):
         assert blk.speaker == "Người dẫn chuyện"
 
 
+# ==============================================================================
+# 22. KIỂM THỬ KHỐI HỒ SƠ GIỌNG NHÂN VẬT & CỘT LOẠI GIỌNG TRONG TAB BƯỚC 2 (TDD)
+# ==============================================================================
+def test_character_voice_profiles_overview_layout_and_count(tmp_path):
+    """
+    Xác minh khối tổng quan hồ sơ nhân vật trong Bước 2:
+    - Tiêu đề phụ: 'Video đã phân tích âm thanh · Đã nhận diện'
+    - Nhãn số lượng hiển thị đúng số nhân vật thực tế tìm thấy: 'Tổng số nhân vật nhận diện: 3 nhân vật'
+    - Tạo đúng 3 thẻ con tương ứng với 3 nhân vật và hiển thị đúng huy hiệu trạng thái, loại giọng.
+    """
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+
+    ref_wav = str(tmp_path / "char1.wav")
+    sf.write(ref_wav, _make_sine_wave(2.0, 16000), 16000)
+
+    prof1 = CharacterVoiceProfile(
+        speaker_id="speaker_01",
+        display_name="Nhân vật 1",
+        source_audio_path=ref_wav,
+        method="clone",
+        status="locked",
+    )
+    prof2 = CharacterVoiceProfile(
+        speaker_id="speaker_02",
+        display_name="Nhân vật 2",
+        preset_name="Nam Miền Bắc Trầm Ấm",
+        method="preset",
+        status="locked",
+    )
+    prof3 = CharacterVoiceProfile(
+        speaker_id="speaker_03",
+        display_name="Nhân vật 3",
+        method="clone",
+        status="unassigned",
+    )
+    ui.speaker_profiles = {
+        "Nhân vật 1": prof1,
+        "Nhân vật 2": prof2,
+        "Nhân vật 3": prof3,
+    }
+    ui.subtitle_blocks = [
+        SubtitleBlock(1, "00:00:01,000", "00:00:03,000", "Chào bạn", speaker="Nhân vật 1", voice_ref_path=ref_wav),
+        SubtitleBlock(2, "00:00:04,000", "00:00:06,000", "Tôi là nhân vật hai", speaker="Nhân vật 2", voice_instruct="Nam trầm ấm"),
+        SubtitleBlock(3, "00:00:07,000", "00:00:09,000", "Tôi chưa có giọng", speaker="Nhân vật 3"),
+    ]
+
+    ui._update_character_profiles_overview()
+
+    assert hasattr(ui, "lbl_char_overview_title")
+    assert ui.lbl_char_overview_title.text() == "Video đã phân tích âm thanh · Đã nhận diện"
+    assert hasattr(ui, "lbl_char_count")
+    assert ui.lbl_char_count.text() == "Tổng số nhân vật nhận diện: 3 nhân vật"
+
+    # Kiểm tra số lượng thẻ trong char_cards_layout
+    cards = getattr(ui, "_character_cards", [])
+    assert len(cards) == 3
+
+    # Thẻ 1: Nhân bản giọng từ video, Sẵn sàng
+    assert cards[0]["name"] == "Nhân vật 1"
+    assert cards[0]["status"] == "Sẵn sàng"
+    assert "Nhân bản giọng từ video" in cards[0]["type"]
+
+    # Thẻ 2: Giọng thiết kế, Sẵn sàng
+    assert cards[1]["name"] == "Nhân vật 2"
+    assert cards[1]["status"] == "Sẵn sàng"
+    assert "Giọng thiết kế" in cards[1]["type"]
+
+    # Thẻ 3: Chưa có giọng hoặc Cần kiểm tra
+    assert cards[2]["name"] == "Nhân vật 3"
+    assert cards[2]["status"] == "Cần kiểm tra"
+
+
+def test_sub_table_voice_source_column_display_and_sync(tmp_path):
+    """
+    Xác minh Cột 4 'Loại Giọng & Nguồn':
+    - Tiêu đề cột phải là 'Loại Giọng & Nguồn'.
+    - Định dạng hiển thị chuẩn: 'Nhân bản giọng từ video', 'Giọng thiết kế: {tên}', 'Chưa có giọng'.
+    - Khi thay đổi Nhân vật ở Cột 3, Cột 4 phải tự động cập nhật đúng loại giọng của nhân vật mới.
+    """
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+
+    ref_wav = str(tmp_path / "char1.wav")
+    sf.write(ref_wav, _make_sine_wave(1.5, 16000), 16000)
+
+    header_col4 = ui.sub_table.horizontalHeaderItem(4).text()
+    assert header_col4 == "Loại Giọng & Nguồn"
+
+    b1 = SubtitleBlock(1, "00:00:01,000", "00:00:03,000", "Câu 1", speaker="Nhân vật 1", voice_ref_path=ref_wav)
+    b2 = SubtitleBlock(2, "00:00:04,000", "00:00:06,000", "Câu 2", speaker="Nhân vật 2", voice_instruct="Nam trầm")
+    b3 = SubtitleBlock(3, "00:00:07,000", "00:00:09,000", "Câu 3", speaker="Nhân vật 3")
+
+    assert ui._format_voice_source_display(b1) == "Nhân bản giọng từ video"
+    assert ui._format_voice_source_display(b2) == "Giọng thiết kế: Nam trầm"
+    assert ui._format_voice_source_display(b3) == "Chưa có giọng"
+
+    ui.speaker_profiles = {
+        "Nhân vật 1": CharacterVoiceProfile("spk_1", "Nhân vật 1", source_audio_path=ref_wav, method="clone"),
+        "Nhân vật 2": CharacterVoiceProfile("spk_2", "Nhân vật 2", method="preset", voice_instruct="Nam trầm"),
+    }
+    ui.subtitle_blocks = [b1, b2, b3]
+    ui._populate_subtitle_table()
+
+    assert ui.sub_table.item(0, 4).text() == "Nhân bản giọng từ video"
+    assert ui.sub_table.item(1, 4).text() == "Giọng thiết kế: Nam trầm"
+    assert ui.sub_table.item(2, 4).text() == "Chưa có giọng"
+
+    # Đổi câu 3 (đang Nhân vật 3) sang Nhân vật 1
+    item_spk = ui.sub_table.item(2, 3)
+    item_spk.setText("Nhân vật 1")
+    # Kiểm tra Cột 4 được cập nhật tự động
+    assert ui.sub_table.item(2, 4).text() == "Nhân bản giọng từ video"
+
+
+def test_character_audition_finds_first_dialogue_line(tmp_path):
+    """
+    Xác minh nút Nghe Thử Giọng của nhân vật:
+    - Tìm chính xác câu thoại đầu tiên của nhân vật trong video để tổng hợp.
+    - Nếu nhân vật chưa có câu thoại, sử dụng câu thoại mẫu mặc định.
+    - Truyền đúng override_ref_audio hoặc override_instruct tương ứng với hồ sơ.
+    """
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+
+    ref_wav = str(tmp_path / "char1.wav")
+    sf.write(ref_wav, _make_sine_wave(1.5, 16000), 16000)
+
+    ui.speaker_profiles = {
+        "Nhân vật 1": CharacterVoiceProfile("spk_1", "Nhân vật 1", source_audio_path=ref_wav, method="clone"),
+        "Nhân vật 2": CharacterVoiceProfile("spk_2", "Nhân vật 2", method="preset", voice_instruct="Nữ dịu dàng"),
+    }
+    ui.subtitle_blocks = [
+        SubtitleBlock(1, "00:00:01,000", "00:00:03,000", "Lời mở đầu của nhân vật 2", speaker="Nhân vật 2"),
+        SubtitleBlock(2, "00:00:04,000", "00:00:06,000", "Câu đầu tiên của nhân vật 1", speaker="Nhân vật 1"),
+        SubtitleBlock(3, "00:00:07,000", "00:00:09,000", "Câu thứ hai của nhân vật 1", speaker="Nhân vật 1"),
+    ]
+
+    captured_args = {}
+    def mock_launch(task_type, text="", output_path="", override_ref_audio="", override_instruct="", **kwargs):
+        captured_args["task_type"] = task_type
+        captured_args["text"] = text
+        captured_args["override_ref_audio"] = override_ref_audio
+        captured_args["override_instruct"] = override_instruct
+
+    ui._launch_worker = mock_launch
+
+    # Audition Nhân vật 1 -> Phải lấy câu 2 ("Câu đầu tiên của nhân vật 1")
+    ui._audition_character_voice("Nhân vật 1")
+    assert captured_args["task_type"] == "character_audition"
+    assert captured_args["text"] == "Câu đầu tiên của nhân vật 1"
+    assert captured_args["override_ref_audio"] == ref_wav
+
+    # Audition Nhân vật 3 (không có trong subtitle_blocks) -> Dùng câu mẫu mặc định
+    ui._audition_character_voice("Nhân vật 3")
+    assert captured_args["task_type"] == "character_audition"
+    assert "Xin chào, đây là giọng nói thử nghiệm của Nhân vật 3." in captured_args["text"]
+
+
+
 
 
 
