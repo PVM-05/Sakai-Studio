@@ -618,3 +618,23 @@ def test_detect_subtitle_retries_when_text_touches_crop_boundary():
     assert len(results) >= 1
 
 
+def test_adaptive_mask_dilation_scales_with_text_height():
+    """
+    Xác minh mặt nạ hộp thích ứng co giãn lề theo chiều cao chữ:
+    Chữ nhỏ (chiều cao 20px) có khoảng đệm 3px;
+    Chữ lớn (chiều cao 80px) có khoảng đệm 12px;
+    Không bao giờ vượt quá trần p_max = 20px.
+    """
+    from src.core.tools.inpaint_tools import calc_adaptive_padding, _build_box_uint8_mask
+
+    assert calc_adaptive_padding(20) == 3
+    assert calc_adaptive_padding(80) == 12
+    assert calc_adaptive_padding(250) == 20
+
+    # Kiểm tra mặt nạ thực tế
+    mask_small = _build_box_uint8_mask((200, 200), [(50, 150, 80, 100)], dilation=0)
+    # Chiều cao hộp là 20 -> pad = 3 -> vùng mặt nạ từ y = 77 đến 103 (chiều cao 26)
+    y_indices, _ = np.where(mask_small > 0)
+    assert y_indices.max() - y_indices.min() + 1 == 26
+
+

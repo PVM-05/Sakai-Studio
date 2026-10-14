@@ -41,6 +41,13 @@ def box_coords_to_sub_area(coords: Tuple[int, int, int, int]) -> Tuple[int, int,
     return (int(ymin), int(ymax), int(xmin), int(xmax))
 
 
+def calc_adaptive_padding(text_height: int, k: float = 0.15, p_min: int = 3, p_max: int = 20) -> int:
+    """Tính toán khoảng đệm thích ứng theo chiều cao chữ để bao trọn viền và bóng đổ."""
+    h = max(1, int(text_height))
+    pad = int(round(h * k))
+    return max(int(p_min), min(int(p_max), pad))
+
+
 def _unpack_sam2_mask(sam2_data, target_h: int, target_w: int) -> np.ndarray:
     """Giải nén an toàn mặt nạ nhị phân SAM2 cho mọi kích thước khung hình (kể cả khi H*W không chia hết cho 8)."""
     packed_mask, mask_shape = sam2_data
@@ -72,14 +79,11 @@ def _build_box_uint8_mask(size: Tuple[int, int], coords_list, dilation: int = 8,
         if len(coords) == 5 and coords[4] is not None:
             xmin, xmax, ymin, ymax, sam2_data = coords
             binary_mask = _unpack_sam2_mask(sam2_data, h, w)
-            if getattr(config, 'autoMaskDilation', None) and config.autoMaskDilation.value:
-                box_height = abs(ymax - ymin)
-                dynamic_dilation = max(dilation, int(box_height * 0.15))
-            else:
-                dynamic_dilation = dilation
+            box_height = abs(ymax - ymin)
+            pad = max(int(dilation), calc_adaptive_padding(box_height))
 
-            if dynamic_dilation > 0:
-                kernel = np.ones((dynamic_dilation * 2 + 1, dynamic_dilation * 2 + 1), np.uint8)
+            if pad > 0:
+                kernel = np.ones((pad * 2 + 1, pad * 2 + 1), np.uint8)
                 binary_mask_uint8 = (binary_mask > 0).astype(np.uint8) * 255
                 dilated_mask = cv2.dilate(binary_mask_uint8, kernel, iterations=1)
                 mask[dilated_mask > 0] = 255
@@ -87,16 +91,13 @@ def _build_box_uint8_mask(size: Tuple[int, int], coords_list, dilation: int = 8,
                 mask[binary_mask > 0] = 255
         elif len(coords) >= 4:
             xmin, xmax, ymin, ymax = [int(v) for v in coords[:4]]
-            if getattr(config, 'autoMaskDilation', None) and config.autoMaskDilation.value:
-                box_height = abs(ymax - ymin)
-                dynamic_dilation = max(dilation, int(box_height * 0.15))
-            else:
-                dynamic_dilation = dilation
+            box_height = abs(ymax - ymin)
+            pad = max(int(dilation), calc_adaptive_padding(box_height))
 
-            x1 = max(0, xmin - dynamic_dilation)
-            y1 = max(0, ymin - dynamic_dilation)
-            x2 = min(w, xmax + dynamic_dilation)
-            y2 = min(h, ymax + dynamic_dilation)
+            x1 = max(0, xmin - pad)
+            y1 = max(0, ymin - pad)
+            x2 = min(w, xmax + pad)
+            y2 = min(h, ymax + pad)
             if x2 <= x1 or y2 <= y1:
                 continue
 
@@ -112,20 +113,20 @@ def _build_box_uint8_mask(size: Tuple[int, int], coords_list, dilation: int = 8,
                         _, text_mask = cv2.threshold(grad, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
                         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 3))
                         text_mask = cv2.morphologyEx(text_mask, cv2.MORPH_CLOSE, kernel)
-                        if dynamic_dilation > 0:
-                            d_kernel = np.ones((dynamic_dilation, dynamic_dilation), np.uint8)
+                        if pad > 0:
+                            d_kernel = np.ones((pad, pad), np.uint8)
                             text_mask = cv2.dilate(text_mask, d_kernel, iterations=1)
                         if np.any(text_mask > 0):
                             mask[y1:y2, x1:x2] = cv2.bitwise_or(mask[y1:y2, x1:x2], text_mask)
                         else:
-                            cv2.rectangle(mask, (x1, y1), (x2, y2), 255, thickness=-1)
+                            mask[y1:y2, x1:x2] = 255
                     else:
-                        cv2.rectangle(mask, (x1, y1), (x2, y2), 255, thickness=-1)
+                        mask[y1:y2, x1:x2] = 255
                 except Exception as e:
                     print(f"Smart Text Mask error: {e}")
-                    cv2.rectangle(mask, (x1, y1), (x2, y2), 255, thickness=-1)
+                    mask[y1:y2, x1:x2] = 255
             else:
-                cv2.rectangle(mask, (x1, y1), (x2, y2), 255, thickness=-1)
+                mask[y1:y2, x1:x2] = 255
 
     has_sam2_mask_already = any(c is not None and not isinstance(c, dict) and len(c) == 5 for c in coords_list)
     is_smart_mask_on = getattr(config, 'mmoSmartTextMask', None) and config.mmoSmartTextMask.value
@@ -134,7 +135,10 @@ def _build_box_uint8_mask(size: Tuple[int, int], coords_list, dilation: int = 8,
             from src.ai_engines.segmentation import refine_mask_with_sam2
             valid_boxes = [c[:4] for c in coords_list if c is not None and not isinstance(c, dict) and len(c) >= 4]
             if valid_boxes:
-                boxes = [[max(0, c[0] - dilation), max(0, c[2] - dilation), min(w, c[1] + dilation), min(h, c[3] + dilation)] for c in valid_boxes]
+                boxes = [[max(0, c[0] - max(int(dilation), calc_adaptive_padding(abs(c[3] - c[2])))),
+                          max(0, c[2] - max(int(dilation), calc_adaptive_padding(abs(c[3] - c[2])))),
+                          min(w, c[1] + max(int(dilation), calc_adaptive_padding(abs(c[3] - c[2])))),
+                          min(h, c[3] + max(int(dilation), calc_adaptive_padding(abs(c[3] - c[2]))))] for c in valid_boxes]
                 mask = refine_mask_with_sam2(
                     frame,
                     boxes,
@@ -162,8 +166,9 @@ def _build_text_stroke_uint8_mask(frame: np.ndarray, size: Tuple[int, int], coor
         if len(coords) == 5 and coords[4] is not None:
             xmin, xmax, ymin, ymax, sam2_data = coords
             binary_mask = _unpack_sam2_mask(sam2_data, h_frame, w_frame)
-            if dilation > 0:
-                kernel = np.ones((dilation * 2 + 1, dilation * 2 + 1), np.uint8)
+            pad = max(int(dilation), calc_adaptive_padding(abs(ymax - ymin)))
+            if pad > 0:
+                kernel = np.ones((pad * 2 + 1, pad * 2 + 1), np.uint8)
                 dilated = cv2.dilate((binary_mask > 0).astype(np.uint8) * 255, kernel, iterations=1)
                 mask[dilated > 0] = 255
             else:
@@ -173,13 +178,14 @@ def _build_text_stroke_uint8_mask(frame: np.ndarray, size: Tuple[int, int], coor
         if len(coords) < 4:
             continue
         xmin, xmax, ymin, ymax = [int(v) for v in coords[:4]]
-        pad = max(4, dilation)
+        pad = max(int(dilation), calc_adaptive_padding(abs(ymax - ymin)))
         x1 = max(0, xmin - pad)
         y1 = max(0, ymin - pad)
         x2 = min(w_frame, xmax + pad)
         y2 = min(h_frame, ymax + pad)
         if x2 <= x1 or y2 <= y1:
             continue
+
 
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
