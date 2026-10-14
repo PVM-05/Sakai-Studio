@@ -1781,6 +1781,154 @@ def test_character_overview_card_marks_review_needed_even_with_sample(tmp_path):
     assert card_info["detail"] == "Mẫu giọng cần rà soát"
 
 
+def test_generate_single_in_design_mode_never_uses_ref_audio(tmp_path):
+    """
+    Xác minh trong generate_single():
+    Khi override_mode='design', ngay cả khi override_ref_audio được truyền và tệp tồn tại,
+    hệ thống tuyệt đối không nạp tệp mẫu nhân bản, chỉ sử dụng instruct.
+    """
+    from unittest.mock import MagicMock
+    from src.ai_engines.tts_engine import TTSEngine
+
+    engine = TTSEngine(mode="clone")
+    engine.load_model = MagicMock()
+    engine.model = MagicMock()
+
+    captured_kwargs = {}
+
+    def fake_generate(**kwargs):
+        captured_kwargs.update(kwargs)
+        return MagicMock(waveform=_make_sine_wave(1.0, 24000))
+
+    engine.model.generate = MagicMock(side_effect=fake_generate)
+
+    sample_wav = tmp_path / "stale_sample.wav"
+    sample_wav.write_bytes(b"RIFFheader")
+
+    engine.generate_single(
+        "Chào bạn",
+        override_mode="design",
+        override_ref_audio=str(sample_wav),
+        override_instruct="female sweet voice",
+    )
+
+    assert "voice_clone_prompt" not in captured_kwargs
+    assert captured_kwargs.get("instruct") == "female sweet voice"
+
+
+def test_detect_speakers_from_srt_text_preserves_locked_clone_character(tmp_path):
+    """
+    Xác minh detect_speakers_from_srt_text() khi gặp nhân vật đã khóa giọng nhân bản (clone):
+    Hồ sơ đăng ký phải bảo toàn method='clone' và ref_audio_path, không bị biến thành preset.
+    """
+    from src.ai_engines.tts_engine import TTSEngine, SubtitleBlock
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    engine = TTSEngine(mode="clone")
+    ref_wav = str(tmp_path / "locked_clone.wav")
+    Path(ref_wav).write_bytes(b"RIFFheader")
+
+    engine.speaker_profiles = {
+        "Nhân vật Đã Khóa": CharacterVoiceProfile(
+            speaker_id="spk_locked",
+            display_name="Nhân vật Đã Khóa",
+            source_audio_path=ref_wav,
+            method="clone",
+            status="locked",
+        )
+    }
+
+    b_locked = SubtitleBlock(
+        1,
+        "00:00:01,000",
+        "00:00:03,000",
+        "Câu thoại của người đã khóa",
+        speaker="Nhân vật Đã Khóa",
+        voice_ref_path=ref_wav,
+        is_speaker_locked=True,
+    )
+    b_new = SubtitleBlock(
+        2,
+        "00:00:04,000",
+        "00:00:06,000",
+        "Câu thoại mới chưa phân vai",
+    )
+
+    profiles = engine.detect_speakers_from_srt_text([b_locked, b_new])
+
+    # Nhân vật đã khóa phải giữ nguyên phương pháp clone và đường dẫn mẫu
+    assert profiles["Nhân vật Đã Khóa"]["method"] == "clone"
+    assert profiles["Nhân vật Đã Khóa"]["ref_audio_path"] == ref_wav
+    assert b_locked.voice_ref_path == ref_wav
+
+
+def test_character_overview_card_marks_review_needed_for_dict_profile(tmp_path):
+    """
+    Xác minh khối tổng quan hồ sơ nhân vật hiển thị đúng huy hiệu 'Cần kiểm tra'
+    đối với hồ sơ dạng từ điển (dict) trả về từ nhận diện video có độ tin cậy thấp.
+    """
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+
+    valid_wav = tmp_path / "valid_sample.wav"
+    valid_wav.write_bytes(b"RIFFheader")
+
+    # Hồ sơ dạng từ điển thực tế từ detect_speakers_from_video
+    ui.speaker_profiles = {
+        "Nhân vật Độ Tin Cậy Thấp": {
+            "speaker_id": "spk_dict",
+            "description": "Độ tin cậy: 45%",
+            "source_audio_path": str(valid_wav),
+            "ref_audio_path": str(valid_wav),
+            "method": "clone",
+            "status": "locked",
+            "confidence_level": "review_needed",
+            "high_confidence_ratio": 0.45,
+            "count": 3,
+        }
+    }
+    ui.is_speakers_detected = True
+    ui.subtitle_blocks = [
+        SubtitleBlock(1, "00:00:01,000", "00:00:03,000", "Câu một", speaker="Nhân vật Độ Tin Cậy Thấp")
+    ]
+
+    ui._update_character_profiles_overview()
+
+    assert len(ui._character_cards) == 1
+    card_info = ui._character_cards[0]
+    assert card_info["status"] == "Cần kiểm tra"
+    assert card_info["detail"] == "Mẫu giọng cần rà soát"
+
+
+def test_audition_button_not_stuck_when_worker_is_running():
+    """
+    Xác minh khi hệ thống đang bận chạy tác vụ ngầm:
+    Bấm 'Nghe Thử Giọng' sẽ bị từ chối an toàn và nút không bị khóa ở trạng thái 'Đang tạo giọng...'.
+    """
+    from unittest.mock import MagicMock
+    from PySide6.QtWidgets import QApplication
+    from qfluentwidgets import PushButton
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+    # Giả lập worker đang chạy
+    ui._worker = MagicMock()
+    ui._worker.isRunning.return_value = True
+
+    btn = PushButton("Nghe Thử Giọng")
+    ui._audition_character_voice("Nhân vật 1", btn)
+
+    # Nút không được phép bị chuyển sang Đang tạo giọng và phải luôn mở khóa
+    assert btn.text() == "Nghe Thử Giọng"
+    assert btn.isEnabled() is True
+    assert ui._active_audition_button is None
+
+
+
 
 
 

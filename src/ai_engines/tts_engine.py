@@ -1313,8 +1313,11 @@ class TTSEngine:
                     prof_data = dict(prof)
                 prof_data["pitch_hz"] = 150.0
                 ratio = getattr(prof, "high_confidence_ratio", 1.0)
+                prof_data["high_confidence_ratio"] = float(ratio)
                 prof_data["description"] = f"Độ tin cậy: {int(ratio * 100)}%"
                 prof_data["confidence_level"] = "high" if ratio >= 0.7 else "review_needed"
+                if ratio < 0.7:
+                    prof_data["status"] = "review_needed"
                 detected_profiles[spk_name] = prof_data
 
             self.speaker_profiles = detected_profiles
@@ -1362,15 +1365,15 @@ class TTSEngine:
         named_speaker_map: Dict[str, str] = {}
         detected_profiles: Dict[str, Dict[str, Any]] = {}
 
-        def _register_speaker(spk_id: str, instruct_str: str, desc_str: str):
+        def _register_speaker(spk_id: str, instruct_str: str, desc_str: str, method: str = "preset", ref_path: str = ""):
             if spk_id not in detected_profiles:
                 detected_profiles[spk_id] = {
                     "speaker_id": spk_id,
                     "description": desc_str,
                     "pitch_hz": 0.0,
-                    "ref_audio_path": "",
-                    "source_audio_path": "",
-                    "method": "preset",
+                    "ref_audio_path": ref_path,
+                    "source_audio_path": ref_path,
+                    "method": method,
                     "status": "locked",
                     "instruct": instruct_str,
                     "voice_instruct": instruct_str,
@@ -1405,12 +1408,31 @@ class TTSEngine:
                     raw_text = clean_text
                     lower_text = raw_text.lower()
 
-            # 2. Nếu dòng thoại đã được người dùng khóa nhân vật thủ công, giữ nguyên hoàn toàn
+            # 2. Nếu dòng thoại đã được người dùng khóa nhân vật thủ công, giữ nguyên hoàn toàn cả tên và phương pháp giọng
             if getattr(blk, "is_speaker_locked", False) and getattr(blk, "speaker", "").strip():
                 assigned_spk = blk.speaker
                 assigned_instruct = getattr(blk, "voice_instruct", "") or DEFAULT_SPEAKER_PRESETS.get(assigned_spk, {}).get("instruct", "")
                 assigned_desc = getattr(blk, "speaker", "")
-                _register_speaker(assigned_spk, assigned_instruct, assigned_desc)
+
+                existing_prof = self.speaker_profiles.get(assigned_spk, {})
+                is_ex_dict = isinstance(existing_prof, dict)
+                ex_method = (
+                    existing_prof.get("method")
+                    if is_ex_dict
+                    else getattr(existing_prof, "method", "")
+                )
+                ex_ref = (
+                    getattr(blk, "voice_ref_path", "")
+                    or (
+                        (existing_prof.get("ref_audio_path") or existing_prof.get("source_audio_path", ""))
+                        if is_ex_dict
+                        else (getattr(existing_prof, "source_audio_path", "") or getattr(existing_prof, "ref_audio_path", ""))
+                    )
+                )
+                if not ex_method:
+                    ex_method = "clone" if ex_ref else "preset"
+
+                _register_speaker(assigned_spk, assigned_instruct, assigned_desc, method=ex_method, ref_path=ex_ref)
                 continue
 
             assigned_spk = ""
@@ -1516,7 +1538,17 @@ class TTSEngine:
 
         active_mode = override_mode or self.mode
 
-        if override_mode == "clone":
+        if active_mode == "design":
+            # Chế độ thiết kế giọng nói: Tuyệt đối không dùng mẫu âm thanh nhân bản
+            if override_prompt is not None:
+                gen_kwargs["voice_clone_prompt"] = override_prompt
+            elif override_instruct:
+                gen_kwargs["instruct"] = override_instruct
+            elif self.instruct:
+                gen_kwargs["instruct"] = self.instruct
+            else:
+                gen_kwargs["instruct"] = DEFAULT_SPEAKER_PRESETS["Người nói 1"]["instruct"]
+        elif override_mode == "clone":
             if override_prompt is not None:
                 gen_kwargs["voice_clone_prompt"] = override_prompt
             elif override_ref_audio and os.path.exists(override_ref_audio):
@@ -1546,9 +1578,6 @@ class TTSEngine:
             if self.current_prompt is not None:
                 gen_kwargs["voice_clone_prompt"] = self.current_prompt
             elif self.instruct:
-                gen_kwargs["instruct"] = self.instruct
-        elif active_mode == "design":
-            if self.instruct:
                 gen_kwargs["instruct"] = self.instruct
 
         # Luôn bảo đảm có điều kiện giọng nói để không bị lệch chất giọng ngoài ý muốn

@@ -1718,11 +1718,20 @@ class OmniVoiceInterface(ScrollArea):
             if hasattr(prof, "method"):
                 prof.method = "clone"
                 prof.status = "locked"
-                ref_path = prof.source_audio_path
+                ref_path = getattr(prof, "source_audio_path", "") or getattr(prof, "_backup_source_audio", "")
+                if not getattr(prof, "source_audio_path", "") and ref_path:
+                    prof.source_audio_path = ref_path
             else:
                 prof["method"] = "clone"
                 prof["status"] = "locked"
-                ref_path = prof.get("ref_audio_path") or prof.get("source_audio_sample") or prof.get("source_audio_path", "")
+                ref_path = (
+                    prof.get("ref_audio_path")
+                    or prof.get("source_audio_sample")
+                    or prof.get("source_audio_path", "")
+                    or prof.get("_backup_source_audio", "")
+                )
+                if not prof.get("source_audio_path") and ref_path:
+                    prof["source_audio_path"] = ref_path
 
             for blk in self.subtitle_blocks:
                 if getattr(blk, "speaker", "") == spk_name:
@@ -1738,6 +1747,9 @@ class OmniVoiceInterface(ScrollArea):
                 prof.status = "locked"
                 prof.custom_audio_path = ""
                 prof.voice_clone_prompt_path = ""
+                if getattr(prof, "source_audio_path", ""):
+                    prof._backup_source_audio = prof.source_audio_path
+                prof.source_audio_path = ""
                 if hasattr(prof, "ref_audio_path"):
                     setattr(prof, "ref_audio_path", "")
             else:
@@ -1747,6 +1759,9 @@ class OmniVoiceInterface(ScrollArea):
                 prof["voice_instruct"] = ins
                 prof["instruct"] = ins
                 prof["status"] = "locked"
+                if prof.get("source_audio_path"):
+                    prof["_backup_source_audio"] = prof["source_audio_path"]
+                prof["source_audio_path"] = ""
                 prof["ref_audio_path"] = ""
                 prof["prompt"] = None
 
@@ -1958,9 +1973,18 @@ class OmniVoiceInterface(ScrollArea):
             has_valid_ins = bool(voice_ins)
 
             # Phân biệt rõ các trạng thái theo độ tin cậy và sự sẵn sàng của mẫu giọng
-            is_review_needed = (status_val in ("review_needed", "unassigned"))
-            if hasattr(prof, "high_confidence_ratio") and getattr(prof, "high_confidence_ratio", 1.0) < 0.7:
-                is_review_needed = True
+            conf_level = prof.get("confidence_level", "") if is_dict else getattr(prof, "confidence_level", "")
+            raw_ratio = prof.get("high_confidence_ratio", 1.0) if is_dict else getattr(prof, "high_confidence_ratio", 1.0)
+            try:
+                conf_ratio = float(raw_ratio) if raw_ratio is not None else 1.0
+            except (ValueError, TypeError):
+                conf_ratio = 1.0
+
+            is_review_needed = (
+                status_val in ("review_needed", "unassigned")
+                or conf_level == "review_needed"
+                or conf_ratio < 0.7
+            )
 
             if method == "clone":
                 if has_valid_ref and not is_review_needed:
@@ -2037,7 +2061,17 @@ class OmniVoiceInterface(ScrollArea):
 
     def _audition_character_voice(self, spk_name: str, btn: Optional[PushButton] = None):
         """Nghe thử giọng nhân vật bằng cách tổng hợp câu thoại đầu tiên của nhân vật trong video."""
-        # 1. Nếu đang phát chính nhân vật này, bấm lại để dừng phát
+        # 1. Nếu hệ thống đang bận chạy tác vụ ngầm, từ chối ngay mà không khóa nút
+        if self._worker and self._worker.isRunning():
+            InfoBar.warning(
+                "Đang bận",
+                "Hệ thống đang xử lý tác vụ trước đó, vui lòng đợi...",
+                parent=self,
+                duration=2500,
+            )
+            return
+
+        # 2. Nếu đang phát chính nhân vật này, bấm lại để dừng phát
         if (
             btn is not None
             and getattr(self, "_active_audition_button", None) == btn
@@ -2047,7 +2081,7 @@ class OmniVoiceInterface(ScrollArea):
             self._reset_audition_button()
             return
 
-        # 2. Tìm câu thoại đầu tiên có văn bản của nhân vật
+        # 3. Tìm câu thoại đầu tiên có văn bản của nhân vật
         first_line = ""
         target_blk = None
         for blk in self.subtitle_blocks:
@@ -2074,7 +2108,12 @@ class OmniVoiceInterface(ScrollArea):
             if getattr(target_blk, "voice_instruct", ""):
                 voice_ins = target_blk.voice_instruct
 
-        # 3. Kiểm tra tính hợp lệ của giọng nhân vật, tuyệt đối không âm thầm đổi sang giọng mặc định
+        if method == "preset":
+            ref_audio = ""
+        elif method == "clone":
+            voice_ins = ""
+
+        # 4. Kiểm tra tính hợp lệ của giọng nhân vật, tuyệt đối không âm thầm đổi sang giọng mặc định
         if method == "clone":
             if not (ref_audio and os.path.exists(ref_audio)):
                 InfoBar.warning(
@@ -2110,7 +2149,7 @@ class OmniVoiceInterface(ScrollArea):
                 self._reset_audition_button()
                 return
 
-        # 4. Chuyển trạng thái nút sang Đang tạo giọng...
+        # 5. Chuyển trạng thái nút sang Đang tạo giọng...
         if btn is not None:
             self._active_audition_button = btn
             btn.setText("Đang tạo giọng...")
@@ -2126,8 +2165,8 @@ class OmniVoiceInterface(ScrollArea):
             "character_audition",
             text=first_line,
             output_path=out_wav,
-            override_ref_audio=ref_audio if method == "clone" or ref_audio else "",
-            override_instruct=voice_ins if method == "preset" or voice_ins else "",
+            override_ref_audio=ref_audio if method == "clone" else "",
+            override_instruct=voice_ins if method == "preset" else "",
         )
 
     def _preview_character_voice(self, spk_name: str):
@@ -3160,6 +3199,7 @@ class OmniVoiceInterface(ScrollArea):
         override_instruct: str = "",
     ):
         if self._worker and self._worker.isRunning():
+            self._reset_audition_button()
             InfoBar.warning("Đang bận", "Hệ thống đang xử lý tác vụ trước đó, vui lòng đợi...", parent=self, duration=2500)
             return
 
@@ -3182,6 +3222,7 @@ class OmniVoiceInterface(ScrollArea):
                 parent=self,
                 duration=3500,
             )
+            self._reset_audition_button()
             return
 
         self.progress_bar.setValue(10)
