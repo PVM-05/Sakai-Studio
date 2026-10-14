@@ -38,18 +38,101 @@ class ConfidenceLevel(Enum):
 
 
 @dataclass
-class SpeakerVoiceProfile:
-    """Hồ sơ cấu hình giọng nói và danh tính của một nhân vật."""
+class CharacterVoiceProfile:
+    """Hồ sơ cấu hình giọng nói và danh tính nhân vật thống nhất theo đặc tả."""
 
     speaker_id: str
     display_name: str
-    source_audio_sample: str = ""
-    assigned_strategy: str = "preset"  # "clone" (nhái giọng nguồn) hoặc "preset" (giọng thiết kế)
-    voice_preset_key: str = ""
-    voice_clone_prompt_path: str = ""
-    instruct: str = "male, young adult, moderate pitch"
-    dialogue_count: int = 0
+    utterance_count: int = 0
+    total_duration: float = 0.0
+    source_audio_path: str = ""
+    method: str = "clone"  # "clone" (nhân bản từ video) hoặc "preset" (giọng danh mục)
+    preset_name: str = ""
+    voice_instruct: str = "male, young adult, moderate pitch"
+    status: str = "locked"  # "locked", "review_needed", "unassigned"
+    custom_audio_path: str = ""
     high_confidence_ratio: float = 1.0
+    voice_clone_prompt_path: str = ""
+
+    # Các thuộc tính bí danh hỗ trợ tương thích ngược 2 chiều
+    @property
+    def source_audio_sample(self) -> str:
+        return self.source_audio_path
+
+    @source_audio_sample.setter
+    def source_audio_sample(self, val: str):
+        self.source_audio_path = str(val or "")
+
+    @property
+    def dialogue_count(self) -> int:
+        return self.utterance_count
+
+    @dialogue_count.setter
+    def dialogue_count(self, val: int):
+        self.utterance_count = int(val or 0)
+
+    @property
+    def assigned_strategy(self) -> str:
+        return self.method
+
+    @assigned_strategy.setter
+    def assigned_strategy(self, val: str):
+        self.method = str(val or "clone")
+
+    @property
+    def instruct(self) -> str:
+        return self.voice_instruct
+
+    @instruct.setter
+    def instruct(self, val: str):
+        self.voice_instruct = str(val or "")
+
+    @property
+    def voice_preset_key(self) -> str:
+        return self.preset_name
+
+    @voice_preset_key.setter
+    def voice_preset_key(self, val: str):
+        self.preset_name = str(val or "")
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Chuyển đổi sang từ điển tương thích hoàn toàn với các tầng xử lý hiện có."""
+        return {
+            "speaker_id": self.speaker_id,
+            "display_name": self.display_name,
+            "count": self.utterance_count,
+            "utterance_count": self.utterance_count,
+            "dialogue_count": self.utterance_count,
+            "total_duration": self.total_duration,
+            "ref_audio": self.source_audio_path,
+            "ref_audio_path": self.source_audio_path,
+            "source_audio_path": self.source_audio_path,
+            "source_audio_sample": self.source_audio_path,
+            "method": self.method,
+            "assigned_strategy": self.method,
+            "preset_name": self.preset_name,
+            "voice_preset": self.preset_name,
+            "voice_instruct": self.voice_instruct,
+            "instruct": self.voice_instruct,
+            "status": self.status,
+            "confidence": "high" if self.high_confidence_ratio >= 0.7 else ("review_needed" if self.high_confidence_ratio >= 0.3 else "unassigned"),
+            "confidence_level": "high" if self.high_confidence_ratio >= 0.7 else ("review_needed" if self.high_confidence_ratio >= 0.3 else "unassigned"),
+            "custom_audio_path": self.custom_audio_path,
+            "high_confidence_ratio": self.high_confidence_ratio,
+        }
+
+    def __getitem__(self, key: str) -> Any:
+        return self.to_dict()[key]
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.to_dict().get(key, default)
+
+    def __contains__(self, key: str) -> bool:
+        return key in self.to_dict()
+
+
+# Bí danh tương thích ngược
+SpeakerVoiceProfile = CharacterVoiceProfile
 
 
 def _parse_time_to_seconds(time_val: Any) -> float:
@@ -421,15 +504,19 @@ class SpeakerDiarizationCoordinator:
 
                 profile = detected_profiles.get(speaker_name)
                 if profile is None:
-                    profile = SpeakerVoiceProfile(
+                    profile = CharacterVoiceProfile(
                         speaker_id=f"spk_{cluster_id}",
                         display_name=speaker_name,
-                        assigned_strategy="clone",
-                        dialogue_count=0,
+                        method="clone",
+                        utterance_count=0,
+                        total_duration=0.0,
+                        status="locked",
                         high_confidence_ratio=0.0,
                     )
                     detected_profiles[speaker_name] = profile
-                profile.dialogue_count += 1
+                profile.utterance_count += 1
+                dur = max(0.0, _parse_time_to_seconds(getattr(blk, "end_time", 0)) - _parse_time_to_seconds(getattr(blk, "start_time", 0)))
+                profile.total_duration += dur
 
             for speaker_name, profile in detected_profiles.items():
                 members = [
@@ -505,15 +592,16 @@ class SpeakerDiarizationCoordinator:
                         f"{Path(video_path).stem}_{profile.speaker_id}_{uuid.uuid4().hex[:8]}.wav"
                     )
                     sf.write(str(sample_path), merged, sr)
-                    profile.source_audio_sample = str(sample_path)
-                    profile.assigned_strategy = "clone"
+                    profile.source_audio_path = str(sample_path)
+                    profile.method = "clone"
+                    profile.status = "locked"
 
                 for pos in members:
                     blk = blocks[valid_indices[pos]]
-                    if profile.source_audio_sample:
-                        blk.voice_ref_path = profile.source_audio_sample
+                    if profile.source_audio_path:
+                        blk.voice_ref_path = profile.source_audio_path
                     if not getattr(blk, "voice_instruct", ""):
-                        blk.voice_instruct = profile.instruct
+                        blk.voice_instruct = profile.voice_instruct
 
             return detected_profiles
         finally:

@@ -1020,6 +1020,104 @@ def test_prompt_creation_failure_falls_back_to_instruct_not_unconditioned(tmp_pa
     assert captured_kwargs.get("instruct") == "male, middle-aged"
 
 
+# =============================================================================
+# 21. KIỂM THỬ HỒ SƠ GIỌNG NHÂN VẬT (CHARACTER VOICE PROFILE) VÀ KHÓA GIỌNG
+# =============================================================================
+
+def test_character_voice_profile_dataclass_contract():
+    """
+    Kiểm tra cấu trúc CharacterVoiceProfile:
+    - Lưu trữ đầy đủ trường thông tin chuẩn theo đặc tả thiết kế.
+    - Tương thích ngược hoàn toàn với truy cập dạng từ điển profile['speaker_id'], profile.get('ref_audio').
+    - Các bí danh thuộc tính cũ (source_audio_sample, dialogue_count, assigned_strategy) hoạt động 2 chiều.
+    """
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    prof = CharacterVoiceProfile(
+        speaker_id="speaker_01",
+        display_name="Người dẫn chuyện",
+        utterance_count=8,
+        total_duration=24.5,
+        source_audio_path="cache/speaker_01_ref.wav",
+        method="clone",
+        preset_name="",
+        voice_instruct="male, warm, storyteller",
+        status="locked",
+    )
+
+    assert prof.speaker_id == "speaker_01"
+    assert prof.display_name == "Người dẫn chuyện"
+    assert prof.utterance_count == 8
+    assert prof.total_duration == 24.5
+    assert prof.source_audio_path == "cache/speaker_01_ref.wav"
+    assert prof.method == "clone"
+    assert prof.status == "locked"
+
+    # Kiểm tra truy cập dạng từ điển
+    assert prof["speaker_id"] == "speaker_01"
+    assert prof["ref_audio"] == "cache/speaker_01_ref.wav"
+    assert prof["source_audio_sample"] == "cache/speaker_01_ref.wav"
+    assert prof["count"] == 8
+    assert prof.get("method") == "clone"
+    assert prof.get("status") == "locked"
+    assert "source_audio_path" in prof
+
+    # Kiểm tra các thuộc tính bí danh tương thích ngược
+    assert prof.source_audio_sample == "cache/speaker_01_ref.wav"
+    prof.source_audio_sample = "cache/new_ref.wav"
+    assert prof.source_audio_path == "cache/new_ref.wav"
+
+    assert prof.dialogue_count == 8
+    prof.dialogue_count = 10
+    assert prof.utterance_count == 10
+
+    assert prof.assigned_strategy == "clone"
+    prof.assigned_strategy = "preset"
+    assert prof.method == "preset"
+
+
+def test_process_video_subtitles_returns_character_voice_profiles(tmp_path):
+    """
+    Kiểm tra process_video_subtitles trả về tập hợp CharacterVoiceProfile chuẩn hóa,
+    được đánh dấu trạng thái mặc định 'locked' và phương pháp 'clone'.
+    """
+    from src.ai_engines.speaker_diarization import (
+        CharacterVoiceProfile,
+        SpeakerDiarizationCoordinator,
+    )
+    from src.ai_engines.tts_engine import SubtitleBlock
+
+    sr = 16000
+    fake_audio = np.concatenate([
+        _make_sine_wave(3.0, sr, freq=220.0),
+        _make_sine_wave(3.0, sr, freq=440.0),
+    ])
+    audio_path = str(tmp_path / "dialogue_video.wav")
+    sf.write(audio_path, fake_audio, sr)
+
+    blocks = [
+        SubtitleBlock(1, "00:00:00,000", "00:00:02,800", "Chào bạn"),
+        SubtitleBlock(2, "00:00:03,000", "00:00:05,800", "Chào bạn, tôi là người thứ hai"),
+    ]
+
+    coordinator = SpeakerDiarizationCoordinator(allow_mock=True)
+    profiles = coordinator.process_video_subtitles(
+        video_path=audio_path,
+        blocks=blocks,
+        max_speakers=2,
+        temp_dir=str(tmp_path),
+    )
+
+    assert len(profiles) >= 1
+    for name, prof in profiles.items():
+        assert isinstance(prof, CharacterVoiceProfile)
+        assert prof.status == "locked"
+        assert prof.method == "clone"
+        assert prof.utterance_count >= 1
+        assert prof.source_audio_path != ""
+        assert os.path.exists(prof.source_audio_path)
+
+
 
 
 

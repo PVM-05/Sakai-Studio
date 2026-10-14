@@ -1306,16 +1306,15 @@ class TTSEngine:
 
             detected_profiles: Dict[str, Dict[str, Any]] = {}
             for spk_name, prof in diar_profiles.items():
-                detected_profiles[spk_name] = {
-                    "speaker_id": spk_name,
-                    "description": f"Độ tin cậy: {int(prof.high_confidence_ratio * 100)}%",
-                    "pitch_hz": 150.0,
-                    "ref_audio_path": prof.source_audio_sample,
-                    "source_audio_sample": prof.source_audio_sample,
-                    "instruct": prof.instruct,
-                    "count": prof.dialogue_count,
-                    "confidence_level": "high" if prof.high_confidence_ratio >= 0.7 else "review_needed",
-                }
+                if hasattr(prof, "to_dict"):
+                    prof_data = prof.to_dict()
+                else:
+                    prof_data = dict(prof)
+                prof_data["pitch_hz"] = 150.0
+                ratio = getattr(prof, "high_confidence_ratio", 1.0)
+                prof_data["description"] = f"Độ tin cậy: {int(ratio * 100)}%"
+                prof_data["confidence_level"] = "high" if ratio >= 0.7 else "review_needed"
+                detected_profiles[spk_name] = prof_data
 
             self.speaker_profiles = detected_profiles
             self.log(
