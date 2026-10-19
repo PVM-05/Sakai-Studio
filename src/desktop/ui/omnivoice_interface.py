@@ -1728,13 +1728,13 @@ class OmniVoiceInterface(ScrollArea):
         if chosen_method_text == "Nhân bản giọng từ video":
             if hasattr(prof, "method"):
                 prof.method = "clone"
-                prof.status = "locked"
                 ref_path = getattr(prof, "source_audio_path", "") or getattr(prof, "_backup_source_audio", "")
                 if not getattr(prof, "source_audio_path", "") and ref_path:
                     prof.source_audio_path = ref_path
+                has_sample = bool(ref_path and os.path.exists(ref_path))
+                prof.status = "locked" if has_sample else "review_needed"
             else:
                 prof["method"] = "clone"
-                prof["status"] = "locked"
                 ref_path = (
                     prof.get("ref_audio_path")
                     or prof.get("source_audio_sample")
@@ -1743,6 +1743,8 @@ class OmniVoiceInterface(ScrollArea):
                 )
                 if not prof.get("source_audio_path") and ref_path:
                     prof["source_audio_path"] = ref_path
+                has_sample = bool(ref_path and os.path.exists(ref_path))
+                prof["status"] = "locked" if has_sample else "review_needed"
 
             for blk in self.subtitle_blocks:
                 if getattr(blk, "speaker", "") == spk_name:
@@ -1941,12 +1943,12 @@ class OmniVoiceInterface(ScrollArea):
         speaker_names: List[str] = []
         seen = set()
         for spk in self.speaker_profiles.keys():
-            if spk and spk not in seen:
+            if spk and spk not in ("Chưa phân vai", "Chưa xác định") and spk not in seen:
                 seen.add(spk)
                 speaker_names.append(spk)
         for blk in self.subtitle_blocks:
             spk = (getattr(blk, "speaker", "") or "").strip()
-            if spk and spk not in seen:
+            if spk and spk not in ("Chưa phân vai", "Chưa xác định") and spk not in seen:
                 seen.add(spk)
                 speaker_names.append(spk)
 
@@ -2212,11 +2214,17 @@ class OmniVoiceInterface(ScrollArea):
         InfoBar.success("Đã đặt lại", "Đã xóa toàn bộ cấu hình giọng gán cho nhân vật.", parent=self, duration=2500)
 
     def _audition_all_speakers(self):
-        """Nghe thử mẫu giọng cho nhân vật đang chọn."""
-        if not self.speaker_profiles and not self.subtitle_blocks:
+        """Nghe thử tuần tự từng nhân vật đã được phân vai."""
+        chars = [c["speaker"] for c in getattr(self, "_character_cards", []) if c.get("speaker") and c.get("speaker") not in ("Chưa phân vai", "Chưa xác định")]
+        if not chars:
+            chars = [s for s in self.speaker_profiles.keys() if s and s not in ("Chưa phân vai", "Chưa xác định")]
+        if not chars:
             InfoBar.warning("Chưa có nhân vật", "Vui lòng nạp phụ đề hoặc nhận diện nhân vật trước khi nghe thử.", parent=self, duration=2500)
             return
-        self._preview_speaker_preset_vi()
+
+        spk = chars[0]
+        self._audition_character_voice(spk)
+        InfoBar.info("Nghe thử nhân vật", f"Đang nghe thử giọng của {spk} trong tổng số {len(chars)} nhân vật.", parent=self, duration=3000)
 
     def _run_pre_export_quality_check(self) -> List[Dict[str, Any]]:
         """Kiểm tra chất lượng trước khi xuất âm thanh hoặc video lồng tiếng."""
@@ -2685,7 +2693,7 @@ class OmniVoiceInterface(ScrollArea):
 
             self.sub_table.setItem(row, 1, QTableWidgetItem(str(blk.start_time)))
             self.sub_table.setItem(row, 2, QTableWidgetItem(str(blk.end_time)))
-            spk = getattr(blk, "speaker", "") or "Người nói 1"
+            spk = getattr(blk, "speaker", "") or "Chưa phân vai"
             self.sub_table.setItem(row, 3, QTableWidgetItem(spk))
 
             item_src = QTableWidgetItem(self._format_voice_source_display(blk))

@@ -2055,4 +2055,47 @@ def test_block_preview_uses_correct_override_mode_and_voice(tmp_path):
     assert captured.get("override_instruct") == "female sweet voice"
 
 
+def test_character_overview_ignores_unassigned_labels():
+    """
+    Xác minh _update_character_profiles_overview không tính nhãn 'Chưa phân vai'
+    hoặc 'Chưa xác định' vào tổng số nhân vật nhận diện được.
+    """
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.tts_engine import SubtitleBlock
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+    ui.is_speakers_detected = True
+    ui.speaker_profiles = {"Nhân vật 1": {"method": "preset", "status": "locked", "voice_instruct": "male"}}
+    ui.subtitle_blocks = [
+        SubtitleBlock(1, "00:00:01,000", "00:00:03,000", "Câu một", speaker="Nhân vật 1"),
+        SubtitleBlock(2, "00:00:04,000", "00:00:06,000", "Câu hai", speaker="Chưa phân vai"),
+    ]
+
+    ui._update_character_profiles_overview()
+    # Chỉ có 1 nhân vật duy nhất
+    assert len(ui._character_cards) == 1
+    assert "1 nhân vật" in ui.lbl_char_count.text()
+
+
+def test_clone_method_without_sample_marks_review_needed():
+    """
+    Xác minh khi người dùng đổi phương pháp sang clone nhưng chưa có tệp mẫu âm thanh,
+    trạng thái hồ sơ phải là review_needed, không được hiển thị là locked.
+    """
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+    prof = CharacterVoiceProfile(speaker_id="spk_test", display_name="Nhân vật Mới", source_audio_path="")
+    ui.speaker_profiles = {"Nhân vật Mới": prof}
+
+    ui._on_character_method_changed("Nhân vật Mới", "Nhân bản giọng từ video")
+    assert prof.status == "review_needed"
+
+
+
 
