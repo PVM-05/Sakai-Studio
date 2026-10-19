@@ -2023,3 +2023,36 @@ def test_synthesize_blocks_does_not_skip_diarization_if_some_blocks_assigned(tmp
     assert engine.detect_speakers_from_video.called is True
 
 
+def test_block_preview_uses_correct_override_mode_and_voice(tmp_path):
+    """
+    Xác minh nghe thử một câu phụ đề (block_preview):
+    Khi câu được gán phương pháp preset, worker truyền override_mode='design'
+    vào generate_single bất kể chế độ toàn cục của engine là clone.
+    """
+    from unittest.mock import MagicMock
+    from src.desktop.ui.omnivoice_interface import OmniVoiceTaskWorker
+
+    captured = {}
+    def fake_generate_single(text, **kwargs):
+        captured.update(kwargs)
+        return str(tmp_path / "mock.wav")
+
+    mock_engine = MagicMock()
+    mock_engine.generate_single = MagicMock(side_effect=fake_generate_single)
+
+    worker = OmniVoiceTaskWorker(
+        task_type="block_preview",
+        engine_params={"mode": "clone"},
+        text="Xin chào",
+        output_path=str(tmp_path / "preview.wav"),
+        override_mode="design",
+        override_instruct="female sweet voice",
+    )
+    worker._active_engine = mock_engine
+    worker._run_engine_task(mock_engine)
+
+    assert captured.get("override_mode") == "design"
+    assert captured.get("override_instruct") == "female sweet voice"
+
+
+

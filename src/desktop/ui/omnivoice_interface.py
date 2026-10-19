@@ -206,6 +206,7 @@ class OmniVoiceTaskWorker(QThread):
         override_ref_audio: str = "",
         override_instruct: str = "",
         prefer_cuda: bool = True,
+        override_mode: Optional[str] = None,
         parent=None,
     ):
         super().__init__(parent=parent)
@@ -220,6 +221,7 @@ class OmniVoiceTaskWorker(QThread):
         self.override_ref_audio = override_ref_audio
         self.override_instruct = override_instruct
         self.prefer_cuda = prefer_cuda
+        self.override_mode = override_mode
         self._engine: Optional[TTSEngine] = None
         self._did_emit_result: bool = False
 
@@ -241,6 +243,16 @@ class OmniVoiceTaskWorker(QThread):
         try:
             engine = TTSEngine(parent_logger=self._emit_log, **self.engine_params)
             self._engine = engine
+            self._run_engine_task(engine)
+        except Exception as e:
+            self.logSignal.emit(f"Lỗi thực thi: {str(e)}")
+            self._emit_result(False, self.task_type, "", str(e))
+        finally:
+            if not self._did_emit_result:
+                self._emit_result(False, self.task_type, "", "Tác vụ kết thúc bất thường hoặc đã bị hủy.")
+            self._engine = None
+
+    def _run_engine_task(self, engine: TTSEngine):
 
             if self.task_type == "detect_speakers":
                 max_spk = int(self.engine_params.get("max_speakers", 4))
@@ -331,9 +343,14 @@ class OmniVoiceTaskWorker(QThread):
                 if self.task_type == "vn_catalog_preview":
                     engine.language = "vi"
                 target_dur = self.fixed_duration if self.fixed_duration > 0.4 else None
-                override_mode = None
-                if self.task_type == "character_audition":
-                    override_mode = "clone" if (self.override_ref_audio and not self.override_instruct) else ("design" if self.override_instruct else None)
+                override_mode = self.override_mode
+                if not override_mode:
+                    if self.task_type == "character_audition":
+                        override_mode = "clone" if (self.override_ref_audio and not self.override_instruct) else ("design" if self.override_instruct else None)
+                    elif self.override_instruct and not self.override_ref_audio:
+                        override_mode = "design"
+                    elif self.override_ref_audio and not self.override_instruct:
+                        override_mode = "clone"
                 engine.generate_single(
                     self.text,
                     output_path=self.output_path,
@@ -409,13 +426,7 @@ class OmniVoiceTaskWorker(QThread):
                     self._emit_result(False, self.task_type, "", err_msg)
                 return
 
-        except Exception as e:
-            self.logSignal.emit(f"Lỗi thực thi: {str(e)}")
-            self._emit_result(False, self.task_type, "", str(e))
-        finally:
-            if not self._did_emit_result:
-                self._emit_result(False, self.task_type, "", "Tác vụ kết thúc bất thường hoặc đã bị hủy.")
-            self._engine = None
+    _run_task = _run_engine_task
 
 
 class OmniVoiceInterface(ScrollArea):
@@ -3004,8 +3015,37 @@ class OmniVoiceInterface(ScrollArea):
         # Lấy giọng riêng của nhân vật ở dòng đang chọn nếu có
         spk_key = getattr(blk, "speaker", "")
         prof = self.speaker_profiles.get(spk_key, {}) if spk_key else {}
-        row_ref = getattr(blk, "voice_ref_path", "") or prof.get("ref_audio_path", "")
-        row_ins = getattr(blk, "voice_instruct", "") or prof.get("instruct", "")
+        prof_method = getattr(prof, "method", None) or (prof.get("method") if isinstance(prof, dict) else "")
+
+        if prof_method == "preset":
+            row_mode = "design"
+            row_ref = ""
+            row_ins = (
+                getattr(blk, "voice_instruct", "")
+                or getattr(prof, "voice_instruct", "")
+                or (prof.get("voice_instruct", "") if isinstance(prof, dict) else "")
+                or getattr(prof, "instruct", "")
+                or (prof.get("instruct", "") if isinstance(prof, dict) else "")
+            )
+        elif prof_method == "clone":
+            row_mode = "clone"
+            row_ref = (
+                getattr(blk, "voice_ref_path", "")
+                or getattr(prof, "source_audio_path", "")
+                or (prof.get("source_audio_path", "") if isinstance(prof, dict) else "")
+                or getattr(prof, "ref_audio_path", "")
+                or (prof.get("ref_audio_path", "") if isinstance(prof, dict) else "")
+            )
+            row_ins = ""
+        else:
+            row_ref = getattr(blk, "voice_ref_path", "") or (prof.get("ref_audio_path", "") if isinstance(prof, dict) else getattr(prof, "ref_audio_path", ""))
+            row_ins = getattr(blk, "voice_instruct", "") or (prof.get("instruct", "") if isinstance(prof, dict) else getattr(prof, "instruct", ""))
+            if row_ins and not row_ref:
+                row_mode = "design"
+            elif row_ref and not row_ins:
+                row_mode = "clone"
+            else:
+                row_mode = None
 
         out_dir = os.path.join(BASE_DIR, "output", "omnivoice_studio")
         os.makedirs(out_dir, exist_ok=True)
@@ -3017,6 +3057,7 @@ class OmniVoiceInterface(ScrollArea):
             fixed_duration=slot_dur,
             override_ref_audio=row_ref,
             override_instruct=row_ins,
+            override_mode=row_mode,
         )
 
     def _export_subtitle_audio_track(self):
@@ -3197,6 +3238,7 @@ class OmniVoiceInterface(ScrollArea):
         fixed_duration: float = 0.0,
         override_ref_audio: str = "",
         override_instruct: str = "",
+        override_mode: Optional[str] = None,
     ):
         if self._worker and self._worker.isRunning():
             self._reset_audition_button()
@@ -3247,6 +3289,7 @@ class OmniVoiceInterface(ScrollArea):
             override_ref_audio=override_ref_audio,
             override_instruct=override_instruct,
             prefer_cuda=prefer_cuda,
+            override_mode=override_mode,
             parent=self,
         )
         self._worker.progressSignal.connect(self._on_worker_progress)
