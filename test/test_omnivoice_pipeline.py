@@ -2483,6 +2483,44 @@ def test_speaker_selectors_sync_on_character_rename():
     assert "Người nói 6" not in items
 
 
+# ==============================================================================
+# 30. KIỂM THỬ TỰ ĐỘNG PHỤC HỒI KHI NGHE THỬ TUẦN TỰ GẶP SỰ CỐ (TÁC VỤ 5)
+# ==============================================================================
+def test_audition_all_queue_continues_on_individual_failure():
+    """
+    Xác minh trong luồng nghe thử tuần tự toàn bộ nhân vật:
+    Nếu một nhân vật tổng hợp thất bại (success=False), hệ thống không dừng im lặng
+    mà ghi nhận lỗi vào hồ sơ và tự động tiếp tục phát nhân vật kế tiếp trong hàng đợi.
+    """
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+
+    prof1 = CharacterVoiceProfile(speaker_id="spk_fail", display_name="Nhân vật lỗi")
+    prof2 = CharacterVoiceProfile(speaker_id="spk_ok", display_name="Nhân vật tốt")
+    ui.speaker_profiles = {"spk_fail": prof1, "spk_ok": prof2}
+
+    ui._audition_queue = ["spk_ok"]
+    ui._audition_all_active = True
+    ui._audition_all_total = 2
+    ui._audition_all_current_idx = 0
+    ui._current_audition_speaker = "spk_fail"
+
+    called_next = []
+    ui._audition_next_in_queue = lambda: called_next.append(True)
+
+    # Giả lập worker báo thất bại cho nhân vật đầu tiên
+    ui._on_worker_finished(False, "", "Lỗi nạp mô hình", "Chi tiết lỗi")
+
+    # Xác minh lỗi được ghi nhận và hàng đợi vẫn tiếp tục gọi nhân vật kế tiếp
+    assert prof1.error_message == "Lỗi nạp mô hình"
+    assert len(called_next) == 1
+
+
+
 
 
 

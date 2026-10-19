@@ -453,6 +453,7 @@ class OmniVoiceInterface(ScrollArea):
         self._audition_all_active: bool = False
         self._current_audition_speaker: Optional[str] = None
         self._audition_all_total: int = 0
+        self._audition_all_current_idx: int = 0
         self._worker: Optional[OmniVoiceTaskWorker] = None
 
         self._audio_output = QAudioOutput(self)
@@ -2335,11 +2336,16 @@ class OmniVoiceInterface(ScrollArea):
 
         self._audition_queue = list(chars)
         self._audition_all_total = len(chars)
+        self._audition_all_current_idx = 0
         self._audition_all_active = True
         if hasattr(self, "btn_audition_all_speakers"):
             self.btn_audition_all_speakers.setText("Dừng Nghe Thử")
             self.btn_audition_all_speakers.setIcon(FluentIcon.PAUSE)
 
+        self._audition_next_in_queue()
+
+    def _audition_next_in_queue(self):
+        """Phát nhân vật kế tiếp trong hàng đợi nghe thử toàn bộ nhân vật."""
         self._play_next_audition_in_queue()
 
     def _play_next_audition_in_queue(self):
@@ -2355,6 +2361,7 @@ class OmniVoiceInterface(ScrollArea):
         spk = self._audition_queue.pop(0)
         self._current_audition_speaker = spk
         curr_idx = self._audition_all_total - len(self._audition_queue)
+        self._audition_all_current_idx = curr_idx
         if hasattr(self, "btn_audition_all_speakers"):
             self.btn_audition_all_speakers.setText(f"Dừng ({curr_idx}/{self._audition_all_total})")
             self.btn_audition_all_speakers.setIcon(FluentIcon.PAUSE)
@@ -2374,6 +2381,7 @@ class OmniVoiceInterface(ScrollArea):
         self._audition_all_active = False
         self._audition_queue = []
         self._current_audition_speaker = None
+        self._audition_all_current_idx = 0
         if hasattr(self, "btn_audition_all_speakers"):
             self.btn_audition_all_speakers.setText("Nghe Thử Toàn Bộ Nhân Vật")
             self.btn_audition_all_speakers.setIcon(FluentIcon.VOLUME)
@@ -2538,7 +2546,12 @@ class OmniVoiceInterface(ScrollArea):
         }
 
     def _append_log(self, msg: str):
-        self.log_edit.append(msg)
+        if hasattr(self, "log_edit") and self.log_edit is not None:
+            self.log_edit.append(msg)
+
+    def log(self, msg: str):
+        """Ghi nhật ký hệ thống lên giao diện người dùng."""
+        self._append_log(msg)
 
     # =========================================================================
     # KHO 22 GIỌNG ĐỌC MẪU TIẾNG VIỆT & NGHE THỬ NHANH
@@ -3508,16 +3521,39 @@ class OmniVoiceInterface(ScrollArea):
         """Bảo đảm mở khóa giao diện ngay cả khi luồng kết thúc bất thường."""
         self._set_task_running_state(False)
 
-    def _on_worker_finished(self, ok: bool, task_type: str, result_path: str, message: str):
+    def _on_worker_finished(self, success: bool, out_path: str, detail: str, log_msg: str):
         self._set_task_running_state(False)
-        is_partial = message.startswith("[PARTIAL] ")
-        clean_msg = message[len("[PARTIAL] ") :].strip() if is_partial else message
+        msg_str = log_msg if isinstance(log_msg, str) else str(log_msg or "")
+        is_partial = msg_str.startswith("[PARTIAL] ")
+        clean_msg = msg_str[len("[PARTIAL] ") :].strip() if is_partial else (msg_str or detail or "")
         self.lbl_status.setText(clean_msg)
-        if not ok:
+        if not success:
             self.progress_bar.setValue(0)
-            if task_type == "character_audition":
+            target_spk = getattr(self, "_current_audition_speaker", "")
+            err_text = detail or log_msg or "Lỗi không xác định"
+            if target_spk:
+                prof = self.speaker_profiles.get(target_spk)
+                if not prof:
+                    for p in self.speaker_profiles.values():
+                        if getattr(p, "speaker_id", None) == target_spk or getattr(p, "display_name", None) == target_spk:
+                            prof = p
+                            break
+                if prof is not None:
+                    if isinstance(prof, dict):
+                        prof["error_message"] = err_text
+                    else:
+                        setattr(prof, "error_message", err_text)
+
+            if getattr(self, "_audition_all_active", False):
                 self._reset_audition_button()
-            InfoBar.error("Không thành công", clean_msg, parent=self, duration=4500)
+                detail_log = detail if detail else log_msg
+                self.log(f"Nhân vật '{target_spk}' gặp sự cố ({detail_log}). Tự động chuyển sang nhân vật kế tiếp...")
+                self._audition_next_in_queue()
+                return
+
+            if out_path == "character_audition" or getattr(self, "_active_audition_button", None):
+                self._reset_audition_button()
+            InfoBar.error("Không thành công", clean_msg or detail or "Lỗi thực thi", parent=self, duration=4500)
             return
 
         self.progress_bar.setValue(100)
@@ -3526,6 +3562,8 @@ class OmniVoiceInterface(ScrollArea):
         else:
             InfoBar.success("Hoàn thành", clean_msg, parent=self, duration=3500)
 
+        task_type = out_path
+        result_path = detail
         if task_type == "extract_ref_from_video" and result_path:
             self.current_ref_audio_path = result_path
             self.lbl_ref_status.setText(f"Tệp giọng mẫu vừa tách từ video: {result_path}")
@@ -3542,7 +3580,7 @@ class OmniVoiceInterface(ScrollArea):
                 self.btn_use_vn_voice_as_ref.setEnabled(True)
             self._play_audio_file(result_path)
         elif task_type == "character_audition":
-            if ok and result_path and os.path.exists(result_path):
+            if success and result_path and os.path.exists(result_path):
                 self.last_generated_audio_path = result_path
                 if hasattr(self, "_active_audition_button") and self._active_audition_button:
                     self._active_audition_button.setEnabled(True)
