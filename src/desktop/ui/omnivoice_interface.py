@@ -2249,7 +2249,7 @@ class OmniVoiceInterface(ScrollArea):
                     "message": f"Câu {blk.index}: Nội dung phụ đề đang trống.",
                 })
 
-            if not spk or spk == "Chưa xác định" or conf == "unassigned":
+            if not spk or spk in ("Chưa phân vai", "Chưa xác định") or conf in ("unassigned", "review_needed"):
                 issues.append({
                     "severity": "warning",
                     "index": blk.index,
@@ -2267,6 +2267,27 @@ class OmniVoiceInterface(ScrollArea):
                 })
 
         return issues
+
+    def _confirm_pre_export_warnings(self, warnings: List[Dict[str, Any]]) -> bool:
+        """Hiển thị hộp thoại xác nhận khi phát hiện các câu phụ đề chưa phân vai hoặc cần kiểm tra."""
+        from qfluentwidgets import MessageBox
+
+        warn_lines = []
+        for w in warnings[:5]:
+            warn_lines.append(f"• {w.get('message', '')}")
+        if len(warnings) > 5:
+            warn_lines.append(f"• Và còn {len(warnings) - 5} cảnh báo khác...")
+        warn_content = "\n".join(warn_lines)
+
+        content = (
+            f"Phát hiện {len(warnings)} câu phụ đề có thể chưa hoàn thiện trước khi xuất:\n\n"
+            f"{warn_content}\n\n"
+            "Bạn có muốn tiếp tục tiến trình xuất hay quay lại rà soát?"
+        )
+        msg_box = MessageBox("Cảnh Báo Trước Khi Xuất", content, self)
+        msg_box.yesButton.setText("Tiếp Tục Xuất")
+        msg_box.cancelButton.setText("Quay Lại Rà Soát")
+        return bool(msg_box.exec())
 
     def _on_run_pre_export_qc(self):
         """Hiển thị kết quả kiểm tra chất lượng trước xuất."""
@@ -3076,6 +3097,11 @@ class OmniVoiceInterface(ScrollArea):
         if any(item.get("severity") == "error" for item in issues):
             InfoBar.error("Không thể xuất", "Danh sách phụ đề đang trống hoặc không hợp lệ.", parent=self, duration=3500)
             return
+
+        warnings = [item for item in issues if item.get("severity") == "warning"]
+        if warnings and not self._confirm_pre_export_warnings(warnings):
+            return
+
         default_name = (
             str(Path(self.current_subtitle_path).with_name(Path(self.current_subtitle_path).stem + "_dubbed.wav"))
             if self.current_subtitle_path
@@ -3103,6 +3129,11 @@ class OmniVoiceInterface(ScrollArea):
         if any(item.get("severity") == "error" for item in issues):
             InfoBar.error("Không thể xuất", "Danh sách phụ đề đang trống hoặc không hợp lệ.", parent=self, duration=3500)
             return
+
+        warnings = [item for item in issues if item.get("severity") == "warning"]
+        if warnings and not self._confirm_pre_export_warnings(warnings):
+            return
+
         default_name = str(Path(self.current_video_path).with_name(Path(self.current_video_path).stem + "_long_tieng.mp4"))
         save_path, _ = QFileDialog.getSaveFileName(
             self,

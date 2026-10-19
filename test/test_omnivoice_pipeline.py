@@ -2097,5 +2097,28 @@ def test_clone_method_without_sample_marks_review_needed():
     assert prof.status == "review_needed"
 
 
+def test_export_shows_warning_confirmation_dialog(monkeypatch):
+    """
+    Xác minh khi danh sách phụ đề có cảnh báo chưa phân vai:
+    Hàm xuất gọi hộp thoại xác nhận. Nếu người dùng chọn từ chối (False),
+    hệ thống dừng lại mà không mở hộp thoại lưu tệp.
+    """
+    from unittest.mock import MagicMock
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.tts_engine import SubtitleBlock
 
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+    ui.subtitle_blocks = [
+        SubtitleBlock(1, "00:00:01,000", "00:00:03,000", "Câu một", speaker="Chưa phân vai")
+    ]
 
+    mock_confirm = MagicMock(return_value=False)
+    monkeypatch.setattr(ui, "_confirm_pre_export_warnings", mock_confirm)
+    ui._launch_worker = MagicMock()
+
+    ui._export_subtitle_audio_track()
+
+    assert mock_confirm.called is True
+    assert ui._launch_worker.called is False
