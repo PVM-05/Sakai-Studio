@@ -26,7 +26,7 @@
 - Đầu vào: Dữ liệu hồ sơ nhân vật dạng từ điển hoặc đối tượng `CharacterVoiceProfile`.
 - Đầu ra: Đối tượng `CharacterVoiceProfile` hỗ trợ đầy đủ `__getitem__`, `__setitem__`, `__contains__`, `get()`, `to_dict()`, `from_dict()`, và hàm `normalize_character_profile(raw, speaker_id)`.
 
-- [ ] **Bước 1: Viết bài kiểm thử thất bại vào `test/test_omnivoice_pipeline.py`**
+- [x] **Bước 1: Viết bài kiểm thử thất bại vào `test/test_omnivoice_pipeline.py`**
 
 ```python
 def test_character_voice_profile_dict_and_attribute_interoperability():
@@ -90,12 +90,12 @@ def test_character_voice_profile_dict_and_attribute_interoperability():
     assert norm3.speaker_id == "spk_fallback"
 ```
 
-- [ ] **Bước 2: Chạy kiểm thử xác nhận thất bại**
+- [x] **Bước 2: Chạy kiểm thử xác nhận thất bại**
 
 Chạy lệnh: `.\venv\Scripts\pytest test/test_omnivoice_pipeline.py -k "test_character_voice_profile_dict_and_attribute_interoperability" -v`
 Kỳ vọng: Thất bại do thiếu `__setitem__` hoặc thiếu các trường mới.
 
-- [ ] **Bước 3: Viết mã nguồn tối thiểu vào `src/ai_engines/speaker_diarization.py`**
+- [x] **Bước 3: Viết mã nguồn tối thiểu vào `src/ai_engines/speaker_diarization.py`**
 
 Mở rộng lớp `CharacterVoiceProfile`:
 ```python
@@ -240,12 +240,12 @@ def normalize_character_profile(raw: Any, speaker_id: str = "") -> CharacterVoic
     return CharacterVoiceProfile(speaker_id=speaker_id or "spk_unknown", display_name=speaker_id or "Người nói")
 ```
 
-- [ ] **Bước 4: Chạy kiểm thử xác nhận đạt**
+- [x] **Bước 4: Chạy kiểm thử xác nhận đạt**
 
 Chạy lệnh: `.\venv\Scripts\pytest test/test_omnivoice_pipeline.py -k "test_character_voice_profile_dict_and_attribute_interoperability" -v`
 Kỳ vọng: PASS
 
-- [ ] **Bước 5: Cam kết thay đổi**
+- [x] **Bước 5: Cam kết thay đổi**
 
 ```bash
 git add src/ai_engines/speaker_diarization.py test/test_omnivoice_pipeline.py
@@ -263,7 +263,7 @@ git commit -m "feat(diarization): standardize CharacterVoiceProfile bidirectiona
 **Giao diện:**
 - Đầu ra: Biến `VIETNAMESE_VOICE_CATALOG` chứa đầy đủ các trường `name`, `gender`, `accent`, `age_group`, `pitch`, `style`, `instruct`, `sample_vi`, `slug`.
 
-- [ ] **Bước 1: Viết bài kiểm thử thất bại vào `test/test_omnivoice_pipeline.py`**
+- [x] **Bước 1: Viết bài kiểm thử thất bại vào `test/test_omnivoice_pipeline.py`**
 
 ```python
 def test_voice_catalog_vietnamese_metadata_completeness():
@@ -302,21 +302,21 @@ def test_voice_catalog_vietnamese_metadata_completeness():
     assert accents_found == valid_accents, f"Chưa đủ cả 3 miền: {accents_found}"
 ```
 
-- [ ] **Bước 2: Chạy kiểm thử xác nhận thất bại**
+- [x] **Bước 2: Chạy kiểm thử xác nhận thất bại**
 
 Chạy lệnh: `.\venv\Scripts\pytest test/test_omnivoice_pipeline.py -k "test_voice_catalog_vietnamese_metadata_completeness" -v`
 Kỳ vọng: Thất bại vì `VIETNAMESE_VOICE_CATALOG` hiện tại thiếu các trường `accent`, `gender`, `pitch`, v.v.
 
-- [ ] **Bước 3: Cập nhật siêu dữ liệu trong `src/ai_engines/tts_engine.py`**
+- [x] **Bước 3: Cập nhật siêu dữ liệu trong `src/ai_engines/tts_engine.py`**
 
 Cập nhật `VIETNAMESE_VOICE_CATALOG` với cấu trúc đầy đủ chuẩn hóa cho 22 giọng, bảo đảm có đầy đủ giọng miền Bắc, miền Trung và miền Nam.
 
-- [ ] **Bước 4: Chạy kiểm thử xác nhận đạt**
+- [x] **Bước 4: Chạy kiểm thử xác nhận đạt**
 
 Chạy lệnh: `.\venv\Scripts\pytest test/test_omnivoice_pipeline.py -k "test_voice_catalog_vietnamese_metadata_completeness" -v`
 Kỳ vọng: PASS
 
-- [ ] **Bước 5: Cam kết thay đổi**
+- [x] **Bước 5: Cam kết thay đổi**
 
 ```bash
 git add src/ai_engines/tts_engine.py test/test_omnivoice_pipeline.py
@@ -337,7 +337,7 @@ git commit -m "feat(tts): enrich VIETNAMESE_VOICE_CATALOG metadata with regional
   - `calculate_voice_match(profile: Any, voice_entry: Dict[str, Any]) -> Tuple[int, str]`
   - `recommend_voices(profile: Any, catalog: Optional[Dict[str, Any]] = None, top_k: int = 3) -> List[Dict[str, Any]]`
 
-- [ ] **Bước 1: Viết bài kiểm thử thất bại vào `test/test_omnivoice_pipeline.py`**
+- [x] **Bước 1: Viết bài kiểm thử thất bại vào `test/test_omnivoice_pipeline.py`**
 
 ```python
 def test_voice_recommendation_engine_matches_and_ranks_top_k():
@@ -390,12 +390,12 @@ def test_voice_recommendation_engine_matches_and_ranks_top_k():
     assert top1_nu["score"] >= 80
 ```
 
-- [ ] **Bước 2: Chạy kiểm thử xác nhận thất bại**
+- [x] **Bước 2: Chạy kiểm thử xác nhận thất bại**
 
 Chạy lệnh: `.\venv\Scripts\pytest test/test_omnivoice_pipeline.py -k "test_voice_recommendation_engine_matches_and_ranks_top_k" -v`
 Kỳ vọng: Thất bại do chưa định nghĩa `VoiceRecommendationEngine`.
 
-- [ ] **Bước 3: Viết mã nguồn lớp `VoiceRecommendationEngine` vào `src/ai_engines/tts_engine.py`**
+- [x] **Bước 3: Viết mã nguồn lớp `VoiceRecommendationEngine` vào `src/ai_engines/tts_engine.py`**
 
 Thực hiện:
 ```python
@@ -479,12 +479,12 @@ class VoiceRecommendationEngine:
         return candidates[:top_k]
 ```
 
-- [ ] **Bước 4: Chạy kiểm thử xác nhận đạt**
+- [x] **Bước 4: Chạy kiểm thử xác nhận đạt**
 
 Chạy lệnh: `.\venv\Scripts\pytest test/test_omnivoice_pipeline.py -k "test_voice_recommendation_engine_matches_and_ranks_top_k" -v`
 Kỳ vọng: PASS
 
-- [ ] **Bước 5: Cam kết thay đổi**
+- [x] **Bước 5: Cam kết thay đổi**
 
 ```bash
 git add src/ai_engines/tts_engine.py test/test_omnivoice_pipeline.py
@@ -503,7 +503,7 @@ git commit -m "feat(tts): implement VoiceRecommendationEngine with multi-criteri
 - Phương thức: `_sync_speaker_selectors(self)` trong `OmniVoiceInterface`.
 - Hành vi: Cập nhật `combo_target_speaker` với danh sách tên nhân vật thực tế mà không làm mất lựa chọn hiện tại.
 
-- [ ] **Bước 1: Viết bài kiểm thử thất bại vào `test/test_omnivoice_pipeline.py`**
+- [x] **Bước 1: Viết bài kiểm thử thất bại vào `test/test_omnivoice_pipeline.py`**
 
 ```python
 def test_speaker_selectors_sync_on_character_rename():
@@ -533,12 +533,12 @@ def test_speaker_selectors_sync_on_character_rename():
     assert "Người nói 6" not in items
 ```
 
-- [ ] **Bước 2: Chạy kiểm thử xác nhận thất bại**
+- [x] **Bước 2: Chạy kiểm thử xác nhận thất bại**
 
 Chạy lệnh: `.\venv\Scripts\pytest test/test_omnivoice_pipeline.py -k "test_speaker_selectors_sync_on_character_rename" -v`
 Kỳ vọng: Thất bại do chưa có phương thức `_sync_speaker_selectors()`.
 
-- [ ] **Bước 3: Viết mã nguồn vào `src/desktop/ui/omnivoice_interface.py`**
+- [x] **Bước 3: Viết mã nguồn vào `src/desktop/ui/omnivoice_interface.py`**
 
 Triển khai phương thức:
 ```python
@@ -573,12 +573,12 @@ Triển khai phương thức:
 ```
 Và gọi `self._sync_speaker_selectors()` trong `_on_speakers_detected()`, `_update_casting_table()`, và khi ô tên nhân vật được chỉnh sửa.
 
-- [ ] **Bước 4: Chạy kiểm thử xác nhận đạt**
+- [x] **Bước 4: Chạy kiểm thử xác nhận đạt**
 
 Chạy lệnh: `.\venv\Scripts\pytest test/test_omnivoice_pipeline.py -k "test_speaker_selectors_sync_on_character_rename" -v`
 Kỳ vọng: PASS
 
-- [ ] **Bước 5: Cam kết thay đổi**
+- [x] **Bước 5: Cam kết thay đổi**
 
 ```bash
 git add src/desktop/ui/omnivoice_interface.py test/test_omnivoice_pipeline.py
@@ -597,7 +597,7 @@ git commit -m "feat(ui): add centralized speaker selector synchronization on cha
 - Cập nhật xử lý trong `_on_worker_finished(self, success, out_path, detail, log_msg)`.
 - Khi `self._audition_all_active` đang kích hoạt: Nếu một nhân vật lỗi, lưu `error_message`, hiển thị cảnh báo và tiếp tục chuyển sang nhân vật kế tiếp trong `self._audition_queue`.
 
-- [ ] **Bước 1: Viết bài kiểm thử thất bại vào `test/test_omnivoice_pipeline.py`**
+- [x] **Bước 1: Viết bài kiểm thử thất bại vào `test/test_omnivoice_pipeline.py`**
 
 ```python
 def test_audition_all_queue_continues_on_individual_failure():
@@ -633,12 +633,12 @@ def test_audition_all_queue_continues_on_individual_failure():
     assert len(called_next) == 1
 ```
 
-- [ ] **Bước 2: Chạy kiểm thử xác nhận thất bại**
+- [x] **Bước 2: Chạy kiểm thử xác nhận thất bại**
 
 Chạy lệnh: `.\venv\Scripts\pytest test/test_omnivoice_pipeline.py -k "test_audition_all_queue_continues_on_individual_failure" -v`
 Kỳ vọng: Thất bại do hiện tại `_on_worker_finished` chỉ reset nút khi gặp lỗi mà không gọi `_audition_next_in_queue()`.
 
-- [ ] **Bước 3: Viết mã nguồn vào `src/desktop/ui/omnivoice_interface.py`**
+- [x] **Bước 3: Viết mã nguồn vào `src/desktop/ui/omnivoice_interface.py`**
 
 Cập nhật hàm `_on_worker_finished()` trong `OmniVoiceInterface`:
 ```python
@@ -668,12 +668,12 @@ Cập nhật hàm `_on_worker_finished()` trong `OmniVoiceInterface`:
             return
 ```
 
-- [ ] **Bước 4: Chạy kiểm thử xác nhận đạt**
+- [x] **Bước 4: Chạy kiểm thử xác nhận đạt**
 
 Chạy lệnh: `.\venv\Scripts\pytest test/test_omnivoice_pipeline.py -k "test_audition_all_queue_continues_on_individual_failure" -v`
 Kỳ vọng: PASS
 
-- [ ] **Bước 5: Cam kết thay đổi**
+- [x] **Bước 5: Cam kết thay đổi**
 
 ```bash
 git add src/desktop/ui/omnivoice_interface.py test/test_omnivoice_pipeline.py
@@ -687,14 +687,14 @@ git commit -m "fix(omnivoice): enable automatic audition queue continuation on i
 **Tệp tin:**
 - Chạy: Toàn bộ bộ kiểm thử của dự án.
 
-- [ ] **Bước 1: Chạy toàn bộ các bài kiểm thử**
+- [x] **Bước 1: Chạy toàn bộ các bài kiểm thử**
 
 ```bash
 .\venv\Scripts\pytest test/test_auto_pipeline_reliability.py test/test_omnivoice_pipeline.py test/test_srt_translator.py test/test_subtitle_and_logo_remover.py test_home_interface.py -q
 ```
 Kỳ vọng: 100% bài kiểm thử đạt kết quả tốt (115+ passed, 0 failed).
 
-- [ ] **Bước 2: Đẩy toàn bộ thay đổi lên máy chủ git**
+- [x] **Bước 2: Đẩy toàn bộ thay đổi lên máy chủ git**
 
 ```bash
 git push origin main
