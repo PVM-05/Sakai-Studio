@@ -1995,3 +1995,31 @@ def test_cosine_clustering_allows_full_k_candidates():
     # Phải nhận diện đúng 3 người nói khác nhau
     assert len(np.unique(labels)) == 3
 
+
+def test_synthesize_blocks_does_not_skip_diarization_if_some_blocks_assigned(tmp_path):
+    """
+    Xác minh trong synthesize_blocks():
+    Khi có 1 câu đã có nhãn người nói nhưng còn các câu khác chưa khóa/chưa phân vai,
+    chế độ auto_video_cluster vẫn chạy nhận diện người nói thay vì bỏ qua hoàn toàn.
+    """
+    from unittest.mock import MagicMock
+    from src.ai_engines.tts_engine import TTSEngine, SubtitleBlock
+
+    engine = TTSEngine(mode="clone", multi_speaker_mode="auto_video_cluster")
+    engine.detect_speakers_from_video = MagicMock(return_value={})
+    engine.load_model = MagicMock()
+    engine._prepare_and_lock_character_prompts = MagicMock()
+    engine.generate_single = MagicMock(return_value=_make_sine_wave(1.0, 24000))
+
+    vid_file = str(tmp_path / "mock_vid.mp4")
+    Path(vid_file).write_bytes(b"mock")
+
+    b1 = SubtitleBlock(index=1, start_time="00:00:01,000", end_time="00:00:03,000", text="Câu đã phân vai", speaker="Nhân vật Cũ", is_speaker_locked=True)
+    b2 = SubtitleBlock(index=2, start_time="00:00:04,000", end_time="00:00:06,000", text="Câu chưa phân vai", speaker="")
+
+    engine.synthesize_blocks([b1, b2], 10.0, output_path=str(tmp_path / "out.wav"), video_path=vid_file)
+
+    # Phải gọi detect_speakers_from_video vì vẫn còn câu b2 chưa phân vai
+    assert engine.detect_speakers_from_video.called is True
+
+

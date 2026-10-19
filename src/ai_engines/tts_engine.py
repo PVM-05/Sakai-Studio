@@ -1810,11 +1810,18 @@ class TTSEngine:
         vocals_waveform: Optional[np.ndarray] = None
         vocals_sr: int = 24000
 
+        has_unassigned_or_unlocked = any(
+            not getattr(b, "is_speaker_locked", False)
+            or not getattr(b, "speaker", "").strip()
+            or getattr(b, "speaker", "") in ("Chưa phân vai", "Chưa xác định")
+            for b in blocks
+        )
+
         if self.multi_speaker_mode == "auto_video_cluster" and video_path and os.path.exists(video_path):
-            if not any(getattr(b, "speaker", "") for b in blocks):
+            if has_unassigned_or_unlocked:
                 self.detect_speakers_from_video(video_path, blocks, max_speakers=self.max_speakers)
         elif self.multi_speaker_mode == "auto_srt_text":
-            if not any(getattr(b, "speaker", "") for b in blocks):
+            if has_unassigned_or_unlocked:
                 self.detect_speakers_from_srt_text(blocks, max_speakers=self.max_speakers)
         elif self.multi_speaker_mode == "per_line_video_clone" and video_path and os.path.exists(video_path):
             self.log("Đang tách kênh giọng nói gốc khỏi nhạc nền để nhái giọng theo từng câu thoại...")
