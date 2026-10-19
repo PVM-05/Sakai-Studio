@@ -2400,4 +2400,58 @@ def test_voice_catalog_vietnamese_metadata_completeness():
     assert accents_found == valid_accents, f"Chưa đủ cả 3 miền: {accents_found}"
 
 
+# ==============================================================================
+# 28. KIỂM THỬ ĐỘNG CƠ GỢI Ý GIỌNG NÓI THÔNG MINH (TÁC VỤ 3)
+# ==============================================================================
+def test_voice_recommendation_engine_matches_and_ranks_top_k():
+    """
+    Xác minh VoiceRecommendationEngine:
+    1. Đề xuất đúng top 3 giọng đọc có điểm tương đồng cao nhất.
+    2. Khớp chính xác giới tính và khẩu âm vùng miền (Ví dụ: Nam miền Nam đề xuất giọng miền Nam lên đầu).
+    3. Trả về lý do đề xuất tiếng Việt chuẩn mực và điểm số từ 0 đến 100.
+    """
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+    from src.ai_engines.tts_engine import VoiceRecommendationEngine
+
+    engine = VoiceRecommendationEngine()
+
+    # Trường hợp 1: Nam miền Nam, giọng trầm
+    prof_nam = CharacterVoiceProfile(
+        speaker_id="spk_nam",
+        display_name="Chú Ba",
+        gender="male",
+        vietnamese_accent="nam",
+        pitch_level="low",
+        style_tag="ke_chuyen",
+    )
+
+    recs_nam = engine.recommend_voices(prof_nam, top_k=3)
+    assert len(recs_nam) == 3
+    # Vị trí thứ nhất phải là giọng nam miền Nam
+    top1_nam = recs_nam[0]
+    assert top1_nam["gender"] == "male"
+    assert top1_nam["accent"] == "nam"
+    assert top1_nam["score"] >= 80
+    assert "miền Nam" in top1_nam["reason"]
+    assert "Phù hợp" in top1_nam["reason"]
+
+    # Trường hợp 2: Nữ miền Bắc, cao độ cao
+    prof_nu = CharacterVoiceProfile(
+        speaker_id="spk_nu",
+        display_name="Cô Lan",
+        gender="female",
+        vietnamese_accent="bac",
+        pitch_level="high",
+        style_tag="tam_su",
+    )
+
+    recs_nu = engine.recommend_voices(prof_nu, top_k=3)
+    assert len(recs_nu) == 3
+    top1_nu = recs_nu[0]
+    assert top1_nu["gender"] == "female"
+    assert top1_nu["accent"] == "bac"
+    assert top1_nu["score"] >= 80
+
+
+
 

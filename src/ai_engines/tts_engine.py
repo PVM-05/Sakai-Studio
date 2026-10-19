@@ -2545,3 +2545,84 @@ class TTSEngine:
 
 # Tương thích ngược với các lệnh gọi OmniVoiceEngine
 OmniVoiceEngine = TTSEngine
+
+
+class VoiceRecommendationEngine:
+    """Động cơ tính toán và xếp hạng giọng đọc phù hợp cho từng nhân vật dựa trên đặc tính âm thanh và ngữ cảnh."""
+
+    PITCH_LEVELS = ["very_low", "low", "moderate", "high", "very_high"]
+
+    @classmethod
+    def calculate_voice_match(cls, profile: Any, voice_entry: Dict[str, Any]) -> Tuple[int, str]:
+        score = 0
+        reasons: List[str] = []
+
+        # 1. Giới tính (Trọng số 40 điểm)
+        prof_gender = getattr(profile, "gender", None) or (profile.get("gender") if isinstance(profile, dict) else "auto")
+        voice_gender = voice_entry.get("gender", "")
+        if prof_gender in ("auto", "", None):
+            score += 35
+        elif prof_gender == voice_gender:
+            score += 40
+            reasons.append("giới tính phù hợp")
+        else:
+            return 0, "Khác giới tính"
+
+        # 2. Khẩu âm vùng miền Việt Nam (Trọng số 30 điểm)
+        prof_accent = getattr(profile, "vietnamese_accent", None) or (profile.get("vietnamese_accent") if isinstance(profile, dict) else "bac")
+        voice_accent = voice_entry.get("accent", "bac")
+        accent_names = {"bac": "miền Bắc", "trung": "miền Trung", "nam": "miền Nam"}
+        if prof_accent == voice_accent:
+            score += 30
+            reasons.append(f"giọng {accent_names.get(voice_accent, voice_accent)}")
+        else:
+            score += 5
+
+        # 3. Cao độ âm thanh (Trọng số 15 điểm)
+        prof_pitch = getattr(profile, "pitch_level", None) or (profile.get("pitch_level") if isinstance(profile, dict) else "moderate")
+        voice_pitch = voice_entry.get("pitch", "moderate")
+        if prof_pitch == voice_pitch:
+            score += 15
+            reasons.append("cao độ phù hợp")
+        elif prof_pitch in cls.PITCH_LEVELS and voice_pitch in cls.PITCH_LEVELS:
+            diff = abs(cls.PITCH_LEVELS.index(prof_pitch) - cls.PITCH_LEVELS.index(voice_pitch))
+            if diff == 1:
+                score += 10
+            elif diff == 2:
+                score += 5
+
+        # 4. Phong cách và độ tuổi (Trọng số 15 điểm)
+        prof_style = getattr(profile, "style_tag", None) or (profile.get("style_tag") if isinstance(profile, dict) else "natural")
+        voice_style = voice_entry.get("style", "")
+        if prof_style and voice_style and prof_style == voice_style:
+            score += 10
+            reasons.append("phong cách tương đồng")
+        else:
+            score += 5
+
+        score = min(100, max(0, score))
+        desc = f"Phù hợp {score}% ({', '.join(reasons)})" if reasons else f"Phù hợp {score}%"
+        return score, desc
+
+    @classmethod
+    def recommend_voices(
+        cls,
+        profile: Any,
+        catalog: Optional[Dict[str, Any]] = None,
+        top_k: int = 3,
+    ) -> List[Dict[str, Any]]:
+        target_catalog = catalog if catalog is not None else VIETNAMESE_VOICE_CATALOG
+        candidates: List[Dict[str, Any]] = []
+
+        for preset_name, info in target_catalog.items():
+            sc, reason = cls.calculate_voice_match(profile, info)
+            if sc > 0:
+                item = dict(info)
+                item["preset_name"] = preset_name
+                item["score"] = sc
+                item["reason"] = reason
+                candidates.append(item)
+
+        candidates.sort(key=lambda x: x["score"], reverse=True)
+        return candidates[:top_k]
+
