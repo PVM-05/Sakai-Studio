@@ -214,22 +214,24 @@ def cosine_cluster_embeddings(
     # Tính tâm cụm toàn cục và khoảng cách trung bình
     c_global = np.mean(norm_embs, axis=0)
     c_global /= np.maximum(np.linalg.norm(c_global), 1e-12)
-    mean_dist_to_center = float(np.mean(1.0 - np.dot(norm_embs, c_global)))
+    dists_to_center = 1.0 - np.dot(norm_embs, c_global)
+    mean_dist_to_center = float(np.mean(dists_to_center))
+    max_dist_to_center = float(np.max(dists_to_center))
     max_dist = float(np.max(dist_matrix))
 
     # Đánh giá giả thuyết 1 người nói (k = 1) ngay từ đầu:
-    # Nếu toàn bộ khoảng cách cosin < 0.35 hoặc khoảng cách trung bình tới tâm < 0.20
-    if max_dist < 0.35 or mean_dist_to_center < 0.20:
+    # Cần thỏa mãn đồng thời: khoảng cách cặp tối đa an toàn (< 0.35) VÀ khoảng cách xa nhất tới tâm < 0.25
+    if max_dist < 0.35 and max_dist_to_center < 0.25:
         best_labels = np.zeros(n_samples, dtype=np.int32)
         conf_levels: List[str] = []
         conf_scores: List[float] = []
         for idx in range(n_samples):
-            d_own = float(1.0 - np.dot(norm_embs[idx], c_global))
+            d_own = float(dists_to_center[idx])
             score = float(np.clip(1.0 - d_own, 0.0, 1.0))
             conf_scores.append(score)
             if d_own <= 0.35:
                 conf_levels.append(ConfidenceLevel.HIGH.value)
-            elif d_own > 0.50:
+            elif d_own > 0.40:
                 conf_levels.append(ConfidenceLevel.REVIEW_NEEDED.value)
             else:
                 conf_levels.append(ConfidenceLevel.HIGH.value)
@@ -329,7 +331,7 @@ def cosine_cluster_embeddings(
             conf_scores.append(score)
             if d_own <= 0.35:
                 conf_levels.append(ConfidenceLevel.HIGH.value)
-            elif d_own > 0.50:
+            elif d_own > 0.40:
                 conf_levels.append(ConfidenceLevel.REVIEW_NEEDED.value)
             else:
                 conf_levels.append(ConfidenceLevel.HIGH.value)
@@ -543,18 +545,28 @@ class SpeakerDiarizationCoordinator:
                 max_speakers=max_speakers,
             )
 
+            # Tránh xung đột tên người nói với các câu đã được khóa
+            import re
+            max_existing_num = 0
+            for b in blocks:
+                if getattr(b, "is_speaker_locked", False):
+                    spk_name = getattr(b, "speaker", "").strip()
+                    m = re.match(r"^Người nói\s*(\d+)$", spk_name)
+                    if m:
+                        max_existing_num = max(max_existing_num, int(m.group(1)))
+
             detected_profiles: Dict[str, SpeakerVoiceProfile] = {}
             for pos, block_idx in enumerate(valid_indices):
                 blk = blocks[block_idx]
                 cluster_id = int(labels[pos])
-                speaker_name = f"Người nói {cluster_id + 1}"
+                speaker_name = f"Người nói {max_existing_num + cluster_id + 1}"
                 blk.speaker = speaker_name
                 blk.confidence_level = conf_levels[pos]
 
                 profile = detected_profiles.get(speaker_name)
                 if profile is None:
                     profile = CharacterVoiceProfile(
-                        speaker_id=f"spk_{cluster_id}",
+                        speaker_id=f"spk_{max_existing_num + cluster_id}",
                         display_name=speaker_name,
                         method="clone",
                         utterance_count=0,

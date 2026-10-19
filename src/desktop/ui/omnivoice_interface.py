@@ -449,6 +449,10 @@ class OmniVoiceInterface(ScrollArea):
         self.speaker_profiles: Dict[str, Dict[str, Any]] = {}
         self.is_speakers_detected: bool = False
         self._active_audition_button: Optional[PushButton] = None
+        self._audition_queue: List[str] = []
+        self._audition_all_active: bool = False
+        self._current_audition_speaker: Optional[str] = None
+        self._audition_all_total: int = 0
         self._worker: Optional[OmniVoiceTaskWorker] = None
 
         self._audio_output = QAudioOutput(self)
@@ -1899,7 +1903,8 @@ class OmniVoiceInterface(ScrollArea):
     def _reset_audition_button(self):
         """Khôi phục trạng thái nút nghe thử giọng của nhân vật."""
         if hasattr(self, "_active_audition_button") and self._active_audition_button:
-            self._active_audition_button.setText("Nghe Thử Giọng")
+            default_t = self._active_audition_button.property("default_text") or "Nghe Thử Giọng"
+            self._active_audition_button.setText(default_t)
             self._active_audition_button.setIcon(FluentIcon.VOLUME)
             self._active_audition_button.setEnabled(True)
             self._active_audition_button = None
@@ -1908,6 +1913,8 @@ class OmniVoiceInterface(ScrollArea):
         """Phục hồi nút nghe thử khi bài phát âm thanh kết thúc hoặc lỗi."""
         if status in (QMediaPlayer.MediaStatus.EndOfMedia, QMediaPlayer.MediaStatus.NoMedia, QMediaPlayer.MediaStatus.InvalidMedia):
             self._reset_audition_button()
+            if getattr(self, "_audition_all_active", False):
+                QTimer.singleShot(400, self._play_next_audition_in_queue)
 
     def _update_character_profiles_overview(self):
         """Cập nhật khối tổng quan hồ sơ giọng nhân vật ở Bước 2."""
@@ -2056,15 +2063,32 @@ class OmniVoiceInterface(ScrollArea):
             lbl_type.setWordWrap(True)
             card_layout.addWidget(lbl_type)
 
-            # Dòng 3: Nút Nghe Thử Giọng
-            btn_audition = PushButton("Nghe Thử Giọng", card)
+            # Dòng 3: Nút Nghe Thử Giọng Lồng Tiếng & Nút Nghe Mẫu Gốc (nếu có tệp mẫu)
+            btn_row = QHBoxLayout()
+            btn_row.setSpacing(6)
+
+            has_sample = bool(
+                (prof.get("source_audio_path") or prof.get("ref_audio_path") if is_dict else getattr(prof, "source_audio_path", "")) if prof else ""
+            )
+
+            btn_audition = PushButton("Nghe Thử Giọng Lồng Tiếng" if has_sample else "Nghe Thử Giọng", card)
+            btn_audition.setProperty("default_text", btn_audition.text())
             btn_audition.setIcon(FluentIcon.VOLUME)
             btn_audition.clicked.connect(lambda checked=False, s=spk_name, b=btn_audition: self._audition_character_voice(s, b))
-            card_layout.addWidget(btn_audition)
+            btn_row.addWidget(btn_audition)
+
+            if has_sample:
+                btn_orig = PushButton("Nghe Mẫu Giọng Gốc", card)
+                btn_orig.setIcon(FluentIcon.HEADPHONE)
+                btn_orig.clicked.connect(lambda checked=False, s=spk_name: self._preview_character_voice(s))
+                btn_row.addWidget(btn_orig)
+
+            card_layout.addLayout(btn_row)
 
             self.char_cards_layout.addWidget(card)
             self._character_cards.append({
                 "name": spk_name,
+                "speaker": spk_name,
                 "status": badge_text,
                 "type": type_text,
                 "detail": detail_text,
@@ -2136,6 +2160,8 @@ class OmniVoiceInterface(ScrollArea):
                     duration=4500,
                 )
                 self._reset_audition_button()
+                if getattr(self, "_audition_all_active", False):
+                    QTimer.singleShot(400, self._play_next_audition_in_queue)
                 return
         elif method == "preset":
             if not voice_ins:
@@ -2150,6 +2176,8 @@ class OmniVoiceInterface(ScrollArea):
                     duration=4500,
                 )
                 self._reset_audition_button()
+                if getattr(self, "_audition_all_active", False):
+                    QTimer.singleShot(400, self._play_next_audition_in_queue)
                 return
         else:
             if not (ref_audio and os.path.exists(ref_audio)) and not voice_ins:
@@ -2160,6 +2188,8 @@ class OmniVoiceInterface(ScrollArea):
                     duration=4500,
                 )
                 self._reset_audition_button()
+                if getattr(self, "_audition_all_active", False):
+                    QTimer.singleShot(400, self._play_next_audition_in_queue)
                 return
 
         # 5. Chuyển trạng thái nút sang Đang tạo giọng...
@@ -2183,14 +2213,24 @@ class OmniVoiceInterface(ScrollArea):
         )
 
     def _preview_character_voice(self, spk_name: str):
-        """Nghe thử mẫu âm thanh đại diện hoặc giọng thiết kế của nhân vật."""
+        """Nghe mẫu âm thanh gốc từ video hoặc tệp âm thanh của nhân vật."""
         prof = self.speaker_profiles.get(spk_name, {})
-        ref_path = prof.get("ref_audio_path") or prof.get("source_audio_sample")
+        is_dict = isinstance(prof, dict)
+        ref_path = (
+            prof.get("source_audio_path") or prof.get("ref_audio_path")
+            if is_dict
+            else getattr(prof, "source_audio_path", "") or getattr(prof, "ref_audio_path", "")
+        ) if prof else ""
         if ref_path and os.path.exists(ref_path):
             self._play_audio_file(ref_path)
             InfoBar.info("Đang phát mẫu giọng", f"Đang nghe thử giọng mẫu gốc của {spk_name}.", parent=self, duration=2500)
         else:
-            self._preview_speaker_preset_vi()
+            InfoBar.warning(
+                "Không có mẫu giọng gốc",
+                f"Nhân vật {spk_name} không có tệp âm thanh mẫu từ video. Hãy sử dụng nút 'Nghe Thử Giọng' để tạo giọng thử nghiệm.",
+                parent=self,
+                duration=3500,
+            )
 
     def _toggle_advanced_settings(self):
         """Đóng mở nhóm thiết lập phần cứng và tham số nâng cao."""
@@ -2215,16 +2255,71 @@ class OmniVoiceInterface(ScrollArea):
 
     def _audition_all_speakers(self):
         """Nghe thử tuần tự từng nhân vật đã được phân vai."""
-        chars = [c["speaker"] for c in getattr(self, "_character_cards", []) if c.get("speaker") and c.get("speaker") not in ("Chưa phân vai", "Chưa xác định")]
+        if getattr(self, "_audition_all_active", False):
+            self._stop_audition_all()
+            return
+
+        chars: List[str] = []
+        for c in getattr(self, "_character_cards", []):
+            spk = c.get("name") or c.get("speaker")
+            if spk and spk not in ("Chưa phân vai", "Chưa xác định") and spk not in chars:
+                chars.append(spk)
+
         if not chars:
-            chars = [s for s in self.speaker_profiles.keys() if s and s not in ("Chưa phân vai", "Chưa xác định")]
+            for s in self.speaker_profiles.keys():
+                if s and s not in ("Chưa phân vai", "Chưa xác định") and s not in chars:
+                    chars.append(s)
+
         if not chars:
             InfoBar.warning("Chưa có nhân vật", "Vui lòng nạp phụ đề hoặc nhận diện nhân vật trước khi nghe thử.", parent=self, duration=2500)
             return
 
-        spk = chars[0]
-        self._audition_character_voice(spk)
-        InfoBar.info("Nghe thử nhân vật", f"Đang nghe thử giọng của {spk} trong tổng số {len(chars)} nhân vật.", parent=self, duration=3000)
+        self._audition_queue = list(chars)
+        self._audition_all_total = len(chars)
+        self._audition_all_active = True
+        if hasattr(self, "btn_audition_all_speakers"):
+            self.btn_audition_all_speakers.setText("Dừng Nghe Thử")
+            self.btn_audition_all_speakers.setIcon(FluentIcon.PAUSE)
+
+        self._play_next_audition_in_queue()
+
+    def _play_next_audition_in_queue(self):
+        """Phát nhân vật tiếp theo trong hàng đợi nghe thử."""
+        if not getattr(self, "_audition_all_active", False):
+            return
+
+        if not self._audition_queue:
+            self._stop_audition_all()
+            InfoBar.success("Hoàn thành", "Đã nghe thử toàn bộ nhân vật.", parent=self, duration=3000)
+            return
+
+        spk = self._audition_queue.pop(0)
+        self._current_audition_speaker = spk
+        curr_idx = self._audition_all_total - len(self._audition_queue)
+        if hasattr(self, "btn_audition_all_speakers"):
+            self.btn_audition_all_speakers.setText(f"Dừng ({curr_idx}/{self._audition_all_total})")
+            self.btn_audition_all_speakers.setIcon(FluentIcon.PAUSE)
+
+        InfoBar.info("Nghe thử nhân vật", f"Đang nghe thử giọng của {spk} ({curr_idx}/{self._audition_all_total}).", parent=self, duration=2500)
+
+        card_btn = None
+        for c in getattr(self, "_character_cards", []):
+            if (c.get("name") or c.get("speaker")) == spk:
+                card_btn = c.get("button")
+                break
+
+        self._audition_character_voice(spk, card_btn)
+
+    def _stop_audition_all(self):
+        """Dừng hàng đợi nghe thử toàn bộ nhân vật."""
+        self._audition_all_active = False
+        self._audition_queue = []
+        self._current_audition_speaker = None
+        if hasattr(self, "btn_audition_all_speakers"):
+            self.btn_audition_all_speakers.setText("Nghe Thử Toàn Bộ Nhân Vật")
+            self.btn_audition_all_speakers.setIcon(FluentIcon.VOLUME)
+        self._media_player.stop()
+        self._reset_audition_button()
 
     def _run_pre_export_quality_check(self) -> List[Dict[str, Any]]:
         """Kiểm tra chất lượng trước khi xuất âm thanh hoặc video lồng tiếng."""

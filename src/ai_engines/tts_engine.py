@@ -1320,7 +1320,22 @@ class TTSEngine:
                     prof_data["status"] = "review_needed"
                 detected_profiles[spk_name] = prof_data
 
-            self.speaker_profiles = detected_profiles
+            # Hợp nhất (merge) detected_profiles với self.speaker_profiles hiện có
+            # Bảo toàn nguyên vẹn hồ sơ của các nhân vật đã được người dùng tùy chỉnh hoặc đã khóa
+            merged_profiles = dict(self.speaker_profiles) if self.speaker_profiles else {}
+            for spk_name, p_data in detected_profiles.items():
+                if spk_name not in merged_profiles:
+                    merged_profiles[spk_name] = p_data
+                else:
+                    existing_prof = merged_profiles[spk_name]
+                    is_locked = (
+                        (existing_prof.get("status") == "locked" if isinstance(existing_prof, dict) else getattr(existing_prof, "status", "")) == "locked"
+                        or (existing_prof.get("method") == "preset" if isinstance(existing_prof, dict) else getattr(existing_prof, "method", "")) == "preset"
+                    )
+                    if not is_locked:
+                        merged_profiles[spk_name] = p_data
+
+            self.speaker_profiles = merged_profiles
             self.log(
                 f"Đã tự động nhận diện {len(detected_profiles)} người nói từ video: "
                 + ", ".join(f"{k} ({v['description']} - {v['count']} câu)" for k, v in detected_profiles.items())
@@ -1496,7 +1511,21 @@ class TTSEngine:
             blk.voice_ref_path = ""
             _register_speaker(assigned_spk, assigned_instruct, assigned_desc)
 
-        self.speaker_profiles = detected_profiles
+        # Hợp nhất với self.speaker_profiles hiện có, bảo toàn các hồ sơ đã khóa
+        merged_profiles = dict(self.speaker_profiles) if self.speaker_profiles else {}
+        for spk_name, p_data in detected_profiles.items():
+            if spk_name not in merged_profiles:
+                merged_profiles[spk_name] = p_data
+            else:
+                existing_prof = merged_profiles[spk_name]
+                is_locked = (
+                    (existing_prof.get("status") == "locked" if isinstance(existing_prof, dict) else getattr(existing_prof, "status", "")) == "locked"
+                    or (existing_prof.get("method") == "preset" if isinstance(existing_prof, dict) else getattr(existing_prof, "method", "")) == "preset"
+                )
+                if not is_locked:
+                    merged_profiles[spk_name] = p_data
+
+        self.speaker_profiles = merged_profiles
         self.log(
             f"Đã tự động phân vai {len(detected_profiles)} nhân vật từ văn bản phụ đề: "
             + ", ".join(f"{k} ({v['description']} - {v['count']} câu)" for k, v in detected_profiles.items())

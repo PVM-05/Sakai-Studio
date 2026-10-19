@@ -1534,6 +1534,7 @@ def test_synthesize_blocks_strictly_respects_preset_method_over_stale_clone_path
     from src.ai_engines.speaker_diarization import CharacterVoiceProfile
 
     engine = TTSEngine(mode="clone")
+    engine.load_model = MagicMock()
     ref_audio = tmp_path / "stale_sample.wav"
     ref_audio.write_bytes(b"RIFFdummydata")
 
@@ -1564,7 +1565,7 @@ def test_synthesize_blocks_strictly_respects_preset_method_over_stale_clone_path
 
     def fake_generate_single(text, **kwargs):
         captured_calls.append(kwargs)
-        return np.zeros(24000, dtype=np.float32)
+        return _make_sine_wave(1.0, 24000)
 
     engine.generate_single = fake_generate_single
 
@@ -2122,3 +2123,179 @@ def test_export_shows_warning_confirmation_dialog(monkeypatch):
 
     assert mock_confirm.called is True
     assert ui._launch_worker.called is False
+
+
+def test_cosine_clustering_imbalanced_minority_speaker_not_merged():
+    """
+    Xác minh thuật toán phân cụm cosin không nuốt chửng nhân vật phụ (thiểu số)
+    khi dữ liệu mất cân bằng (ví dụ: Nhân vật A nói 10 câu, Nhân vật B nói 1 câu khác biệt).
+    Giả thuyết k=1 không được chấp nhận nếu có mẫu cách biệt rõ rệt.
+    """
+    from src.ai_engines.speaker_diarization import cosine_cluster_embeddings
+
+    rng = np.random.default_rng(42)
+    # 10 mẫu nhân vật A xung quanh trục [1, 0, 0, 0] với phương sai nhỏ
+    embs_a = np.zeros((10, 8), dtype=np.float32)
+    embs_a[:, 0] = 1.0 + rng.normal(0, 0.02, 10)
+    embs_a[:, 1:] = rng.normal(0, 0.02, (10, 7))
+
+    # 1 mẫu nhân vật B theo trục trực giao [0, 1, 0, 0] (khoảng cách cosin ~ 1.0)
+    emb_b = np.zeros((1, 8), dtype=np.float32)
+    emb_b[0, 1] = 1.0
+
+    all_embs = np.vstack([embs_a, emb_b])
+    labels, conf_levels, conf_scores = cosine_cluster_embeddings(
+        all_embs, valid_indices=list(range(len(all_embs))), max_speakers=4
+    )
+
+    # Nhân vật B (chỉ số 10) bắt buộc phải thuộc cụm khác với Nhân vật A (chỉ số 0..9)
+    assert labels[10] != labels[0]
+    assert len(np.unique(labels)) >= 2
+    # Cụm đơn lẻ (1 câu) trong bộ dữ liệu phải được đánh dấu 'review_needed'
+    assert conf_levels[10] == "review_needed"
+
+
+def test_synthesize_blocks_preserves_locked_character_profiles_and_names_when_diarizing_unassigned(tmp_path):
+    """
+    Xác minh khi xuất video có câu chưa phân vai:
+    1. detect_speakers_from_video không ghi đè làm mất self.speaker_profiles của các nhân vật đã khóa.
+    2. Các câu chưa phân vai được gán tên người nói mới mà không trùng/đè tên nhân vật đã khóa.
+    3. Bước chuẩn bị prompt giữ nguyên preset tiếng Việt mà người dùng đã chọn cho nhân vật đã khóa.
+    """
+    from unittest.mock import MagicMock, patch
+    from src.ai_engines.tts_engine import TTSEngine, SubtitleBlock
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile, SpeakerDiarizationCoordinator
+
+    engine = TTSEngine(mode="clone", multi_speaker_mode="auto_video_cluster")
+    engine.load_model = MagicMock()
+
+    prof_locked = CharacterVoiceProfile(
+        speaker_id="spk_locked",
+        display_name="Nhân vật Đã Khóa",
+        method="preset",
+        preset_name="Nam Thanh Niên",
+        voice_instruct="male, young adult, clear",
+        status="locked",
+    )
+    engine.speaker_profiles = {"Nhân vật Đã Khóa": prof_locked}
+
+    b1 = SubtitleBlock(
+        index=1,
+        start_time="00:00:01,000",
+        end_time="00:00:03,000",
+        text="Câu đã phân vai của nhân vật đã khóa",
+        speaker="Nhân vật Đã Khóa",
+        is_speaker_locked=True,
+    )
+    b2 = SubtitleBlock(
+        index=2,
+        start_time="00:00:04,000",
+        end_time="00:00:06,000",
+        text="Câu mới chưa phân vai",
+        speaker="",
+        is_speaker_locked=False,
+    )
+
+    vid_file = str(tmp_path / "test_vid.mp4")
+    Path(vid_file).write_bytes(b"dummy")
+
+    # Giả lập coordinator nhận diện câu b2 thành Người nói 1
+    mock_detected_prof = CharacterVoiceProfile(
+        speaker_id="spk_0",
+        display_name="Người nói 1",
+        method="clone",
+        status="locked",
+    )
+
+    def fake_separate(*args, **kwargs):
+        out_path = args[1] if len(args) == 2 else args[2]
+        sf.write(out_path, _make_sine_wave(2.0, 16000), 16000)
+        return True
+
+    with patch("src.ai_engines.tts_engine.VoiceSeparator.separate_from_video", side_effect=fake_separate), \
+         patch.object(
+             SpeakerDiarizationCoordinator,
+             "process_video_subtitles",
+             return_value={"Người nói 1": mock_detected_prof},
+         ):
+        engine.detect_speakers_from_video(vid_file, [b1, b2], max_speakers=4)
+
+    # 1. Hồ sơ 'Nhân vật Đã Khóa' phải được bảo toàn nguyên vẹn
+    assert "Nhân vật Đã Khóa" in engine.speaker_profiles
+    assert engine.speaker_profiles["Nhân vật Đã Khóa"].method == "preset"
+    assert engine.speaker_profiles["Nhân vật Đã Khóa"].preset_name == "Nam Thanh Niên"
+
+    # 2. Hồ sơ mới 'Người nói 1' cũng được ghi nhận vào bảng hồ sơ
+    assert "Người nói 1" in engine.speaker_profiles
+
+    # 3. Khi chuẩn bị prompt, nhân vật đã khóa phải dùng đúng preset Nam Thanh Niên
+    engine._prepare_and_lock_character_prompts([b1, b2])
+    assert "Nhân vật Đã Khóa" in engine._speaker_instruct_cache
+    assert "Nam Thanh Niên" in engine.speaker_profiles["Nhân vật Đã Khóa"].preset_name
+
+
+def test_audition_all_speakers_queues_and_plays_sequentially():
+    """
+    Xác minh nút 'Nghe thử toàn bộ nhân vật':
+    1. Trích xuất đúng danh sách từ _character_cards (dùng key 'name' hoặc 'speaker').
+    2. Thiết lập hàng đợi tuần tự, cập nhật trạng thái nút và bắt đầu phát nhân vật đầu tiên.
+    3. Khi nhận tín hiệu EndOfMedia, tự động chuyển sang phát nhân vật kế tiếp trong hàng đợi.
+    4. Có thể dừng chủ động bất kỳ lúc nào và làm sạch hàng đợi.
+    """
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtMultimedia import QMediaPlayer
+    from qfluentwidgets import PushButton
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+
+    prof1 = CharacterVoiceProfile(
+        speaker_id="spk_1",
+        display_name="Nhân vật 1",
+        method="preset",
+        preset_name="Nam Thanh Niên",
+        voice_instruct="male youth",
+        status="locked",
+    )
+    prof2 = CharacterVoiceProfile(
+        speaker_id="spk_2",
+        display_name="Nhân vật 2",
+        method="preset",
+        preset_name="Nữ Ngọt Ngào",
+        voice_instruct="female sweet",
+        status="locked",
+    )
+    ui.speaker_profiles = {"Nhân vật 1": prof1, "Nhân vật 2": prof2}
+
+    btn1 = PushButton("Nghe Thử Giọng")
+    btn2 = PushButton("Nghe Thử Giọng")
+    ui._character_cards = [
+        {"name": "Nhân vật 1", "button": btn1},
+        {"name": "Nhân vật 2", "button": btn2},
+    ]
+
+    auditioned_list = []
+    ui._launch_worker = lambda *args, **kwargs: auditioned_list.append(kwargs.get("override_instruct"))
+
+    # Bắt đầu nghe thử toàn bộ
+    ui._audition_all_speakers()
+
+    assert ui._audition_all_active is True
+    assert ui._current_audition_speaker == "Nhân vật 1"
+    assert ui._audition_queue == ["Nhân vật 2"]
+    assert len(auditioned_list) == 1
+
+    # Chuyển tiếp sang nhân vật 2
+    ui._play_next_audition_in_queue()
+    assert ui._current_audition_speaker == "Nhân vật 2"
+    assert ui._audition_queue == []
+    assert len(auditioned_list) == 2
+
+    # Dừng phát toàn bộ
+    ui._stop_audition_all()
+    assert ui._audition_all_active is False
+    assert ui._audition_queue == []
+    assert "Toàn Bộ" in ui.btn_audition_all_speakers.text()
+
