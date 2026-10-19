@@ -371,9 +371,9 @@ def cosine_cluster_embeddings(
         # Cụm đơn lẻ (chỉ có 1-2 câu trong bộ dữ liệu lớn) cần được rà soát
         if cluster_sizes.get(own_c, 0) < 2 and n_samples >= 4:
             conf_levels.append(ConfidenceLevel.REVIEW_NEEDED.value)
-        elif gap >= 0.15 and d_own <= 0.35:
+        elif gap >= 0.20 and d_own <= 0.20:
             conf_levels.append(ConfidenceLevel.HIGH.value)
-        elif gap < 0.08 or d_own > 0.50:
+        elif gap < 0.12 or d_own > 0.25:
             conf_levels.append(ConfidenceLevel.REVIEW_NEEDED.value)
         else:
             conf_levels.append(ConfidenceLevel.HIGH.value)
