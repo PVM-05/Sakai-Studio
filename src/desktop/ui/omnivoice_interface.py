@@ -1694,7 +1694,6 @@ class OmniVoiceInterface(ScrollArea):
                     "ref_audio": data.get("ref_audio", ""),
                     "voice_instruct": data.get("voice_instruct", ""),
                 }, speaker_id=f"spk_{row}")
-                self.speaker_profiles[spk_name] = prof_info
             spk_id = prof_info.get("speaker_id", f"spk_{row}")
             item_id = QTableWidgetItem(spk_id)
             item_id.setFlags(item_id.flags() & ~Qt.ItemIsEditable)
