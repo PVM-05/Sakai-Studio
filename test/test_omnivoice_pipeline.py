@@ -2299,3 +2299,68 @@ def test_audition_all_speakers_queues_and_plays_sequentially():
     assert ui._audition_queue == []
     assert "Toàn Bộ" in ui.btn_audition_all_speakers.text()
 
+
+# ==============================================================================
+# KIỂM THỬ TƯƠNG THÍCH HAI CHIỀU CHO HỒ SƠ GIỌNG NÓI NHÂN VẬT
+# ==============================================================================
+def test_character_voice_profile_dict_and_attribute_interoperability():
+    """
+    Xác minh CharacterVoiceProfile hỗ trợ truy cập hai chiều:
+    1. Đọc và ghi thuộc tính qua cú pháp từ điển (profile['field'] = val) không gây lỗi TypeError.
+    2. Đọc và ghi qua cú pháp đối tượng (profile.field = val).
+    3. Hỗ trợ to_dict(), from_dict(), normalize_character_profile() với các trường mới:
+       vietnamese_accent, gender, pitch_level, style_tag, recommended_voices, error_message.
+    """
+    from src.ai_engines.speaker_diarization import (
+        CharacterVoiceProfile,
+        normalize_character_profile,
+    )
+
+    prof = CharacterVoiceProfile(
+        speaker_id="spk_test",
+        display_name="Người nói thử nghiệm",
+        vietnamese_accent="nam",
+        gender="male",
+        pitch_level="low",
+        style_tag="story",
+    )
+
+    # 1. Truy cập và gán dạng từ điển
+    assert prof["speaker_id"] == "spk_test"
+    assert prof["vietnamese_accent"] == "nam"
+    assert prof["gender"] == "male"
+    assert prof.get("pitch_level") == "low"
+
+    # Thao tác gán dạng từ điển phải thành công không bị ném TypeError
+    prof["method"] = "preset"
+    prof["preset_name"] = "nam_mien_nam_tram_am"
+    prof["error_message"] = "Lỗi thử nghiệm"
+    assert prof.method == "preset"
+    assert prof.preset_name == "nam_mien_nam_tram_am"
+    assert prof.error_message == "Lỗi thử nghiệm"
+
+    # 2. Chuyển đổi sang từ điển và phục hồi lại
+    d = prof.to_dict()
+    assert d["speaker_id"] == "spk_test"
+    assert d["vietnamese_accent"] == "nam"
+    assert d["error_message"] == "Lỗi thử nghiệm"
+
+    reconstructed = CharacterVoiceProfile.from_dict(d)
+    assert reconstructed.speaker_id == "spk_test"
+    assert reconstructed.vietnamese_accent == "nam"
+    assert reconstructed.preset_name == "nam_mien_nam_tram_am"
+
+    # 3. Hàm chuẩn hóa an toàn
+    norm1 = normalize_character_profile(prof)
+    assert norm1 is prof
+
+    norm2 = normalize_character_profile({"speaker_id": "spk_dict", "display_name": "Nhân vật từ điển", "vietnamese_accent": "trung"})
+    assert isinstance(norm2, CharacterVoiceProfile)
+    assert norm2.speaker_id == "spk_dict"
+    assert norm2.vietnamese_accent == "trung"
+
+    norm3 = normalize_character_profile(None, speaker_id="spk_fallback")
+    assert isinstance(norm3, CharacterVoiceProfile)
+    assert norm3.speaker_id == "spk_fallback"
+
+

@@ -46,13 +46,19 @@ class CharacterVoiceProfile:
     utterance_count: int = 0
     total_duration: float = 0.0
     source_audio_path: str = ""
-    method: str = "clone"  # "clone" (nhân bản từ video) hoặc "preset" (giọng danh mục)
+    method: str = "clone"  # Phương thức clone hoặc preset
     preset_name: str = ""
     voice_instruct: str = "male, young adult, moderate pitch"
-    status: str = "locked"  # "locked", "review_needed", "unassigned"
+    status: str = "locked"  # locked, review_needed, unassigned
     custom_audio_path: str = ""
     high_confidence_ratio: float = 1.0
     voice_clone_prompt_path: str = ""
+    vietnamese_accent: str = "bac"
+    gender: str = "auto"
+    pitch_level: str = "moderate"
+    style_tag: str = "natural"
+    recommended_voices: List[Dict[str, Any]] = field(default_factory=list)
+    error_message: str = ""
 
     # Các thuộc tính bí danh hỗ trợ tương thích ngược 2 chiều
     @property
@@ -112,6 +118,7 @@ class CharacterVoiceProfile:
             "assigned_strategy": self.method,
             "preset_name": self.preset_name,
             "voice_preset": self.preset_name,
+            "voice_preset_key": self.preset_name,
             "voice_instruct": self.voice_instruct,
             "instruct": self.voice_instruct,
             "status": self.status,
@@ -119,16 +126,108 @@ class CharacterVoiceProfile:
             "confidence_level": "high" if self.high_confidence_ratio >= 0.7 else ("review_needed" if self.high_confidence_ratio >= 0.3 else "unassigned"),
             "custom_audio_path": self.custom_audio_path,
             "high_confidence_ratio": self.high_confidence_ratio,
+            "voice_clone_prompt_path": self.voice_clone_prompt_path,
+            "vietnamese_accent": self.vietnamese_accent,
+            "gender": self.gender,
+            "pitch_level": self.pitch_level,
+            "style_tag": self.style_tag,
+            "recommended_voices": list(self.recommended_voices) if self.recommended_voices else [],
+            "error_message": self.error_message,
         }
 
+    _ALIAS_SET_MAP = {
+        "count": "utterance_count",
+        "dialogue_count": "utterance_count",
+        "ref_audio": "source_audio_path",
+        "ref_audio_path": "source_audio_path",
+        "source_audio_sample": "source_audio_path",
+        "assigned_strategy": "method",
+        "voice_preset": "preset_name",
+        "voice_preset_key": "preset_name",
+        "instruct": "voice_instruct",
+    }
+
     def __getitem__(self, key: str) -> Any:
-        return self.to_dict()[key]
+        d = self.to_dict()
+        if key in d:
+            return d[key]
+        if hasattr(self, key):
+            return getattr(self, key)
+        raise KeyError(key)
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        target_key = self._ALIAS_SET_MAP.get(key, key)
+        if target_key in ("confidence", "confidence_level"):
+            if value == "high":
+                self.high_confidence_ratio = 1.0
+            elif value == "review_needed":
+                self.high_confidence_ratio = 0.5
+            elif value == "unassigned":
+                self.high_confidence_ratio = 0.0
+        setattr(self, target_key, value)
 
     def get(self, key: str, default: Any = None) -> Any:
-        return self.to_dict().get(key, default)
+        d = self.to_dict()
+        if key in d:
+            return d[key]
+        return getattr(self, key, default)
 
     def __contains__(self, key: str) -> bool:
-        return key in self.to_dict()
+        return key in self.to_dict() or hasattr(self, key)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> CharacterVoiceProfile:
+        """Tạo đối tượng CharacterVoiceProfile từ từ điển dữ liệu."""
+        if not isinstance(data, dict):
+            data = {}
+        profile = cls(
+            speaker_id=str(data.get("speaker_id", "")),
+            display_name=str(data.get("display_name") or data.get("speaker_id", "") or "Nhân vật"),
+            utterance_count=int(data.get("utterance_count") or data.get("count") or data.get("dialogue_count") or 0),
+            total_duration=float(data.get("total_duration") or 0.0),
+            source_audio_path=str(
+                data.get("source_audio_path")
+                or data.get("ref_audio")
+                or data.get("ref_audio_path")
+                or data.get("source_audio_sample")
+                or ""
+            ),
+            method=str(data.get("method") or data.get("assigned_strategy") or "clone"),
+            preset_name=str(data.get("preset_name") or data.get("voice_preset") or data.get("voice_preset_key") or ""),
+            voice_instruct=str(data.get("voice_instruct") or data.get("instruct") or "male, young adult, moderate pitch"),
+            status=str(data.get("status") or "locked"),
+            custom_audio_path=str(data.get("custom_audio_path") or ""),
+            high_confidence_ratio=float(data.get("high_confidence_ratio", 1.0) if data.get("high_confidence_ratio") is not None else 1.0),
+            voice_clone_prompt_path=str(data.get("voice_clone_prompt_path") or ""),
+            vietnamese_accent=str(data.get("vietnamese_accent") or "bac"),
+            gender=str(data.get("gender") or "auto"),
+            pitch_level=str(data.get("pitch_level") or "moderate"),
+            style_tag=str(data.get("style_tag") or "natural"),
+            recommended_voices=list(data.get("recommended_voices") or []),
+            error_message=str(data.get("error_message") or ""),
+        )
+        return profile
+
+
+def normalize_character_profile(raw: Any, speaker_id: str = "") -> CharacterVoiceProfile:
+    """Chuẩn hóa dữ liệu hồ sơ nhân vật về dạng đối tượng CharacterVoiceProfile an toàn."""
+    if isinstance(raw, CharacterVoiceProfile):
+        if speaker_id and not raw.speaker_id:
+            raw.speaker_id = speaker_id
+        return raw
+
+    if isinstance(raw, dict):
+        d = dict(raw)
+        if speaker_id and not d.get("speaker_id"):
+            d["speaker_id"] = speaker_id
+        return CharacterVoiceProfile.from_dict(d)
+
+    sid = speaker_id or (getattr(raw, "speaker_id", "") if raw is not None else "")
+    dname = getattr(raw, "display_name", "") if raw is not None else ""
+    return CharacterVoiceProfile(
+        speaker_id=str(sid or "unknown"),
+        display_name=str(dname or sid or "Nhân vật"),
+    )
 
 
 # Bí danh tương thích ngược
