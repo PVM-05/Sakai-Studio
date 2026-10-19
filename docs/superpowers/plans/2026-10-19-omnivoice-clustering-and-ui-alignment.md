@@ -28,7 +28,7 @@
 - Consumes: Cấu hình pytest
 - Produces: Môi trường kiểm thử tự động nạp đúng gói `src` cả ở máy cục bộ và máy chủ ảo CI.
 
-- [ ] **Step 1: Tạo tệp pytest.ini**
+- [x] **Step 1: Tạo tệp pytest.ini**
 
 Tạo `pytest.ini` tại thư mục gốc:
 ```ini
@@ -37,7 +37,7 @@ pythonpath = .
 testpaths = test
 ```
 
-- [ ] **Step 2: Cập nhật .github/workflows/ci-tests.yml**
+- [x] **Step 2: Cập nhật .github/workflows/ci-tests.yml**
 
 Bổ sung `PYTHONPATH: .` vào `env:` của tác vụ kiểm thử:
 ```yaml
@@ -47,7 +47,7 @@ Bổ sung `PYTHONPATH: .` vào `env:` của tác vụ kiểm thử:
       PYTHONPATH: .
 ```
 
-- [ ] **Step 3: Chạy thử pytest cục bộ không dùng tiền tố biến môi trường**
+- [x] **Step 3: Chạy thử pytest cục bộ không dùng tiền tố biến môi trường**
 
 Chạy lệnh:
 ```powershell
@@ -55,7 +55,7 @@ Chạy lệnh:
 ```
 Kỳ vọng: Đạt (PASSED) mà không gặp lỗi `ModuleNotFoundError: No module named 'src'`.
 
-- [ ] **Step 4: Cam kết git**
+- [x] **Step 4: Cam kết git**
 
 ```powershell
 git add pytest.ini .github/workflows/ci-tests.yml
@@ -74,7 +74,7 @@ git commit -m "ci: configure pytest.ini and PYTHONPATH for automated workflows"
 - Consumes: `embeddings: np.ndarray`, `valid_indices: List[int]`, `max_speakers: int = 6`
 - Produces: `cosine_cluster_embeddings(...) -> Tuple[np.ndarray, List[str], List[float]]`
 
-- [ ] **Step 1: Viết các bài kiểm thử thất bại**
+- [x] **Step 1: Viết các bài kiểm thử thất bại**
 
 Viết vào `test/test_omnivoice_pipeline.py`:
 ```python
@@ -146,7 +146,7 @@ def test_cosine_clustering_allows_full_k_candidates():
     assert len(np.unique(labels)) == 3
 ```
 
-- [ ] **Step 2: Chạy kiểm thử để xác nhận thất bại**
+- [x] **Step 2: Chạy kiểm thử để xác nhận thất bại**
 
 Chạy lệnh:
 ```powershell
@@ -154,7 +154,7 @@ Chạy lệnh:
 ```
 Kỳ vọng: Thất bại với `AssertionError: assert len(unique_speakers) == 1` (trả về 2 do ép buộc $k \ge 2$) hoặc `assert len(np.unique(labels)) == 3` (bị chặn ở 2).
 
-- [ ] **Step 3: Viết mã nguồn tối thiểu**
+- [x] **Step 3: Viết mã nguồn tối thiểu**
 
 Trong `src/ai_engines/speaker_diarization.py`:
 1. Kiểm tra giả thuyết $k = 1$:
@@ -170,7 +170,7 @@ Trong `src/ai_engines/speaker_diarization.py`:
 5. So sánh với phương án $k = 1$:
    - Nếu `best_score < 0.25`: Kết luận chỉ có 1 người nói ($k = 1$).
 
-- [ ] **Step 4: Chạy kiểm thử để xác nhận thành công**
+- [x] **Step 4: Chạy kiểm thử để xác nhận thành công**
 
 Chạy lệnh:
 ```powershell
@@ -178,7 +178,7 @@ Chạy lệnh:
 ```
 Kỳ vọng: Đạt (PASSED).
 
-- [ ] **Step 5: Cam kết git**
+- [x] **Step 5: Cam kết git**
 
 ```powershell
 git add src/ai_engines/speaker_diarization.py test/test_omnivoice_pipeline.py
@@ -197,7 +197,7 @@ git commit -m "fix(diarization): add single speaker hypothesis and fix silhouett
 - Consumes: `blocks: List[SubtitleBlock]`, `video_path: str`
 - Produces: Kích hoạt `detect_speakers_from_video` hoặc `detect_speakers_from_srt_text` khi có câu chưa khóa hoặc chưa phân vai.
 
-- [ ] **Step 1: Viết bài kiểm thử thất bại**
+- [x] **Step 1: Viết bài kiểm thử thất bại**
 
 Viết vào `test/test_omnivoice_pipeline.py`:
 ```python
@@ -227,7 +227,7 @@ def test_synthesize_blocks_does_not_skip_diarization_if_some_blocks_assigned(tmp
     assert engine.detect_speakers_from_video.called is True
 ```
 
-- [ ] **Step 2: Chạy kiểm thử để xác nhận thất bại**
+- [x] **Step 2: Chạy kiểm thử để xác nhận thất bại**
 
 Chạy lệnh:
 ```powershell
@@ -235,7 +235,7 @@ Chạy lệnh:
 ```
 Kỳ vọng: Thất bại với `AssertionError: assert False is True`.
 
-- [ ] **Step 3: Viết mã nguồn tối thiểu**
+- [x] **Step 3: Viết mã nguồn tối thiểu**
 
 Trong `src/ai_engines/tts_engine.py`:
 Sửa điều kiện kiểm tra trong `synthesize_blocks()`:
@@ -255,7 +255,7 @@ Sửa điều kiện kiểm tra trong `synthesize_blocks()`:
                 self.detect_speakers_from_srt_text(blocks, max_speakers=self.max_speakers)
 ```
 
-- [ ] **Step 4: Chạy kiểm thử để xác nhận thành công**
+- [x] **Step 4: Chạy kiểm thử để xác nhận thành công**
 
 Chạy lệnh:
 ```powershell
@@ -263,7 +263,7 @@ Chạy lệnh:
 ```
 Kỳ vọng: Đạt (PASSED).
 
-- [ ] **Step 5: Cam kết git**
+- [x] **Step 5: Cam kết git**
 
 ```powershell
 git add src/ai_engines/tts_engine.py test/test_omnivoice_pipeline.py
@@ -282,7 +282,7 @@ git commit -m "fix(tts): do not skip diarization when some blocks remain unassig
 - Consumes: `_launch_worker(task_type="block_preview", ..., override_mode=...)`
 - Produces: `OmniVoiceTaskWorker` nhận và chuyển `override_mode` vào `engine.generate_single()`.
 
-- [ ] **Step 1: Viết bài kiểm thử thất bại**
+- [x] **Step 1: Viết bài kiểm thử thất bại**
 
 Viết vào `test/test_omnivoice_pipeline.py`:
 ```python
@@ -318,7 +318,7 @@ def test_block_preview_uses_correct_override_mode_and_voice(tmp_path):
     assert captured.get("override_instruct") == "female sweet voice"
 ```
 
-- [ ] **Step 2: Chạy kiểm thử để xác nhận thất bại**
+- [x] **Step 2: Chạy kiểm thử để xác nhận thất bại**
 
 Chạy lệnh:
 ```powershell
@@ -326,7 +326,7 @@ Chạy lệnh:
 ```
 Kỳ vọng: Thất bại với `assert captured.get("override_mode") == "design"`.
 
-- [ ] **Step 3: Viết mã nguồn tối thiểu**
+- [x] **Step 3: Viết mã nguồn tối thiểu**
 
 1. Trong `OmniVoiceTaskWorker`:
 - Bổ sung tham số `override_mode: Optional[str] = None` vào `__init__`.
@@ -347,7 +347,7 @@ Kỳ vọng: Thất bại với `assert captured.get("override_mode") == "design
   Nếu là clone: `override_mode = "clone"`, `row_ref = ref_path`, `row_ins = ""`.
 - Truyền `override_mode` vào `_launch_worker("block_preview", ..., override_mode=override_mode)`.
 
-- [ ] **Step 4: Chạy kiểm thử để xác nhận thành công**
+- [x] **Step 4: Chạy kiểm thử để xác nhận thành công**
 
 Chạy lệnh:
 ```powershell
@@ -355,7 +355,7 @@ Chạy lệnh:
 ```
 Kỳ vọng: Đạt (PASSED).
 
-- [ ] **Step 5: Cam kết git**
+- [x] **Step 5: Cam kết git**
 
 ```powershell
 git add src/desktop/ui/omnivoice_interface.py test/test_omnivoice_pipeline.py
@@ -374,7 +374,7 @@ git commit -m "fix(ui): pass correct override_mode to block_preview to align wit
 - Consumes: `speaker_profiles`, `subtitle_blocks`
 - Produces: Bảng phụ đề hiển thị "Chưa phân vai"; thẻ tổng quan không đếm "Chưa phân vai"; `_audition_all_speakers` duyệt lần lượt từng nhân vật.
 
-- [ ] **Step 1: Viết các bài kiểm thử thất bại**
+- [x] **Step 1: Viết các bài kiểm thử thất bại**
 
 Viết vào `test/test_omnivoice_pipeline.py`:
 ```python
@@ -420,7 +420,7 @@ def test_clone_method_without_sample_marks_review_needed():
     assert prof.status == "review_needed"
 ```
 
-- [ ] **Step 2: Chạy kiểm thử để xác nhận thất bại**
+- [x] **Step 2: Chạy kiểm thử để xác nhận thất bại**
 
 Chạy lệnh:
 ```powershell
@@ -428,7 +428,7 @@ Chạy lệnh:
 ```
 Kỳ vọng: Thất bại với `assert len(ui._character_cards) == 1` (hiện tại tính cả Chưa phân vai thành 2) và `assert prof.status == "review_needed"` (hiện tại gán cứng locked).
 
-- [ ] **Step 3: Viết mã nguồn tối thiểu**
+- [x] **Step 3: Viết mã nguồn tối thiểu**
 
 1. Trong `_populate_subtitle_table`:
    - Dòng 2677: `spk = getattr(blk, "speaker", "") or "Chưa phân vai"`.
@@ -441,7 +441,7 @@ Kỳ vọng: Thất bại với `assert len(ui._character_cards) == 1` (hiện t
 4. Trong `_audition_all_speakers`:
    - Duyệt qua danh sách `self._character_cards` và phát lần lượt từng nhân vật kèm thông báo tiến trình.
 
-- [ ] **Step 4: Chạy kiểm thử để xác nhận thành công**
+- [x] **Step 4: Chạy kiểm thử để xác nhận thành công**
 
 Chạy lệnh:
 ```powershell
@@ -449,7 +449,7 @@ Chạy lệnh:
 ```
 Kỳ vọng: Đạt (PASSED).
 
-- [ ] **Step 5: Cam kết git**
+- [x] **Step 5: Cam kết git**
 
 ```powershell
 git add src/desktop/ui/omnivoice_interface.py test/test_omnivoice_pipeline.py
@@ -468,7 +468,7 @@ git commit -m "fix(ui): standardize unassigned speaker label, profile review sta
 - Consumes: `issues = self._run_pre_export_quality_check()`
 - Produces: Hộp thoại xác nhận `MessageBox` hiển thị cảnh báo phân vai; dừng tác vụ nếu người dùng bấm hủy.
 
-- [ ] **Step 1: Viết bài kiểm thử thất bại**
+- [x] **Step 1: Viết bài kiểm thử thất bại**
 
 Viết vào `test/test_omnivoice_pipeline.py`:
 ```python
@@ -499,7 +499,7 @@ def test_export_shows_warning_confirmation_dialog(monkeypatch):
     assert ui._launch_worker.called is False
 ```
 
-- [ ] **Step 2: Chạy kiểm thử để xác nhận thất bại**
+- [x] **Step 2: Chạy kiểm thử để xác nhận thất bại**
 
 Chạy lệnh:
 ```powershell
@@ -507,7 +507,7 @@ Chạy lệnh:
 ```
 Kỳ vọng: Thất bại vì `_confirm_pre_export_warnings` chưa tồn tại.
 
-- [ ] **Step 3: Viết mã nguồn tối thiểu**
+- [x] **Step 3: Viết mã nguồn tối thiểu**
 
 Trong `src/desktop/ui/omnivoice_interface.py`:
 1. Thêm phương thức `_confirm_pre_export_warnings(self, warnings: List[Dict[str, Any]]) -> bool`:
@@ -517,7 +517,7 @@ Trong `src/desktop/ui/omnivoice_interface.py`:
    - Lọc các mục có `severity == "warning"`.
    - Nếu có cảnh báo: gọi `if not self._confirm_pre_export_warnings(warns): return`.
 
-- [ ] **Step 4: Chạy kiểm thử để xác nhận thành công**
+- [x] **Step 4: Chạy kiểm thử để xác nhận thành công**
 
 Chạy lệnh:
 ```powershell
@@ -525,7 +525,7 @@ Chạy lệnh:
 ```
 Kỳ vọng: Đạt (PASSED).
 
-- [ ] **Step 5: Cam kết git**
+- [x] **Step 5: Cam kết git**
 
 ```powershell
 git add src/desktop/ui/omnivoice_interface.py test/test_omnivoice_pipeline.py
@@ -539,14 +539,14 @@ git commit -m "feat(ui): add pre-export confirmation dialog for unassigned speak
 **Files:**
 - Test: `test/test_auto_pipeline_reliability.py`, `test/test_omnivoice_pipeline.py`, `test/test_srt_translator.py`, `test/test_subtitle_and_logo_remover.py`, `test_home_interface.py`
 
-- [ ] **Step 1: Chạy toàn bộ các bộ kiểm thử của dự án**
+- [x] **Step 1: Chạy toàn bộ các bộ kiểm thử của dự án**
 
 ```powershell
 .\venv\Scripts\pytest test/test_auto_pipeline_reliability.py test/test_omnivoice_pipeline.py test/test_srt_translator.py test/test_subtitle_and_logo_remover.py test_home_interface.py -v
 ```
 Kỳ vọng: Đạt 100% (toàn bộ 105+ bài kiểm thử đều PASSED).
 
-- [ ] **Step 2: Đẩy toàn bộ thay đổi lên máy chủ Git**
+- [x] **Step 2: Đẩy toàn bộ thay đổi lên máy chủ Git**
 
 ```powershell
 git push origin main
