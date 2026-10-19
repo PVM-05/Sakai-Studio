@@ -1267,7 +1267,6 @@ class TTSEngine:
                     source_audio_for_diarization = temp_raw_audio
                 elif os.path.isfile(video_path):
                     try:
-                        import soundfile as sf
                         _info = sf.info(video_path)
                         if _info.frames > 0:
                             source_audio_for_diarization = video_path
