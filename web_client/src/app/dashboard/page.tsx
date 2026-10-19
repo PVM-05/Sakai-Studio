@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, ChangeEvent } from "react";
 import Link from "next/link";
 import VideoPlayer, { Box } from "../../components/VideoPlayer";
+import { API_BASE, createEventSource } from "../../lib/api";
 
 interface ProjectItem {
   id: string;
@@ -27,19 +28,25 @@ export default function Dashboard() {
   const [boxes, setBoxes] = useState<Box[]>([]);
   const [detecting, setDetecting] = useState<boolean>(false);
   const [detectionNotice, setDetectionNotice] = useState<string | null>(null);
+  const [serverError, setServerError] = useState<string | null>(null);
   const [recentProjects, setRecentProjects] = useState<ProjectItem[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const fetchProjects = async () => {
     try {
-      const res = await fetch("http://localhost:8000/projects?limit=8");
+      const res = await fetch(`${API_BASE}/projects?limit=8`);
       if (res.ok) {
         const data = await res.json();
         setRecentProjects(data);
+        setServerError(null);
+      } else {
+        setServerError(`Máy chủ phản hồi với mã lỗi ${res.status}.`);
       }
     } catch (err) {
       console.error("Lỗi khi tải danh sách dự án:", err);
+      setServerError(`Không thể kết nối máy chủ API tại ${API_BASE}. Vui lòng kiểm tra dịch vụ máy chủ.`);
     }
   };
 
@@ -48,6 +55,9 @@ export default function Dashboard() {
     return () => {
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
+      }
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
       }
     };
   }, []);
@@ -63,7 +73,7 @@ export default function Dashboard() {
     formData.append("file", file);
 
     try {
-      const res = await fetch("http://localhost:8000/upload", {
+      const res = await fetch(`${API_BASE}/upload`, {
         method: "POST",
         body: formData,
       });
@@ -73,6 +83,7 @@ export default function Dashboard() {
       const data = await res.json();
       setServerFilename(data.filename);
       setVideoSrc(URL.createObjectURL(file));
+      setServerError(null);
     } catch (err) {
       console.error("Lỗi khi tải video:", err);
       alert("Không thể tải video lên máy chủ. Vui lòng kiểm tra lại kết nối.");
@@ -98,7 +109,7 @@ export default function Dashboard() {
     formData.append("timestamp", currentTime.toString());
 
     try {
-      const res = await fetch("http://localhost:8000/detect-subtitles", {
+      const res = await fetch(`${API_BASE}/detect-subtitles`, {
         method: "POST",
         body: formData,
       });
@@ -147,7 +158,7 @@ export default function Dashboard() {
     formData.append("user_id", "demo_user");
 
     try {
-      const res = await fetch("http://localhost:8000/process", {
+      const res = await fetch(`${API_BASE}/process`, {
         method: "POST",
         body: formData,
       });
@@ -173,9 +184,12 @@ export default function Dashboard() {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
     }
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
 
-    const sseUrl = `http://localhost:8000/events/${id}`;
-    const eventSource = new EventSource(sseUrl);
+    const eventSource = createEventSource(`/events/${id}`);
     eventSourceRef.current = eventSource;
 
     eventSource.onmessage = (event) => {
@@ -183,16 +197,18 @@ export default function Dashboard() {
         const payload = JSON.parse(event.data);
         if (payload.task_status === "SUCCESS") {
           eventSource.close();
+          eventSourceRef.current = null;
           setTaskStatus("Hoàn thành xử lý!");
           setTaskProgress(100);
           const downloadPath = payload.meta?.result_url || `/downloads/${id}/result.mp4`;
-          setResultUrl(`http://localhost:8000${downloadPath}`);
+          setResultUrl(`${API_BASE}${downloadPath}`);
           fetchProjects();
         } else if (payload.task_status === "PROGRESS") {
           setTaskStatus(payload.meta?.status || "Đang xử lý...");
           setTaskProgress(payload.meta?.current || 0);
         } else if (payload.task_status === "FAILURE") {
           eventSource.close();
+          eventSourceRef.current = null;
           setTaskStatus("Tiến trình bị gián đoạn hoặc gặp lỗi.");
           alert(payload.error || "Xảy ra lỗi trong quá trình xử lý.");
           fetchProjects();
@@ -204,30 +220,37 @@ export default function Dashboard() {
 
     eventSource.onerror = () => {
       eventSource.close();
+      eventSourceRef.current = null;
       // Chuyển sang cơ chế thăm dò định kỳ dự phòng nếu ngắt kết nối luồng sự kiện
       fallbackPolling(id);
     };
   };
 
   const fallbackPolling = (id: string) => {
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+    }
+
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`http://localhost:8000/status/${id}`);
+        const res = await fetch(`${API_BASE}/status/${id}`);
         if (!res.ok) return;
         const data = await res.json();
 
         if (data.task_status === "SUCCESS") {
           clearInterval(interval);
+          pollingIntervalRef.current = null;
           setTaskStatus("Hoàn thành xử lý!");
           setTaskProgress(100);
           const downloadPath = data.meta?.result_url || `/downloads/${id}/result.mp4`;
-          setResultUrl(`http://localhost:8000${downloadPath}`);
+          setResultUrl(`${API_BASE}${downloadPath}`);
           fetchProjects();
         } else if (data.task_status === "PROGRESS") {
           setTaskStatus(data.meta?.status || "Đang xử lý...");
           setTaskProgress(data.meta?.current || 0);
         } else if (data.task_status === "FAILURE") {
           clearInterval(interval);
+          pollingIntervalRef.current = null;
           setTaskStatus("Tiến trình gặp lỗi.");
           fetchProjects();
         }
@@ -235,9 +258,19 @@ export default function Dashboard() {
         console.error("Lỗi thăm dò dự phòng:", err);
       }
     }, 1500);
+
+    pollingIntervalRef.current = interval;
   };
 
   const handleReset = () => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
     setVideoSrc(null);
     setServerFilename(null);
     setTaskId(null);
@@ -264,6 +297,18 @@ export default function Dashboard() {
         </header>
 
         <div className="flex-1 overflow-y-auto p-8">
+          {serverError && (
+            <div className="mb-6 p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-sm flex items-center justify-between">
+              <span>{serverError}</span>
+              <button
+                onClick={fetchProjects}
+                className="ml-4 text-xs bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 px-3 py-1 rounded transition-colors"
+              >
+                Thử lại
+              </button>
+            </div>
+          )}
+
           {videoSrc ? (
             <div className="mb-12">
               <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
