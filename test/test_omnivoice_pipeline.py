@@ -2364,3 +2364,40 @@ def test_character_voice_profile_dict_and_attribute_interoperability():
     assert norm3.speaker_id == "spk_fallback"
 
 
+def test_voice_catalog_vietnamese_metadata_completeness():
+    """
+    Xác minh tất cả các mục giọng trong VIETNAMESE_VOICE_CATALOG:
+    1. Đều có đủ các trường: name, gender, accent, age_group, pitch, style, instruct, sample_vi, slug.
+    2. Giá trị accent nằm trong {'bac', 'trung', 'nam'}.
+    3. Giá trị gender nằm trong {'male', 'female'}.
+    4. Giá trị pitch nằm trong {'very_low', 'low', 'moderate', 'high', 'very_high'}.
+    5. Bảo đảm tồn tại giọng đại diện cho cả 3 miền Bắc, Trung, Nam.
+    """
+    from src.ai_engines.tts_engine import VIETNAMESE_VOICE_CATALOG
+
+    assert len(VIETNAMESE_VOICE_CATALOG) >= 22
+    valid_accents = {"bac", "trung", "nam"}
+    valid_genders = {"male", "female"}
+    valid_pitches = {"very_low", "low", "moderate", "high", "very_high"}
+
+    accents_found = set()
+    for preset_label, info in VIETNAMESE_VOICE_CATALOG.items():
+        assert "name" in info, f"Thiếu 'name' trong {preset_label}"
+        assert "gender" in info, f"Thiếu 'gender' trong {preset_label}"
+        assert "accent" in info, f"Thiếu 'accent' trong {preset_label}"
+        assert "age_group" in info, f"Thiếu 'age_group' trong {preset_label}"
+        assert "pitch" in info, f"Thiếu 'pitch' trong {preset_label}"
+        assert "style" in info, f"Thiếu 'style' trong {preset_label}"
+        assert "instruct" in info, f"Thiếu 'instruct' trong {preset_label}"
+        assert "sample_vi" in info, f"Thiếu 'sample_vi' trong {preset_label}"
+        assert "slug" in info, f"Thiếu 'slug' trong {preset_label}"
+
+        assert info["accent"] in valid_accents, f"Accent không hợp lệ: {info['accent']} tại {preset_label}"
+        assert info["gender"] in valid_genders, f"Gender không hợp lệ: {info['gender']} tại {preset_label}"
+        assert info["pitch"] in valid_pitches, f"Pitch không hợp lệ: {info['pitch']} tại {preset_label}"
+        accents_found.add(info["accent"])
+
+    assert accents_found == valid_accents, f"Chưa đủ cả 3 miền: {accents_found}"
+
+
+
