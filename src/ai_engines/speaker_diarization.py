@@ -211,11 +211,32 @@ def cosine_cluster_embeddings(
     sim_matrix = np.dot(norm_embs, norm_embs.T)
     dist_matrix = np.maximum(0.0, 1.0 - sim_matrix)
 
-    # Tránh để nghiệm phân cụm có quá nhiều cụm đơn lẻ thắng do silhouette bằng 1.
-    if n_samples >= 4:
-        max_k = max(2, min(max_speakers, n_samples // 2, 6))
-    else:
-        max_k = max(2, min(max_speakers, n_samples, 6))
+    # Tính tâm cụm toàn cục và khoảng cách trung bình
+    c_global = np.mean(norm_embs, axis=0)
+    c_global /= np.maximum(np.linalg.norm(c_global), 1e-12)
+    mean_dist_to_center = float(np.mean(1.0 - np.dot(norm_embs, c_global)))
+    max_dist = float(np.max(dist_matrix))
+
+    # Đánh giá giả thuyết 1 người nói (k = 1) ngay từ đầu:
+    # Nếu toàn bộ khoảng cách cosin < 0.35 hoặc khoảng cách trung bình tới tâm < 0.20
+    if max_dist < 0.35 or mean_dist_to_center < 0.20:
+        best_labels = np.zeros(n_samples, dtype=np.int32)
+        conf_levels: List[str] = []
+        conf_scores: List[float] = []
+        for idx in range(n_samples):
+            d_own = float(1.0 - np.dot(norm_embs[idx], c_global))
+            score = float(np.clip(1.0 - d_own, 0.0, 1.0))
+            conf_scores.append(score)
+            if d_own <= 0.35:
+                conf_levels.append(ConfidenceLevel.HIGH.value)
+            elif d_own > 0.50:
+                conf_levels.append(ConfidenceLevel.REVIEW_NEEDED.value)
+            else:
+                conf_levels.append(ConfidenceLevel.HIGH.value)
+        return best_labels, conf_levels, conf_scores
+
+    # Cho phép thử nghiệm đủ dải ứng viên từ 2 tới min(max_speakers, n_samples)
+    max_k = max(2, min(max_speakers, n_samples))
 
     best_labels = np.zeros(n_samples, dtype=np.int32)
     best_score = -1.0
@@ -260,14 +281,25 @@ def cosine_cluster_embeddings(
         if len(unique_clusters) < 2:
             continue
 
+        # Kiểm tra khoảng cách giữa các tâm cụm: Nếu 2 tâm cụm quá gần (< 0.30), bỏ qua nghiệm này
+        center_sims = np.dot(centers, centers.T)
+        np.fill_diagonal(center_sims, -1.0)
+        min_center_dist = float(1.0 - np.max(center_sims))
+        if min_center_dist < 0.30:
+            continue
+
         # Đánh giá hệ số phân tách Silhouette theo khoảng cách cosin
         sil_scores = []
         for idx in range(n_samples):
             own_c = labels[idx]
             same_mask = (labels == own_c)
             same_mask[idx] = False
-            a_val = float(np.mean(dist_matrix[idx, same_mask])) if np.any(same_mask) else 0.0
+            if not np.any(same_mask):
+                # Chuẩn toán học: cụm đơn lẻ không có khoảng cách nội cụm -> gán Silhouette = 0.0
+                sil_scores.append(0.0)
+                continue
 
+            a_val = float(np.mean(dist_matrix[idx, same_mask]))
             b_val = float("inf")
             for other_c in unique_clusters:
                 if other_c == own_c:
@@ -285,6 +317,23 @@ def cosine_cluster_embeddings(
         if mean_sil > best_score:
             best_score = mean_sil
             best_labels = labels.copy()
+
+    # Nếu nghiệm tốt nhất có Silhouette < 0.25: dữ liệu không đủ phân tách -> giả thuyết 1 người nói (k = 1)
+    if best_score < 0.25:
+        best_labels = np.zeros(n_samples, dtype=np.int32)
+        conf_levels = []
+        conf_scores = []
+        for idx in range(n_samples):
+            d_own = float(1.0 - np.dot(norm_embs[idx], c_global))
+            score = float(np.clip(1.0 - d_own, 0.0, 1.0))
+            conf_scores.append(score)
+            if d_own <= 0.35:
+                conf_levels.append(ConfidenceLevel.HIGH.value)
+            elif d_own > 0.50:
+                conf_levels.append(ConfidenceLevel.REVIEW_NEEDED.value)
+            else:
+                conf_levels.append(ConfidenceLevel.HIGH.value)
+        return best_labels, conf_levels, conf_scores
 
     # Tính toán tâm cụm tối ưu cuối cùng
     unique_k = np.unique(best_labels)
@@ -315,7 +364,7 @@ def cosine_cluster_embeddings(
             if d_cand < d_second:
                 d_second = d_cand
 
-        gap = d_second - d_own
+        gap = (d_second - d_own) if d_second != float("inf") else (1.0 - d_own)
         score = float(np.clip(1.0 - d_own, 0.0, 1.0))
         conf_scores.append(score)
 

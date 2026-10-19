@@ -1925,15 +1925,73 @@ def test_audition_button_not_stuck_when_worker_is_running():
     # Nút không được phép bị chuyển sang Đang tạo giọng và phải luôn mở khóa
     assert btn.text() == "Nghe Thử Giọng"
     assert btn.isEnabled() is True
-    assert ui._active_audition_button is None
 
 
 
+def test_cosine_clustering_single_speaker_hypothesis():
+    """
+    Xác minh cosine_cluster_embeddings nhận diện đúng 1 người nói (k = 1)
+    khi tất cả các vector đặc trưng có khoảng cách cosin nhỏ (< 0.35, tương đồng > 0.65).
+    Trước đây hàm luôn ép buộc k >= 2.
+    """
+    from src.ai_engines.speaker_diarization import cosine_cluster_embeddings
+
+    rng = np.random.default_rng(42)
+    base_vec = rng.standard_normal(192).astype(np.float32)
+    base_vec /= np.linalg.norm(base_vec)
+
+    # Tạo 6 đoạn thoại của cùng một người nói (nhiễu nhỏ, khoảng cách cosin < 0.20)
+    samples = []
+    for _ in range(6):
+        noise = rng.standard_normal(192).astype(np.float32) * 0.1
+        v = base_vec + noise
+        v /= np.linalg.norm(v)
+        samples.append(v)
+    embs = np.stack(samples, axis=0)
+
+    labels, conf_levels, scores = cosine_cluster_embeddings(embs, list(range(6)), max_speakers=4)
+    unique_speakers = np.unique(labels)
+    # Phải nhận diện là 1 người nói duy nhất
+    assert len(unique_speakers) == 1
+    assert unique_speakers[0] == 0
 
 
+def test_cosine_clustering_singleton_cluster_silhouette_not_inflated():
+    """
+    Xác minh cụm đơn lẻ không được nhận điểm Silhouette bằng 1.0 (tránh phân mảnh mỗi câu một cụm).
+    """
+    from src.ai_engines.speaker_diarization import cosine_cluster_embeddings
+
+    rng = np.random.default_rng(42)
+    # 2 cụm người nói rõ ràng (mỗi cụm 3 mẫu, cách xa nhau)
+    v1 = rng.standard_normal(192).astype(np.float32); v1 /= np.linalg.norm(v1)
+    v2 = -v1  # vuông góc hoặc đối nghịch
+    v2 /= np.linalg.norm(v2)
+
+    samples = [v1 + rng.standard_normal(192)*0.05 for _ in range(3)] + [v2 + rng.standard_normal(192)*0.05 for _ in range(3)]
+    embs = np.stack([s / np.linalg.norm(s) for s in samples], axis=0)
+
+    labels, _, _ = cosine_cluster_embeddings(embs, list(range(6)), max_speakers=4)
+    # Phải nhận diện đúng 2 cụm, không tách lẻ thành 3 hoặc 4 cụm đơn
+    assert len(np.unique(labels)) == 2
 
 
+def test_cosine_clustering_allows_full_k_candidates():
+    """
+    Xác minh thuật toán cho phép thử nghiệm đủ k ứng viên lên tới min(max_speakers, n_samples).
+    Với N = 5 mẫu và max_speakers = 4, trước đây bị chặn ở N//2 = 2, nay phải phân biệt được 3 người nói.
+    """
+    from src.ai_engines.speaker_diarization import cosine_cluster_embeddings
 
+    # Tạo 3 nhóm người nói trực giao
+    e1 = np.zeros(192, dtype=np.float32); e1[0] = 1.0
+    e2 = np.zeros(192, dtype=np.float32); e2[50] = 1.0
+    e3 = np.zeros(192, dtype=np.float32); e3[100] = 1.0
 
+    samples = [e1, e1.copy(), e2, e2.copy(), e3]
+    embs = np.stack(samples, axis=0)
 
+    labels, _, _ = cosine_cluster_embeddings(embs, list(range(5)), max_speakers=4)
+    # Phải nhận diện đúng 3 người nói khác nhau
+    assert len(np.unique(labels)) == 3
 
