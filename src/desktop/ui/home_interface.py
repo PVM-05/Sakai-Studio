@@ -302,6 +302,7 @@ class HomeInterface(QWidget):
         self.video_display_component.set_player_mode("remover")
         self.video_display_component.ab_sections_changed.connect(self.ab_sections_changed)
         self.video_display_component.selections_changed.connect(self.selections_changed)
+        self.video_display_component.freehand_strokes_changed.connect(self._on_freehand_strokes_changed)
         self.video_display_component.auto_detect_clicked.connect(self._on_auto_detect_clicked)
         left_layout.addWidget(self.video_display_component)
         
@@ -521,7 +522,7 @@ class HomeInterface(QWidget):
             self.video_display_component.update_time_display()
             self.video_display_component.sync_audio_position(value)
 
-        # 🚀 KIỂM TRA RAM FRAME CACHE HỖ TRỢ TUA TỨC THÌ (0ms Latency Hit)
+        #  KIỂM TRA RAM FRAME CACHE HỖ TRỢ TUA TỨC THÌ (0ms Latency Hit)
         exact_hit = False
         if hasattr(self, '_frame_cache') and self._frame_cache:
             with self._cache_lock:
@@ -957,17 +958,17 @@ class HomeInterface(QWidget):
                         if not clean_text:
                             continue
 
-                        # 1. 🛑 LỌC ICON GIẢ CHỮ VÀ HUD GAME (ví dụ: OOOOOO, 000000, ......, ||||||)
+                        # 1.  LỌC ICON GIẢ CHỮ VÀ HUD GAME (ví dụ: OOOOOO, 000000, ......, ||||||)
                         if len(set(clean_text)) == 1 and len(clean_text) >= 3:
                             continue
                         if re.match(r'^[O0o.|\-_=*#~]+$', clean_text):
                             continue
 
-                        # 2. 🛑 LỌC CON SỐ CÔ ĐỘC / CHỈ SỐ VẬT PHẨM GAME (ví dụ: 64, 32, 16 trên ô đồ Minecraft)
+                        # 2.  LỌC CON SỐ CÔ ĐỘC / CHỈ SỐ VẬT PHẨM GAME (ví dụ: 64, 32, 16 trên ô đồ Minecraft)
                         if clean_text.isdigit() and len(clean_text) <= 3:
                             continue
 
-                        # 3. 🎯 BỘ LỌC NGÔN NGỮ NGHIÊM NGẶT (STRICT LANGUAGE FILTER)
+                        # 3.  BỘ LỌC NGÔN NGỮ NGHIÊM NGẶT (STRICT LANGUAGE FILTER)
                         # Tách riêng từng hệ chữ để lọc chính xác
                         hanzi_chars = re.findall(r'[\u4e00-\u9fff\u3400-\u4dbf]', clean_text)
                         kana_chars = re.findall(r'[\u3040-\u30ff]', clean_text)
@@ -1095,13 +1096,21 @@ class HomeInterface(QWidget):
         self.task_list_component.update_task_option(get_current_task_index, TaskOptions.FREEHAND_STROKES, strokes)
 
 
+    def _on_freehand_strokes_changed(self, strokes):
+        """Đồng bộ ngay lập tức danh sách nét cọ (kể cả rỗng) vào tác vụ đang chọn."""
+        cur_idx = self.task_list_component.get_current_task_index()
+        if cur_idx >= 0:
+            self.task_list_component.update_task_option(cur_idx, TaskOptions.FREEHAND_STROKES, list(strokes))
+
     def on_task_selected(self, index, file_path):
-        """处理任务被选中事件
-        
-        Args:
-            index: 任务索引
-            file_path: 文件路径
-        """
+        """Xử lý khi một tác vụ được chọn trong danh sách"""
+        # Lưu lại nét cọ của tác vụ trước đó để đảm bảo không bị mất hoặc rò rỉ sang tác vụ khác
+        prev_idx = getattr(self, '_last_selected_task_index', -1)
+        if prev_idx >= 0 and prev_idx != index and hasattr(self, 'video_display_component'):
+            cur_strokes = list(getattr(self.video_display_component, 'freehand_strokes', []))
+            self.task_list_component.update_task_option(prev_idx, TaskOptions.FREEHAND_STROKES, cur_strokes)
+        self._last_selected_task_index = index
+
         # 加载选中的视频进行预览
         self.load_video(file_path)
         ab_sections = self.task_list_component.get_task_option(index, TaskOptions.AB_SECTIONS, [])
@@ -1432,9 +1441,18 @@ class HomeInterface(QWidget):
                                     ])
                                 self.progress_signal.emit(100, True, 0)
                                 task_obj.output_path = output_path
-                                if result_status == 'partial':
+                                
+                                # Đánh giá chất lượng sau xuất tách bạch giữa tính toàn vẹn tệp và mức độ xóa sạch
+                                quality_res = verify_media_quality(output_path, sub_areas=subtitle_areas)
+                                self.append_log_signal.emit(["[Kiểm tra đầu ra] Tệp đầu ra hợp lệ."])
+                                if quality_res.get("residual_text_found"):
+                                    msg = quality_res.get("message", "Cần kiểm tra lại")
+                                    self.append_log_signal.emit([f"[Đánh giá xóa phụ đề] {msg}"])
+                                    self.task_status_signal.emit(self.current_processing_task_index, TaskStatus.WARNING)
+                                elif result_status == 'partial':
                                     self.task_status_signal.emit(self.current_processing_task_index, TaskStatus.WARNING)
                                 else:
+                                    self.append_log_signal.emit(["[Đánh giá xóa phụ đề] Đã kiểm tra: Không phát hiện phụ đề sót lại trong vùng xử lý."])
                                     self.task_status_signal.emit(self.current_processing_task_index, TaskStatus.COMPLETED)
                                 
                                 # Kiểm tra xem file SRT có được tạo ra không
@@ -1789,7 +1807,7 @@ class HomeInterface(QWidget):
         # 视频模式下恢复用户原始的 inpaint 模式选择
         self._unlock_inpaint_mode()
         
-        # 🚀 Kích hoạt luồng chạy ngầm nạp trước cache khung hình mẫu toàn video (Ultra-fast 0ms Timeline Scrubbing)
+        #  Kích hoạt luồng chạy ngầm nạp trước cache khung hình mẫu toàn video (Ultra-fast 0ms Timeline Scrubbing)
         self._start_bg_frame_preload(video_path)
         return True
 

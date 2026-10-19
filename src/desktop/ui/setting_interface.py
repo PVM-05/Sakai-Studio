@@ -52,7 +52,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
         self.inpaint_combo.setCurrentIndex(get_idx(config.inpaintMode.value, config.inpaintMode.validator.options))
         self.inpaint_combo.currentIndexChanged.connect(lambda idx: config.set(config.inpaintMode, list(config.inpaintMode.validator.options)[idx]))
         config.inpaintMode.valueChanged.connect(lambda val: self.inpaint_combo.setCurrentIndex(get_idx(val, config.inpaintMode.validator.options)))
-        self.inpaint_combo.setToolTip("Chọn mô hình AI xóa chữ (LaMa, STTN, ProPainter, OpenCV)")
+        self.inpaint_combo.setToolTip("Chọn mô hình xóa chữ trí tuệ nhân tạo như LaMa, STTN, ProPainter hoặc OpenCV")
         ai_form.addRow(create_label("Mô hình xóa chữ:"), self.inpaint_combo)
 
         # Subtitle Detect Mode
@@ -73,7 +73,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
 
         # OCR Speed
         self.ocr_mode_combo = ComboBox(parent)
-        self.ocr_mode_combo.addItems(["Tự động (Cân bằng)", "Nhanh (Bỏ qua nhiều frame)", "Chính xác (Quét kỹ từng frame)"])
+        self.ocr_mode_combo.addItems(["Tự động cân bằng", "Nhanh quét lướt", "Chính xác quét kỹ"])
         self.ocr_mode_combo.setCurrentIndex(get_idx(config.ocrMode.value, config.ocrMode.validator.options))
         self.ocr_mode_combo.currentIndexChanged.connect(lambda idx: config.set(config.ocrMode, list(config.ocrMode.validator.options)[idx]))
         config.ocrMode.valueChanged.connect(lambda val: self.ocr_mode_combo.setCurrentIndex(get_idx(val, config.ocrMode.validator.options)))

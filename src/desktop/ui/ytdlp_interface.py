@@ -101,29 +101,31 @@ def translate_ytdlp_error(err):
     if 'bytes read' in err_lower and 'more expected' in err_lower:
         return "Máy chủ ngắt kết nối đột ngột. Hệ thống tự động khôi phục đã được kích hoạt, vui lòng tải lại để tiếp tục phần đang dở."
     elif 'fresh cookies' in err_lower or ('douyin' in err_lower and ('cookie' in err_lower or '403' in err_lower)):
-        return "Douyin yêu cầu xác thực bảo mật tệp cookies.txt. Vui lòng chọn tệp cookies.txt (chứa cookies của Douyin) để tiếp tục."
+        return "Douyin yêu cầu xác thực bảo mật tệp cookies.txt. Vui lòng chọn tệp cookies.txt chứa dữ liệu của Douyin để tiếp tục."
+    elif 'requested format is not available' in err_lower:
+        return "Định dạng video đã chọn hiện không khả dụng với tài khoản này. Vui lòng nhấn Phân tích lại để cập nhật danh sách độ phân giải, hoặc chọn chế độ Không dùng cookies nếu tài khoản Bilibili chưa đăng ký gói thành viên."
     elif 'premium member' in err_lower or ('bilibili' in err_lower and ('premium' in err_lower or 'member' in err_lower or 'vip' in err_lower)):
-        return "Bilibili yêu cầu tài khoản VIP cho chất lượng này (1080P 60fps). Vui lòng chọn chất lượng khác hoặc cung cấp file cookies.txt của tài khoản VIP."
+        return "Bilibili yêu cầu tài khoản thành viên đối với chất lượng này. Vui lòng chọn chất lượng khác hoặc cung cấp tệp cookies.txt của tài khoản thành viên."
     elif '403' in err_lower or 'forbidden' in err_lower or 'caller does not have permission' in err_lower:
-        return "Bị trang web từ chối truy cập do lỗi quyền hạn (mã lỗi 403). Vui lòng sử dụng tệp cookies.txt để xác thực tài khoản."
+        return "Bị trang web từ chối truy cập do lỗi quyền hạn mã 403. Vui lòng sử dụng tệp cookies.txt để xác thực tài khoản."
     elif 'fresh cookies' in err_lower or ('douyin' in err_lower and 'cookies' in err_lower):
         return "Nguồn video yêu cầu xác thực bảo mật. Vui lòng chọn tệp cookies.txt của bạn để tiếp tục."
     elif 'could not copy chrome cookie database' in err_lower or 'database is locked' in err_lower or 'app-bound encryption' in err_lower:
-        return "Lỗi trích xuất Cookies: Trình duyệt đang mở hoặc do bảo mật App-Bound Encryption của Chromium. Vui lòng đóng hoàn toàn trình duyệt rồi thử lại, hoặc xuất thủ công file cookies.txt."
+        return "Lỗi trích xuất Cookies: Trình duyệt đang mở hoặc do cơ chế bảo mật của trình duyệt. Vui lòng đóng hoàn toàn trình duyệt rồi thử lại, hoặc xuất thủ công tệp cookies.txt."
     elif 'private' in err_lower or 'sign in' in err_lower or 'age' in err_lower or 'login' in err_lower:
         return "Video riêng tư hoặc bị giới hạn độ tuổi. Vui lòng chọn tệp cookies.txt của bạn để tiếp tục."
     elif '404' in err_lower or 'not found' in err_lower:
-        return "Không tìm thấy video (mã lỗi 404). Đường dẫn bị sai hoặc video đã bị xoá khỏi hệ thống."
+        return "Không tìm thấy video do lỗi mã 404. Đường dẫn bị sai hoặc video đã bị xoá khỏi hệ thống."
     elif 'incomplete yt initial data' in err_lower or 'giving up after' in err_lower:
         return "Lỗi phản hồi cấu trúc dữ liệu từ máy chủ. Vui lòng nhấn Phân tích lại hoặc thêm tệp cookies.txt."
     elif 'unsupported url' in err_lower or 'is not a valid url' in err_lower:
         return "Đường dẫn liên kết không hợp lệ hoặc trang web này chưa được hỗ trợ."
     elif 'no video formats found' in err_lower:
-        return "Không tìm thấy luồng video/âm thanh sẵn có trên trang này."
+        return "Không tìm thấy luồng video hoặc âm thanh sẵn có trên trang này."
     elif 'disk' in err_lower or 'space' in err_lower or 'full' in err_lower:
         return "Dung lượng ổ đĩa lưu trữ đã đầy. Vui lòng dọn dẹp hoặc chọn thư mục lưu khác."
     elif 'network' in err_lower or 'connection' in err_lower or 'timed out' in err_lower or 'unreachable' in err_lower:
-        return "Lỗi kết nối mạng hoặc hết thời gian phản hồi. Vui lòng kiểm tra lại kết nối internet của bạn."
+        return "Lỗi kết nối mạng hoặc hết thời gian phản hồi. Vui lòng kiểm tra lại kết nối mạng của bạn."
     else:
         lines = [line.strip() for line in err_str.strip().split('\n') if line.strip()]
         last_line = lines[-1] if lines else err_str
@@ -291,7 +293,7 @@ class YtdlpAnalysisWorker(QThread):
             }
             if self.browser_cookies and self.browser_cookies not in ["Không dùng", "Tệp cookies.txt"]:
                 ydl_opts['cookiesfrombrowser'] = (self.browser_cookies.lower(),)
-            else:
+            elif self.browser_cookies == "Tệp cookies.txt" or not self.browser_cookies:
                 cookie_path = resolve_cookies_file(self.cookiefile, self.url)
                 if cookie_path:
                     ydl_opts['cookiefile'] = cookie_path
@@ -430,7 +432,7 @@ class YtdlpWorker(QThread):
 
         if self.browser_cookies and self.browser_cookies not in ["Không dùng", "Tệp cookies.txt"]:
             ydl_opts['cookiesfrombrowser'] = (self.browser_cookies.lower(),)
-        else:
+        elif self.browser_cookies == "Tệp cookies.txt" or not self.browser_cookies:
             cookie_path = resolve_cookies_file(self.cookiefile, self.url)
             if cookie_path:
                 ydl_opts['cookiefile'] = cookie_path
@@ -441,17 +443,17 @@ class YtdlpWorker(QThread):
 
         if self.selected_format_id:
             if self.selected_format_type == 'Video Only':
-                ydl_opts['format'] = f"{self.selected_format_id}+bestaudio/best"
+                ydl_opts['format'] = f"{self.selected_format_id}+bestaudio/{self.selected_format_id}/bestvideo+bestaudio/best"
                 ydl_opts['merge_output_format'] = self.preferred_container
             elif self.selected_format_type == 'Audio Only':
-                ydl_opts['format'] = self.selected_format_id
+                ydl_opts['format'] = f"{self.selected_format_id}/bestaudio/best"
                 ydl_opts['postprocessors'] = [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': audio_ext,
                     'preferredquality': audio_quality,
                 }]
             else:
-                ydl_opts['format'] = self.selected_format_id
+                ydl_opts['format'] = f"{self.selected_format_id}+bestaudio/{self.selected_format_id}/bestvideo+bestaudio/best"
         else:
             if self.format_opt == 'audio_only':
                 ydl_opts['format'] = 'bestaudio/best'
@@ -728,8 +730,10 @@ class YtdlpInterface(ScrollArea):
         self.cookies_layout = QHBoxLayout()
         
         self.browser_cookies_combo = ComboBox(self.card)
-        self.browser_cookies_combo.addItems(["Tệp cookies.txt", "Chrome", "Edge", "Firefox", "Brave", "Opera", "Vivaldi", "Safari"])
-        saved_browser = self.settings.get('browser_cookies', 'Tệp cookies.txt')
+        self.browser_cookies_combo.addItems(["Không dùng", "Tệp cookies.txt", "Chrome", "Edge", "Firefox", "Brave", "Opera", "Vivaldi", "Safari"])
+        saved_browser = self.settings.get('browser_cookies')
+        if not saved_browser:
+            saved_browser = 'Tệp cookies.txt' if self.settings.get('cookies_file') else 'Không dùng'
         self.browser_cookies_combo.setCurrentText(saved_browser)
         self.browser_cookies_combo.currentTextChanged.connect(self.on_browser_cookies_changed)
         
@@ -752,14 +756,21 @@ class YtdlpInterface(ScrollArea):
         self.choose_cookies_btn = PushButton(self.card)
         self.choose_cookies_btn.setIcon(FluentIcon.VPN)
         self.choose_cookies_btn.clicked.connect(self.choose_cookies_file)
+
+        self.clear_cookies_btn = PushButton(self.card)
+        self.clear_cookies_btn.setIcon(FluentIcon.DELETE)
+        self.clear_cookies_btn.setToolTip("Xóa tệp cookies đã chọn")
+        self.clear_cookies_btn.clicked.connect(self.clear_cookies_file)
         
         self.cookies_layout.addWidget(self.browser_cookies_combo)
         self.cookies_layout.addWidget(self.cookies_input)
         self.cookies_layout.addWidget(self.choose_cookies_btn)
+        self.cookies_layout.addWidget(self.clear_cookies_btn)
         
         is_file_mode = (saved_browser == "Tệp cookies.txt")
         self.cookies_input.setVisible(is_file_mode)
         self.choose_cookies_btn.setVisible(is_file_mode)
+        self.clear_cookies_btn.setVisible(is_file_mode)
         
         self.card_layout.addWidget(self.cookies_label)
         self.card_layout.addLayout(self.cookies_layout)
@@ -999,6 +1010,7 @@ class YtdlpInterface(ScrollArea):
         self.cookies_label.setText(tr['Ytdlp']['Cookies'])
         self.cookies_input.setPlaceholderText(tr['Ytdlp']['CookiesPlaceholder'])
         self.choose_cookies_btn.setText(tr['Ytdlp']['CookiesSelect'])
+        self.clear_cookies_btn.setText("Xóa")
         
         self.save_dir_label.setText(tr['Ytdlp']['SaveDir'])
         self.choose_dir_btn.setText(tr['Ytdlp']['SelectFolder'])
@@ -1085,6 +1097,12 @@ class YtdlpInterface(ScrollArea):
         is_file_mode = (text == "Tệp cookies.txt")
         self.cookies_input.setVisible(is_file_mode)
         self.choose_cookies_btn.setVisible(is_file_mode)
+        self.clear_cookies_btn.setVisible(is_file_mode)
+
+    def clear_cookies_file(self):
+        self.cookies_input.clear()
+        self.settings['cookies_file'] = ''
+        save_settings(self.settings)
 
     def select_all_playlist_items(self):
         for row in range(self.playlist_table.rowCount()):
@@ -1748,7 +1766,7 @@ class YtdlpInterface(ScrollArea):
             if row == self.current_queue_index and self.is_worker_running():
                 InfoBar.warning(
                     title=tr['Ytdlp']['Title'],
-                    content="Không thể xóa video đang tải! / Cannot remove active download!",
+                    content="Không thể xóa video đang tải!",
                     duration=3000,
                     parent=self
                 )
@@ -1760,7 +1778,7 @@ class YtdlpInterface(ScrollArea):
         if self.is_worker_running() and self.current_queue_index >= 0:
             InfoBar.warning(
                 title=tr['Ytdlp']['Title'],
-                content="Vui lòng dừng tải trước khi xoá hết! / Stop downloading first!",
+                content="Vui lòng dừng tải trước khi xoá toàn bộ hàng đợi!",
                 duration=3000,
                 parent=self
             )

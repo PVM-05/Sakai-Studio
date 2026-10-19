@@ -46,6 +46,7 @@ class VideoDisplayComponent(QWidget):
     
     # Định nghĩa tín hiệu
     selections_changed = Signal(list)  # Tín hiệu thay đổi vùng chọn
+    freehand_strokes_changed = Signal(list)  # Tín hiệu thay đổi nét cọ vẽ
     ab_sections_changed = Signal(list)  # Tín hiệu thay đổi AB section
     auto_detect_clicked = Signal()  # Tín hiệu tự động nhận diện chữ AI
     
@@ -110,7 +111,7 @@ class VideoDisplayComponent(QWidget):
         self.media_player.positionChanged.connect(self._on_audio_position_changed)
         self.video_source_path = None
 
-        # 🔴 Red Mask Overlay & 🖌️ Freehand Brush Masking
+        #  Red Mask Overlay & ️ Freehand Brush Masking
         self.show_red_mask = False
         self.draw_mode = 'box'  # 'box' hoặc 'brush'
         self.brush_size = 20
@@ -786,6 +787,7 @@ class VideoDisplayComponent(QWidget):
         self.freehand_strokes = []
         self.current_stroke = None
         self.update_preview_with_rect()
+        self.freehand_strokes_changed.emit([])
 
     def update_preview_with_rect(self, rect=None, draw_selection=True):
         """更新带有选择框的预览"""
@@ -821,7 +823,7 @@ class VideoDisplayComponent(QWidget):
                 pixel_rect = QRect(int(xmin * pw), int(ymin * ph), int((xmax - xmin) * pw), int((ymax - ymin) * ph))
                 painter.drawRect(pixel_rect)
 
-        # 🖌️ 2. VẼ NÉT CỌ TỰ DO & TẨY (Lên một layer trong suốt riêng để Clear)
+        # ️ 2. VẼ NÉT CỌ TỰ DO & TẨY (Lên một layer trong suốt riêng để Clear)
         all_strokes = list(self.freehand_strokes)
         if getattr(self, 'current_stroke', None) and self.current_stroke.get('points'):
             all_strokes.append(self.current_stroke)
@@ -864,15 +866,17 @@ class VideoDisplayComponent(QWidget):
             spainter.end()
             painter.drawPixmap(0, 0, stroke_pix)
 
-        # 3. VẼ HỘP CHỮ NHẬT KHUNG VIỀN SÁNG (TÔ NỀN XANH KHI ĐƯỢC CHỌN - MULTI-SELECT)
+        # 3. VẼ HỘP VÙNG TÌM KIẾM ROI VÀ KHUNG CHỌN ĐA VÙNG (NÉT ĐỨT PHÂN BIỆT RÕ VỚI MASK)
         if draw_selection:
             for i, rect in enumerate(self.selection_rects):
                 is_selected = (i in self.selected_indices) or (i == self.active_selection_index)
                 if is_selected:
-                    pen = QtGui.QPen(QtGui.QColor(0, 255, 0), 2)
-                    brush = QtGui.QBrush(QtGui.QColor(0, 255, 0, 45))  # Nền xanh trong suốt tô nổi bật
+                    # ROI đang chọn: Nét đứt màu xanh chàm (#6366F1), độ dày 2px kèm nền trong suốt nhẹ
+                    pen = QtGui.QPen(QtGui.QColor(99, 102, 241), 2, Qt.DashLine)
+                    brush = QtGui.QBrush(QtGui.QColor(99, 102, 241, 35))
                 else:
-                    pen = QtGui.QPen(QtGui.QColor(255, 215, 0), 2)
+                    # ROI không chọn: Nét đứt màu xanh lam trung tính (#38BDF8), độ dày 1.5px
+                    pen = QtGui.QPen(QtGui.QColor(56, 189, 248), 1.5, Qt.DashLine)
                     brush = Qt.NoBrush
                 
                 painter.setPen(pen)
@@ -882,8 +886,9 @@ class VideoDisplayComponent(QWidget):
                 painter.drawRect(pixel_rect)
             
             if self.is_drawing and any(self.selection_rect):
-                pen = QtGui.QPen(QtGui.QColor(0, 255, 0), 2)
+                pen = QtGui.QPen(QtGui.QColor(99, 102, 241), 2, Qt.DashLine)
                 painter.setPen(pen)
+                painter.setBrush(QtGui.QBrush(QtGui.QColor(99, 102, 241, 25)))
                 ymin, ymax, xmin, xmax = self.selection_rect
                 pixel_rect = QRect(int(xmin * pw), int(ymin * ph), int((xmax - xmin) * pw), int((ymax - ymin) * ph))
                 painter.drawRect(pixel_rect)
@@ -990,7 +995,7 @@ class VideoDisplayComponent(QWidget):
         y_ratio = max(0, min(1, pos.y() / video_display_height if video_display_height > 0 else 0))
         x_ratio = max(0, min(1, pos.x() / video_display_width if video_display_width > 0 else 0))
 
-        # 🖌️ CHẾ ĐỘ VẼ CỌ TỰ DO
+        # ️ CHẾ ĐỘ VẼ CỌ TỰ DO
         if getattr(self, 'draw_mode', 'box') == 'brush':
             if event.button() == Qt.RightButton:
                 # Right click in brush mode = Eraser
@@ -1151,7 +1156,7 @@ class VideoDisplayComponent(QWidget):
         y_ratio = max(0, min(1, y_ratio))
         x_ratio = max(0, min(1, x_ratio))
         
-        # 🖌️ VẼ NÉT CỌ TỰ DO KHI RÊ CHUỘT
+        # ️ VẼ NÉT CỌ TỰ DO KHI RÊ CHUỘT
         if getattr(self, 'is_drawing_stroke', False) and getattr(self, 'current_stroke', None):
             self.current_stroke['points'].append((x_ratio, y_ratio))
             self.update_preview_with_rect()
@@ -1207,7 +1212,7 @@ class VideoDisplayComponent(QWidget):
         if not self.enable_mouse_events:
             return
             
-        # 🖌️ KẾT THÚC VẼ NÉT CỌ TỰ DO
+        # ️ KẾT THÚC VẼ NÉT CỌ TỰ DO
         if getattr(self, 'is_drawing_stroke', False) and getattr(self, 'current_stroke', None):
             self.is_drawing_stroke = False
             if len(self.current_stroke['points']) > 0:
@@ -1215,6 +1220,7 @@ class VideoDisplayComponent(QWidget):
             self.current_stroke = None
             self.update_preview_with_rect()
             self.selections_changed.emit(self.selection_rects)
+            self.freehand_strokes_changed.emit(self.freehand_strokes)
             return
 
         # 结束绘制或调整
@@ -1412,6 +1418,7 @@ class VideoDisplayComponent(QWidget):
         self.current_stroke = None
         self.update_preview_with_rect()
         self.selections_changed.emit(self.selection_rects)
+        self.freehand_strokes_changed.emit([])
 
 
     def set_selection_rects(self, rects):
