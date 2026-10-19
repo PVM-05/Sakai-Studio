@@ -2453,5 +2453,36 @@ def test_voice_recommendation_engine_matches_and_ranks_top_k():
     assert top1_nu["score"] >= 80
 
 
+# ==============================================================================
+# 29. KIỂM THỬ ĐỒNG BỘ BỘ CHỌN NHÂN VẬT KHI ĐỔI TÊN (TÁC VỤ 4)
+# ==============================================================================
+def test_speaker_selectors_sync_on_character_rename():
+    """
+    Xác minh khi danh sách nhân vật thay đổi hoặc đổi tên trên bảng:
+    1. _sync_speaker_selectors() cập nhật combo_target_speaker với danh sách tên mới.
+    2. Không còn giữ danh sách mặc định cứng 'Người nói 1'..'Người nói 6'.
+    """
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+
+    # Giả lập hồ sơ 2 nhân vật đã được đổi tên
+    ui.speaker_profiles = {
+        "Thám tử Lừng Danh": CharacterVoiceProfile(speaker_id="spk_0", display_name="Thám tử Lừng Danh"),
+        "Kẻ Giấu Mặt": CharacterVoiceProfile(speaker_id="spk_1", display_name="Kẻ Giấu Mặt"),
+    }
+
+    ui._sync_speaker_selectors()
+
+    items = [ui.combo_target_speaker.itemText(i) for i in range(ui.combo_target_speaker.count())]
+    assert "Thám tử Lừng Danh" in items
+    assert "Kẻ Giấu Mặt" in items
+    assert "Người nói 6" not in items
+
+
+
 
 

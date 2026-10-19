@@ -63,7 +63,7 @@ from qfluentwidgets import (
 from src.core.config import config, BASE_DIR
 from src.core.tools.folder_memory import FolderMemoryDialog
 from src.ai_engines.translator import SubtitleBlock, parse_srt
-from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+from src.ai_engines.speaker_diarization import CharacterVoiceProfile, normalize_character_profile
 from src.ai_engines.tts_engine import (
     TTSEngine,
     VIETNAMESE_VOICE_CATALOG,
@@ -880,6 +880,7 @@ class OmniVoiceInterface(ScrollArea):
         self.casting_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.casting_table.setMinimumHeight(200)
         self.casting_table.itemChanged.connect(self._on_casting_table_item_changed)
+        self.casting_table.cellChanged.connect(self._on_casting_cell_changed)
         casting_layout.addWidget(self.casting_table, 1)
 
         p1_layout.addWidget(casting_card, 1)
@@ -1601,12 +1602,51 @@ class OmniVoiceInterface(ScrollArea):
         self.btn_export_dub_wav.setEnabled(has_subs)
         self.btn_dub_merge_video.setEnabled(has_subs and has_video)
 
+    def _sync_speaker_selectors(self):
+        """Đồng bộ danh sách tên nhân vật thực tế vào toàn bộ các bộ chọn trên giao diện."""
+        if not hasattr(self, "combo_target_speaker"):
+            return
+        current_choice = self.combo_target_speaker.currentText().strip()
+        names: List[str] = []
+        if self.speaker_profiles:
+            for spk_name, prof in self.speaker_profiles.items():
+                disp = getattr(prof, "display_name", "") or (prof.get("display_name") if isinstance(prof, dict) else "") or spk_name
+                if disp and disp not in names:
+                    names.append(disp)
+        elif self.subtitle_blocks:
+            for blk in self.subtitle_blocks:
+                spk = getattr(blk, "speaker", "")
+                if spk and spk not in names:
+                    names.append(spk)
+
+        if not names:
+            names = [f"Người nói {i}" for i in range(1, 7)]
+
+        self.combo_target_speaker.blockSignals(True)
+        self.combo_target_speaker.clear()
+        self.combo_target_speaker.addItems(names)
+        if current_choice in names:
+            self.combo_target_speaker.setCurrentText(current_choice)
+        elif names:
+            self.combo_target_speaker.setCurrentIndex(0)
+        self.combo_target_speaker.blockSignals(False)
+
     def _update_casting_table(self):
         """Đồng bộ danh sách nhân vật vào bảng Voice Casting ở Bước 2."""
         if not hasattr(self, "casting_table"):
             return
         self.casting_table.blockSignals(True)
         self.casting_table.setRowCount(0)
+
+        if self.speaker_profiles:
+            normalized: Dict[str, CharacterVoiceProfile] = {}
+            for idx, (spk, prof) in enumerate(self.speaker_profiles.items()):
+                sid = getattr(prof, "speaker_id", "") or (prof.get("speaker_id") if isinstance(prof, dict) else "") or f"spk_{idx}"
+                norm = normalize_character_profile(prof, speaker_id=sid)
+                if not getattr(norm, "display_name", ""):
+                    norm.display_name = str(spk)
+                normalized[spk] = norm
+            self.speaker_profiles = normalized
 
         speaker_map: Dict[str, Dict[str, Any]] = {}
         for blk in self.subtitle_blocks:
@@ -1638,12 +1678,22 @@ class OmniVoiceInterface(ScrollArea):
                     speaker_map[spk]["ref_audio"] = prof["ref_audio"]
 
         if not speaker_map and not self.subtitle_blocks:
+            self._sync_speaker_selectors()
             self.casting_table.blockSignals(False)
             return
 
         self.casting_table.setRowCount(len(speaker_map))
         for row, (spk_name, data) in enumerate(speaker_map.items()):
-            prof_info = self.speaker_profiles.get(spk_name, {})
+            prof_info = self.speaker_profiles.get(spk_name)
+            if prof_info is None:
+                prof_info = normalize_character_profile({
+                    "speaker_id": f"spk_{row}",
+                    "display_name": spk_name,
+                    "count": data.get("count", 0),
+                    "ref_audio": data.get("ref_audio", ""),
+                    "voice_instruct": data.get("voice_instruct", ""),
+                }, speaker_id=f"spk_{row}")
+                self.speaker_profiles[spk_name] = prof_info
             spk_id = prof_info.get("speaker_id", f"spk_{row}")
             item_id = QTableWidgetItem(spk_id)
             item_id.setFlags(item_id.flags() & ~Qt.ItemIsEditable)
@@ -1712,6 +1762,7 @@ class OmniVoiceInterface(ScrollArea):
             btn_act.clicked.connect(lambda checked=False, s=spk_name: self._preview_character_voice(s))
             self.casting_table.setCellWidget(row, 6, btn_act)
 
+        self._sync_speaker_selectors()
         self.casting_table.blockSignals(False)
 
     def _on_character_method_changed(self, spk_name: str, chosen_method_text: str):
@@ -1853,7 +1904,8 @@ class OmniVoiceInterface(ScrollArea):
 
         old_name = None
         for name, prof in list(self.speaker_profiles.items()):
-            if prof.get("speaker_id") == spk_id:
+            sid = getattr(prof, "speaker_id", "") or (prof.get("speaker_id") if isinstance(prof, dict) else "")
+            if sid == spk_id:
                 old_name = name
                 break
 
@@ -1865,21 +1917,28 @@ class OmniVoiceInterface(ScrollArea):
             else:
                 prof["speaker_id"] = spk_id
                 prof["display_name"] = new_name
-            self.speaker_profiles[new_name] = prof
+            self.speaker_profiles[new_name] = normalize_character_profile(prof, speaker_id=spk_id)
             for blk in self.subtitle_blocks:
                 if getattr(blk, "speaker", "") == old_name:
                     blk.speaker = new_name
             self._populate_subtitle_table()
         elif not old_name:
-            self.speaker_profiles[new_name] = {
+            self.speaker_profiles[new_name] = normalize_character_profile({
                 "speaker_id": spk_id,
                 "display_name": new_name,
                 "count": 0,
-            }
+            }, speaker_id=spk_id)
             for blk in self.subtitle_blocks:
                 if getattr(blk, "speaker", "") == spk_id:
                     blk.speaker = new_name
             self._populate_subtitle_table()
+
+        self._sync_speaker_selectors()
+
+    def _on_casting_cell_changed(self, row: int, column: int):
+        """Xử lý khi một ô trong bảng phân vai thay đổi."""
+        if column == 1:
+            self._sync_speaker_selectors()
 
     def _filter_subtitle_table(self, filter_text: str = ""):
         """Lọc danh sách câu thoại theo độ tin cậy nhận diện người nói tại Bước 3."""
@@ -2917,7 +2976,15 @@ class OmniVoiceInterface(ScrollArea):
 
     def _on_speakers_detected(self, profiles: dict):
         self.is_speakers_detected = True
-        self.speaker_profiles = dict(profiles)
+        normalized: Dict[str, CharacterVoiceProfile] = {}
+        for idx, (spk, prof) in enumerate((profiles or {}).items()):
+            sid = getattr(prof, "speaker_id", "") or (prof.get("speaker_id") if isinstance(prof, dict) else "") or f"spk_{idx}"
+            norm = normalize_character_profile(prof, speaker_id=sid)
+            if not getattr(norm, "display_name", ""):
+                norm.display_name = str(spk)
+            normalized[spk] = norm
+        self.speaker_profiles = normalized
+        self._sync_speaker_selectors()
         # Đồng bộ lại thông tin phân vai từ bản sao phụ đề của worker về danh sách UI
         if self._worker and self._worker.subtitle_blocks and len(self._worker.subtitle_blocks) == len(self.subtitle_blocks):
             for ui_blk, w_blk in zip(self.subtitle_blocks, self._worker.subtitle_blocks):
