@@ -474,6 +474,26 @@ def cosine_cluster_embeddings(
     return best_labels, conf_levels, conf_scores
 
 
+def _calculate_safe_audio_padding(
+    start_s: float,
+    end_s: float,
+    prev_end: float = 0.0,
+    next_start: float = float("inf"),
+    max_pad: float = 0.15,
+) -> Tuple[float, float]:
+    """
+    Tính toán khoảng đệm trước và sau câu thoại an toàn, không cắt lẹm vào câu trước hoặc sau.
+    Khoảng đệm tối đa là max_pad (0.15s), nhưng không vượt quá nửa khoảng nghỉ giữa hai câu liền kề.
+    """
+    gap_before = max(0.0, start_s - prev_end) if prev_end > 0.0 else max_pad * 2.0
+    gap_after = max(0.0, next_start - end_s) if next_start < float("inf") else max_pad * 2.0
+
+    pad_before = min(max_pad, gap_before / 2.0)
+    pad_after = min(max_pad, gap_after / 2.0)
+
+    return pad_before, pad_after
+
+
 class SpeakerDiarizationCoordinator:
     """Bộ điều phối toàn diện cho quá trình nhận diện người nói và đối chiếu mốc phụ đề."""
 
@@ -497,6 +517,8 @@ class SpeakerDiarizationCoordinator:
         video_path: str,
         blocks: List[Any],
         max_speakers: int = 4,
+        exact_speakers: Optional[int] = None,
+        distance_threshold: float = 0.40,
         prefer_cuda: Optional[bool] = None,
         temp_dir: str = "",
     ) -> Dict[str, SpeakerVoiceProfile]:
@@ -565,12 +587,22 @@ class SpeakerDiarizationCoordinator:
 
         audio_chunks: List[np.ndarray] = []
         valid_indices: List[int] = []
+        sample_durations: List[float] = []
+
+        # Tiền tính toán mốc thời gian của tất cả các câu để kẹp biên an toàn
+        parsed_times = [
+            (
+                _parse_time_to_seconds(getattr(b, "start_time", 0.0)),
+                _parse_time_to_seconds(getattr(b, "end_time", 0.0)),
+            )
+            for b in blocks
+        ]
+
         for i, blk in enumerate(blocks):
             if getattr(blk, "is_speaker_locked", False):
                 continue
 
-            start_s = _parse_time_to_seconds(getattr(blk, "start_time", 0.0))
-            end_s = _parse_time_to_seconds(getattr(blk, "end_time", start_s))
+            start_s, end_s = parsed_times[i]
             duration = end_s - start_s
             if duration < 0.30 or end_s <= start_s:
                 blk.speaker = "Chưa xác định"
@@ -586,8 +618,12 @@ class SpeakerDiarizationCoordinator:
                 blk.voice_instruct = ""
                 continue
 
-            padded_start = max(0.0, start_s - 0.15)
-            padded_end = min(audio_duration, end_s + 0.15)
+            prev_end = parsed_times[i - 1][1] if i > 0 else 0.0
+            next_start = parsed_times[i + 1][0] if i + 1 < len(blocks) else audio_duration
+            pad_before, pad_after = _calculate_safe_audio_padding(start_s, end_s, prev_end, next_start)
+
+            padded_start = max(0.0, start_s - pad_before)
+            padded_end = min(audio_duration, end_s + pad_after)
             chunk = data[int(padded_start * sr):int(padded_end * sr)]
             if chunk.size < int(0.30 * sr):
                 blk.speaker = "Chưa xác định"
@@ -607,6 +643,7 @@ class SpeakerDiarizationCoordinator:
 
             audio_chunks.append(chunk.astype(np.float32, copy=False))
             valid_indices.append(i)
+            sample_durations.append(padded_end - padded_start)
 
         if not audio_chunks:
             logger.warning("Không có câu thoại đủ chất lượng để phân cụm.")
@@ -634,6 +671,9 @@ class SpeakerDiarizationCoordinator:
                 embeddings,
                 valid_indices=valid_indices,
                 max_speakers=max_speakers,
+                exact_speakers=exact_speakers,
+                distance_threshold=distance_threshold,
+                sample_durations=sample_durations,
             )
 
             # Tránh xung đột tên người nói với các câu đã được khóa

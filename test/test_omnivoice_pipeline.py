@@ -2840,3 +2840,21 @@ def test_agglomerative_clustering_handles_imbalance_and_exact_k():
     # 3. Cố định exact_k=3
     labels_exact3 = agglomerative_cluster_embeddings(embeddings, exact_k=3)
     assert len(np.unique(labels_exact3)) == 3
+
+
+def test_audio_chunk_boundary_clamping_prevents_bleeding():
+    """
+    Xác minh thuật toán cắt âm thanh phân vai:
+    Khi hai câu thoại nằm sát nhau (khoảng nghỉ chỉ 0.06s),
+    khoảng đệm an toàn không cắt lẹm vào câu trước hoặc câu sau.
+    """
+    from src.ai_engines.speaker_diarization import _calculate_safe_audio_padding
+
+    pad_before, pad_after = _calculate_safe_audio_padding(
+        start_s=2.0,
+        end_s=3.0,
+        prev_end=1.94,
+        next_start=4.0,
+    )
+    assert pad_before <= 0.031
+    assert pad_after == 0.15
