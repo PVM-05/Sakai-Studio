@@ -2662,6 +2662,39 @@ def test_step0_default_voice_settings_collapsible_and_adaptive_mode():
     assert ui.voice_source_stack.isHidden()
 
 
+def test_step1_batch_actions_menu_and_safe_reset_dialog():
+    """
+    Xác minh Bước 1 (Quản Lý Nhân Vật):
+    1. Có nút menu 'Thao Tác Khác' chứa các tác vụ hàng loạt thay vì phơi ra nhiều nút bấm.
+    2. Thao tác đặt lại toàn bộ giọng có cơ chế xác nhận an toàn.
+    """
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+
+    # 1. Có nút menu thao tác khác
+    assert hasattr(ui, "btn_more_actions"), "Thiếu nút menu Thao Tác Khác"
+    assert ui.btn_more_actions.text() == "Thao Tác Khác"
+
+    # 2. Kiểm tra thao tác đặt lại toàn bộ có xác nhận
+    ui.speaker_profiles = {
+        "Nhân vật 1": CharacterVoiceProfile(speaker_id="spk_0", display_name="Nhân vật 1", status="locked")
+    }
+
+    # Giả lập người dùng từ chối xác nhận (confirm=False)
+    ui._handle_reset_all_voices_with_confirmation(confirmed=False)
+    assert "Nhân vật 1" in ui.speaker_profiles, "Khi hủy bỏ, hồ sơ nhân vật không được bị xóa"
+    assert ui.speaker_profiles["Nhân vật 1"].status == "locked"
+
+    # Giả lập người dùng đồng ý xác nhận (confirmed=True)
+    ui._handle_reset_all_voices_with_confirmation(confirmed=True)
+    assert len(ui.speaker_profiles) == 0 or all(p.status != "locked" for p in ui.speaker_profiles.values())
+
+
+
 
 
 

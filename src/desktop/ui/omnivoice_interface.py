@@ -58,6 +58,10 @@ from qfluentwidgets import (
     Pivot,
     Slider,
     ToolButton,
+    DropDownPushButton,
+    RoundMenu,
+    Action,
+    MessageBox,
 )
 
 from src.core.config import config, BASE_DIR
@@ -881,6 +885,10 @@ class OmniVoiceInterface(ScrollArea):
         self.btn_reanalyze_speakers = PrimaryPushButton("Tự Động Phân Tích Lại", casting_card)
         self.btn_reanalyze_speakers.setIcon(FluentIcon.SYNC)
 
+        self.btn_more_actions = DropDownPushButton("Thao Tác Khác", casting_card)
+        self.btn_more_actions.setIcon(FluentIcon.MORE)
+        self._init_more_actions_menu()
+
         self.btn_reset_all_voices = PushButton("Đặt Lại Toàn Bộ Giọng", casting_card)
         self.btn_reset_all_voices.setIcon(FluentIcon.DELETE)
 
@@ -888,8 +896,7 @@ class OmniVoiceInterface(ScrollArea):
         self.btn_audition_all_speakers.setIcon(FluentIcon.VOLUME)
 
         casting_header_row.addWidget(self.btn_reanalyze_speakers)
-        casting_header_row.addWidget(self.btn_reset_all_voices)
-        casting_header_row.addWidget(self.btn_audition_all_speakers)
+        casting_header_row.addWidget(self.btn_more_actions)
         casting_layout.addLayout(casting_header_row)
 
         self.lbl_diarization_summary = CaptionLabel("Chưa phân tích — bấm nhận diện để bắt đầu.", casting_card)
@@ -1476,7 +1483,7 @@ class OmniVoiceInterface(ScrollArea):
 
         # Tín hiệu bảng phân vai nhân vật (Bước 1)
         self.btn_reanalyze_speakers.clicked.connect(self._run_auto_detect_speakers)
-        self.btn_reset_all_voices.clicked.connect(self._reset_all_character_voices)
+        self.btn_reset_all_voices.clicked.connect(lambda: self._handle_reset_all_voices_with_confirmation(None))
         self.btn_audition_all_speakers.clicked.connect(self._audition_all_speakers)
 
         # Tín hiệu kiểm tra chất lượng trước xuất (Bước 4)
@@ -2453,6 +2460,37 @@ class OmniVoiceInterface(ScrollArea):
         self.adv_content_widget.setVisible(vis)
         if hasattr(self, "btn_toggle_adv"):
             self.btn_toggle_adv.setIcon(FluentIcon.CHEVRON_DOWN if vis else FluentIcon.CHEVRON_RIGHT)
+
+    def _init_more_actions_menu(self):
+        """Khởi tạo menu lệnh gom nhóm các thao tác hàng loạt cho Quản lý nhân vật."""
+        if not hasattr(self, "btn_more_actions"):
+            return
+        menu = RoundMenu(parent=self.btn_more_actions)
+        menu.addAction(Action(FluentIcon.SYNC, "Tự Động Phân Tích Lại", triggered=self._run_auto_detect_speakers))
+        menu.addAction(Action(FluentIcon.VOLUME, "Nghe Thử Toàn Bộ Nhân Vật", triggered=self._audition_all_speakers))
+        menu.addAction(Action(FluentIcon.EDIT, "Gán Nhân Vật Vào Câu Đang Chọn", triggered=self._assign_target_speaker_to_selected_rows))
+        menu.addAction(Action(FluentIcon.DELETE, "Đặt Lại Toàn Bộ Giọng", triggered=lambda: self._handle_reset_all_voices_with_confirmation(None)))
+        self.btn_more_actions.setMenu(menu)
+
+    def _handle_reset_all_voices_with_confirmation(self, confirmed: Optional[bool] = None) -> bool:
+        """Đặt lại toàn bộ phân vai và giọng nhân vật có xác nhận an toàn."""
+        if confirmed is False:
+            return False
+        if confirmed is True:
+            self._reset_all_character_voices()
+            return True
+
+        msg = MessageBox(
+            "Xác nhận đặt lại giọng",
+            "Bạn có chắc chắn muốn đặt lại toàn bộ giọng đã gán cho tất cả nhân vật về mặc định? Thao tác này sẽ hủy toàn bộ cấu hình đã khóa.",
+            self,
+        )
+        msg.yesButton.setText("Đặt Lại")
+        msg.cancelButton.setText("Hủy Bỏ")
+        if msg.exec():
+            self._reset_all_character_voices()
+            return True
+        return False
 
     def _reset_all_character_voices(self):
         """Đặt lại toàn bộ phân vai và cấu hình giọng nhân vật."""
