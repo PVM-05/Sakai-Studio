@@ -465,6 +465,7 @@ class OmniVoiceInterface(ScrollArea):
         self._connect_signals()
         self._sync_ui_from_config()
         self._switch_to_step(0)
+        self._update_identify_button_state()
 
     def _init_ui(self):
         self.container = QWidget(self)
@@ -579,6 +580,23 @@ class OmniVoiceInterface(ScrollArea):
         sub_file_btn_row.addWidget(self.btn_clear_video)
         sub_file_btn_row.addWidget(self.lbl_sub_video_info, 1)
         sub_file_layout.addLayout(sub_file_btn_row)
+
+        # Hàng nút nhận diện chính ở Bước 1
+        detect_action_row = QHBoxLayout()
+        detect_action_row.setSpacing(10)
+
+        self.btn_identify_characters = PrimaryPushButton("Nhận Diện Nhân Vật Từ Video + SRT", sub_file_card)
+        self.btn_identify_characters.setIcon(FluentIcon.PEOPLE)
+        self.btn_identify_characters.setEnabled(False)
+        self.btn_identify_characters.setMinimumHeight(36)
+
+        self.lbl_detect_source_hint = CaptionLabel("Nạp tệp SRT và video để bắt đầu nhận diện nhân vật.", sub_file_card)
+        self.lbl_detect_source_hint.setWordWrap(True)
+
+        detect_action_row.addWidget(self.btn_identify_characters)
+        detect_action_row.addWidget(self.lbl_detect_source_hint, 1)
+        sub_file_layout.addLayout(detect_action_row)
+
         p0_layout.addWidget(sub_file_card)
 
         general_voice_card = CardWidget(self.page_step_0)
@@ -1411,6 +1429,7 @@ class OmniVoiceInterface(ScrollArea):
         self.btn_load_srt.clicked.connect(self._select_subtitle_file)
         self.btn_load_video.clicked.connect(self._select_video_file)
         self.btn_clear_video.clicked.connect(self._clear_selected_video)
+        self.btn_identify_characters.clicked.connect(self._run_auto_detect_speakers)
         self.combo_multi_speaker_mode.currentIndexChanged.connect(self._update_control_states)
         self.btn_auto_detect_speakers.clicked.connect(self._run_auto_detect_speakers)
         self.btn_preview_speaker_preset_vi.clicked.connect(self._preview_speaker_preset_vi)
@@ -2857,6 +2876,30 @@ class OmniVoiceInterface(ScrollArea):
         sub_name = os.path.basename(self.current_subtitle_path) if self.current_subtitle_path else "Chưa chọn"
         vid_name = os.path.basename(self.current_video_path) if self.current_video_path else "Chưa chọn"
         self.lbl_sub_video_info.setText(f"Phụ đề: {sub_name} ({len(self.subtitle_blocks)} câu) | Video: {vid_name}")
+        self._update_identify_button_state()
+
+    def _update_identify_button_state(self):
+        """Cập nhật trạng thái nút nhận diện nhân vật và nhãn gợi ý theo nguồn đã nạp."""
+        if not hasattr(self, "btn_identify_characters"):
+            return
+        has_subs = len(self.subtitle_blocks) > 0
+        has_video = bool(self.current_video_path and os.path.exists(self.current_video_path))
+
+        if has_subs and has_video:
+            self.btn_identify_characters.setEnabled(True)
+            self.lbl_detect_source_hint.setText(
+                "Sẵn sàng nhận diện từ âm thanh video và mốc thời gian SRT."
+            )
+        elif has_subs and not has_video:
+            self.btn_identify_characters.setEnabled(False)
+            self.lbl_detect_source_hint.setText(
+                "Chỉ có tệp SRT — hãy thêm video để nhận diện giọng thực, hoặc dùng 'Tự Động Phân Tích Lại' ở Bước 2 để phân vai theo văn bản."
+            )
+        else:
+            self.btn_identify_characters.setEnabled(False)
+            self.lbl_detect_source_hint.setText(
+                "Nạp tệp SRT và video để bắt đầu nhận diện nhân vật."
+            )
 
     @staticmethod
     def _format_voice_source_display(blk: SubtitleBlock) -> str:

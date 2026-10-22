@@ -827,6 +827,39 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
 
         self.assertTrue(dummy_proc.terminated, "Khi nhận lệnh dừng, tiến trình FFmpeg đang ghép phụ đề phải bị terminate ngay!")
 
+    def test_step0_has_identify_button_enabled_only_when_srt_and_video_present(self):
+        """
+        Xác minh Bước 1 (Nguồn Đầu Vào) có nút 'Nhận Diện Nhân Vật Từ Video + SRT':
+        1. Nút bị vô hiệu hóa khi chưa nạp cả SRT lẫn video.
+        2. Nút bị vô hiệu hóa khi chỉ có SRT mà chưa có video.
+        3. Nút được kích hoạt khi cả SRT hợp lệ và video đều đã được nạp.
+        4. Nhãn trạng thái thay đổi theo nguồn thực tế.
+        """
+        from PySide6.QtWidgets import QApplication
+        from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+
+        app = QApplication.instance() or QApplication([])
+        ui = OmniVoiceInterface()
+
+        # Trạng thái ban đầu: chưa có tệp nào
+        ui._update_identify_button_state()
+        self.assertFalse(ui.btn_identify_characters.isEnabled())
+
+        # Chỉ có SRT: nút chính vẫn tắt
+        ui.subtitle_blocks = [object()]  # Giả lập có câu phụ đề
+        ui.current_video_path = ""
+        ui._update_identify_button_state()
+        self.assertFalse(ui.btn_identify_characters.isEnabled())
+        hint_text = ui.lbl_detect_source_hint.text()
+        self.assertIn("SRT", hint_text)
+
+        # Có cả SRT lẫn video: nút chính bật
+        ui.current_video_path = self.temp_dir  # Dùng thư mục có sẵn thay cho video thật
+        ui._update_identify_button_state()
+        self.assertTrue(ui.btn_identify_characters.isEnabled())
+        hint_text = ui.lbl_detect_source_hint.text()
+        self.assertIn("video", hint_text.lower())
+
 
 if __name__ == "__main__":
     unittest.main()
