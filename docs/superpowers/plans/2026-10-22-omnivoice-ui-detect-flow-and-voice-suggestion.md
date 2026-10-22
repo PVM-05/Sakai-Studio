@@ -1,6 +1,6 @@
 # Kế hoạch Triển khai: Hoàn thiện Luồng Nhận diện và Gợi ý Giọng Tiếng Việt Trong OmniVoice
 
-> **Dành cho tác nhân thực thi:** BẮT BUỘC SỬ DỤNG KỸ NĂNG: Sử dụng `superpowers:subagent-driven-development` (khuyến nghị) hoặc `superpowers:executing-plans` để triển khai từng nhiệm vụ bên dưới. Các bước sử dụng cú pháp ô kiểm (`- [ ]`) để theo dõi tiến độ.
+> **Dành cho tác nhân thực thi:** BẮT BUỘC SỬ DỤNG KỸ NĂNG: Sử dụng `superpowers:subagent-driven-development` (khuyến nghị) hoặc `superpowers:executing-plans` để triển khai từng nhiệm vụ bên dưới. Các bước sử dụng cú pháp ô kiểm (`- [x]`) để theo dõi tiến độ.
 
 **Mục tiêu:** Cải tiến luồng người dùng OmniVoice theo 3 mũi nhọn: (1) Đưa nút nhận diện nhân vật ra ngay Bước 1 ngay sau khi nạp tệp; (2) Hiển thị kết quả nhận diện trực quan và tách biệt rõ hai nút nghe giọng gốc / nghe thử giọng trí tuệ nhân tạo trong bảng phân vai; (3) Kết nối `VoiceRecommendationEngine` vào giao diện để hiển thị Top 3 gợi ý giọng Việt Nam cho từng nhân vật.
 
@@ -37,7 +37,7 @@
 - Widget mới: `self.lbl_detect_source_hint` — nhãn trạng thái nguồn nhận diện.
 - Phương thức mới: `_update_identify_button_state(self)` — bật/tắt nút và cập nhật nhãn theo trạng thái tệp đã nạp.
 
-- [ ] **Bước 1: Viết bài kiểm thử thất bại vào `test/test_auto_pipeline_reliability.py`**
+- [x] **Bước 1: Viết bài kiểm thử thất bại vào `test/test_auto_pipeline_reliability.py`**
 
 ```python
 def test_step0_has_identify_button_enabled_only_when_srt_and_video_present(self):
@@ -75,12 +75,12 @@ def test_step0_has_identify_button_enabled_only_when_srt_and_video_present(self)
     self.assertIn("video", hint_text.lower())
 ```
 
-- [ ] **Bước 2: Chạy kiểm thử xác nhận thất bại**
+- [x] **Bước 2: Chạy kiểm thử xác nhận thất bại**
 
 Lệnh: `.\venv\Scripts\pytest test/test_auto_pipeline_reliability.py -k "test_step0_has_identify_button_enabled_only_when_srt_and_video_present" -v`
 Kỳ vọng: FAIL vì thiếu `btn_identify_characters`, `lbl_detect_source_hint`, `_update_identify_button_state`.
 
-- [ ] **Bước 3: Viết mã nguồn tối thiểu vào `src/desktop/ui/omnivoice_interface.py`**
+- [x] **Bước 3: Viết mã nguồn tối thiểu vào `src/desktop/ui/omnivoice_interface.py`**
 
 **3a. Thêm hai widget vào `page_step_0` ngay SAU dòng `sub_file_layout.addLayout(sub_file_btn_row)`** (khoảng dòng 581):
 
@@ -148,17 +148,17 @@ Tìm hàm `_clear_selected_video`, sau khi xóa `self.current_video_path` thêm:
         self._update_identify_button_state()
 ```
 
-- [ ] **Bước 4: Chạy kiểm thử xác nhận đạt**
+- [x] **Bước 4: Chạy kiểm thử xác nhận đạt**
 
 Lệnh: `.\venv\Scripts\pytest test/test_auto_pipeline_reliability.py -k "test_step0_has_identify_button_enabled_only_when_srt_and_video_present" -v`
 Kỳ vọng: PASS
 
-- [ ] **Bước 5: Chạy toàn bộ kiểm thử hồi quy**
+- [x] **Bước 5: Chạy toàn bộ kiểm thử hồi quy**
 
 Lệnh: `.\venv\Scripts\pytest test/test_auto_pipeline_reliability.py test/test_omnivoice_pipeline.py -q`
 Kỳ vọng: 100% passed, 0 failed.
 
-- [ ] **Bước 6: Cam kết thay đổi**
+- [x] **Bước 6: Cam kết thay đổi**
 
 ```bash
 git add src/desktop/ui/omnivoice_interface.py test/test_auto_pipeline_reliability.py
@@ -178,7 +178,7 @@ git commit -m "feat(omnivoice): add primary detect characters button to step 0 w
   - `"Nghe Giọng Gốc"` — gọi `_preview_character_voice(spk_name)` (phát tệp mẫu âm thanh, chỉ hiển thị khi có `source_audio_path`).
   - `"Nghe Thử Giọng Trí Tuệ Nhân Tạo"` — gọi `_audition_character_voice(spk_name, btn)` (tổng hợp giọng mới).
 
-- [ ] **Bước 1: Viết bài kiểm thử thất bại vào `test/test_omnivoice_pipeline.py`**
+- [x] **Bước 1: Viết bài kiểm thử thất bại vào `test/test_omnivoice_pipeline.py`**
 
 ```python
 def test_casting_table_has_two_separate_listen_buttons():
@@ -215,12 +215,12 @@ def test_casting_table_has_two_separate_listen_buttons():
     assert not any(t.strip() == "Nghe Thử" for t in btn_texts), f"Nút không rõ nguồn 'Nghe Thử' vẫn còn: {btn_texts}"
 ```
 
-- [ ] **Bước 2: Chạy kiểm thử xác nhận thất bại**
+- [x] **Bước 2: Chạy kiểm thử xác nhận thất bại**
 
 Lệnh: `.\venv\Scripts\pytest test/test_omnivoice_pipeline.py -k "test_casting_table_has_two_separate_listen_buttons" -v`
 Kỳ vọng: FAIL.
 
-- [ ] **Bước 3: Sửa mã nguồn trong `_update_casting_table` tại `src/desktop/ui/omnivoice_interface.py`**
+- [x] **Bước 3: Sửa mã nguồn trong `_update_casting_table` tại `src/desktop/ui/omnivoice_interface.py`**
 
 Tìm đoạn xây dựng cột 6 (tìm `btn_act.clicked.connect(lambda checked=False, s=spk_name: self._preview_character_voice(s))`). Thay toàn bộ khối đó bằng:
 
@@ -252,17 +252,17 @@ Tìm đoạn xây dựng cột 6 (tìm `btn_act.clicked.connect(lambda checked=F
             self.casting_table.setCellWidget(row, 6, cell_listen)
 ```
 
-- [ ] **Bước 4: Chạy kiểm thử xác nhận đạt**
+- [x] **Bước 4: Chạy kiểm thử xác nhận đạt**
 
 Lệnh: `.\venv\Scripts\pytest test/test_omnivoice_pipeline.py -k "test_casting_table_has_two_separate_listen_buttons" -v`
 Kỳ vọng: PASS
 
-- [ ] **Bước 5: Chạy toàn bộ kiểm thử hồi quy**
+- [x] **Bước 5: Chạy toàn bộ kiểm thử hồi quy**
 
 Lệnh: `.\venv\Scripts\pytest test/test_auto_pipeline_reliability.py test/test_omnivoice_pipeline.py -q`
 Kỳ vọng: 100% passed, 0 failed.
 
-- [ ] **Bước 6: Cam kết thay đổi**
+- [x] **Bước 6: Cam kết thay đổi**
 
 ```bash
 git add src/desktop/ui/omnivoice_interface.py test/test_omnivoice_pipeline.py
@@ -285,7 +285,7 @@ git commit -m "feat(omnivoice): split casting table listen button into source au
 - Phương thức: `_build_voice_recommendation_widget(spk_name: str) -> QWidget`.
 - Phương thức: `_apply_recommended_voice(spk_name: str, preset_name: str)`.
 
-- [ ] **Bước 1: Viết bài kiểm thử thất bại vào `test/test_omnivoice_pipeline.py`**
+- [x] **Bước 1: Viết bài kiểm thử thất bại vào `test/test_omnivoice_pipeline.py`**
 
 ```python
 def test_voice_recommendation_widget_shows_top3_for_character():
@@ -320,12 +320,12 @@ def test_voice_recommendation_widget_shows_top3_for_character():
     assert any("%" in t for t in label_texts), f"Phải có nhãn điểm (%), hiện có: {label_texts}"
 ```
 
-- [ ] **Bước 2: Chạy kiểm thử xác nhận thất bại**
+- [x] **Bước 2: Chạy kiểm thử xác nhận thất bại**
 
 Lệnh: `.\venv\Scripts\pytest test/test_omnivoice_pipeline.py -k "test_voice_recommendation_widget_shows_top3_for_character" -v`
 Kỳ vọng: FAIL vì thiếu `_build_voice_recommendation_widget`.
 
-- [ ] **Bước 3: Viết mã nguồn vào `src/desktop/ui/omnivoice_interface.py`**
+- [x] **Bước 3: Viết mã nguồn vào `src/desktop/ui/omnivoice_interface.py`**
 
 Đảm bảo import ở đầu file (bổ sung nếu chưa có):
 ```python
@@ -421,17 +421,17 @@ Tìm vị trí xây dựng từng thẻ nhân vật trong `_build_character_card
             card_layout.addWidget(rec_widget)
 ```
 
-- [ ] **Bước 4: Chạy kiểm thử xác nhận đạt**
+- [x] **Bước 4: Chạy kiểm thử xác nhận đạt**
 
 Lệnh: `.\venv\Scripts\pytest test/test_omnivoice_pipeline.py -k "test_voice_recommendation_widget_shows_top3_for_character" -v`
 Kỳ vọng: PASS
 
-- [ ] **Bước 5: Chạy toàn bộ kiểm thử hồi quy**
+- [x] **Bước 5: Chạy toàn bộ kiểm thử hồi quy**
 
 Lệnh: `.\venv\Scripts\pytest test/test_auto_pipeline_reliability.py test/test_omnivoice_pipeline.py -q`
 Kỳ vọng: 115+ passed, 0 failed.
 
-- [ ] **Bước 6: Cam kết thay đổi**
+- [x] **Bước 6: Cam kết thay đổi**
 
 ```bash
 git add src/desktop/ui/omnivoice_interface.py test/test_omnivoice_pipeline.py
@@ -450,7 +450,7 @@ git commit -m "feat(omnivoice): integrate VoiceRecommendationEngine into charact
 - Widget mới: `self.lbl_diarization_summary` — tóm tắt kết quả nhận diện (số nhân vật, số câu, số cần rà soát).
 - Widget mới: `self.lbl_diarization_method` — nguồn phân tích ("Nhận diện từ âm thanh video", "Phân vai từ văn bản SRT").
 
-- [ ] **Bước 1: Viết bài kiểm thử thất bại vào `test/test_omnivoice_pipeline.py`**
+- [x] **Bước 1: Viết bài kiểm thử thất bại vào `test/test_omnivoice_pipeline.py`**
 
 ```python
 def test_diarization_summary_label_updates_after_detection():
@@ -494,12 +494,12 @@ def test_diarization_summary_label_updates_after_detection():
     assert "câu" in summary_text or "3" in summary_text, f"Phải đề cập số câu: {summary_text}"
 ```
 
-- [ ] **Bước 2: Chạy kiểm thử xác nhận thất bại**
+- [x] **Bước 2: Chạy kiểm thử xác nhận thất bại**
 
 Lệnh: `.\venv\Scripts\pytest test/test_omnivoice_pipeline.py -k "test_diarization_summary_label_updates_after_detection" -v`
 Kỳ vọng: FAIL vì thiếu `lbl_diarization_summary`.
 
-- [ ] **Bước 3: Viết mã nguồn vào `src/desktop/ui/omnivoice_interface.py`**
+- [x] **Bước 3: Viết mã nguồn vào `src/desktop/ui/omnivoice_interface.py`**
 
 **3a.** Tìm khu vực đầu bảng phân vai tại `page_step_1` (sau `casting_header_row`). Thêm hai nhãn trước bảng:
 
@@ -540,17 +540,17 @@ Kỳ vọng: FAIL vì thiếu `lbl_diarization_summary`.
             self.lbl_diarization_method.setText(method_text)
 ```
 
-- [ ] **Bước 4: Chạy kiểm thử xác nhận đạt**
+- [x] **Bước 4: Chạy kiểm thử xác nhận đạt**
 
 Lệnh: `.\venv\Scripts\pytest test/test_omnivoice_pipeline.py -k "test_diarization_summary_label_updates_after_detection" -v`
 Kỳ vọng: PASS
 
-- [ ] **Bước 5: Chạy toàn bộ kiểm thử hồi quy**
+- [x] **Bước 5: Chạy toàn bộ kiểm thử hồi quy**
 
 Lệnh: `.\venv\Scripts\pytest test/test_auto_pipeline_reliability.py test/test_omnivoice_pipeline.py test/test_srt_translator.py test/test_subtitle_and_logo_remover.py test_home_interface.py -q`
 Kỳ vọng: 119+ passed, 0 failed.
 
-- [ ] **Bước 6: Cam kết và đẩy lên máy chủ**
+- [x] **Bước 6: Cam kết và đẩy lên máy chủ**
 
 ```bash
 git add src/desktop/ui/omnivoice_interface.py test/test_omnivoice_pipeline.py
