@@ -348,6 +348,40 @@ def agglomerative_cluster_embeddings(
         clusters[merge_i].extend(clusters[merge_j])
         clusters.pop(merge_j)
 
+    # Nếu ở chế độ tự động (không chỉ định exact_k) và đã gom thành nhiều cụm (>= 2):
+    # Kiểm tra hệ số Silhouette để xác thực xem dữ liệu có thực sự tách biệt thành nhiều người nói hay không.
+    # Nếu hệ số phân tách Silhouette < 0.20, các mẫu chỉ là một đám mây âm thanh phân tán của 1 người nói duy nhất.
+    if target_k is None and len(clusters) > 1 and n_samples >= 3:
+        temp_labels = np.zeros(n_samples, dtype=np.int32)
+        for c_idx, c_members in enumerate(clusters):
+            for m_idx in c_members:
+                temp_labels[m_idx] = c_idx
+
+        sil_scores = []
+        for idx in range(n_samples):
+            own_c = temp_labels[idx]
+            same_mask = (temp_labels == own_c)
+            same_mask[idx] = False
+            if not np.any(same_mask):
+                sil_scores.append(0.0)
+                continue
+            a_val = float(np.mean(dist_matrix[idx, same_mask]))
+            b_val = float("inf")
+            for other_c in range(len(clusters)):
+                if other_c == own_c:
+                    continue
+                diff_mask = (temp_labels == other_c)
+                if np.any(diff_mask):
+                    d_other = float(np.mean(dist_matrix[idx, diff_mask]))
+                    if d_other < b_val:
+                        b_val = d_other
+            denom = max(a_val, b_val, 1e-6)
+            sil_scores.append((b_val - a_val) / denom)
+
+        mean_sil = float(np.mean(sil_scores)) if sil_scores else -1.0
+        if mean_sil < 0.20:
+            clusters = [[i for i in range(n_samples)]]
+
     # Sắp xếp các cụm theo chỉ số phần tử xuất hiện đầu tiên để nhãn ổn định
     clusters.sort(key=lambda c: min(c))
     labels = np.zeros(n_samples, dtype=np.int32)
@@ -461,12 +495,21 @@ def cosine_cluster_embeddings(
         score = float(np.clip(1.0 - d_own, 0.0, 1.0))
         conf_scores.append(score)
 
+        if len(unique_k) == 1:
+            if d_own <= 0.35:
+                conf_levels.append(ConfidenceLevel.HIGH.value)
+            elif d_own > 0.40:
+                conf_levels.append(ConfidenceLevel.REVIEW_NEEDED.value)
+            else:
+                conf_levels.append(ConfidenceLevel.HIGH.value)
+            continue
+
         is_short = bool(sample_durations and idx < len(sample_durations) and sample_durations[idx] < 0.60)
         if (cluster_sizes.get(own_c, 0) < 2 and n_samples >= 4) or is_short:
             conf_levels.append(ConfidenceLevel.REVIEW_NEEDED.value)
-        elif gap >= 0.18 and d_own <= 0.22:
+        elif gap >= 0.20 and d_own <= 0.20:
             conf_levels.append(ConfidenceLevel.HIGH.value)
-        elif gap < 0.10 or d_own > 0.28:
+        elif gap < 0.12 or d_own > 0.25:
             conf_levels.append(ConfidenceLevel.REVIEW_NEEDED.value)
         else:
             conf_levels.append(ConfidenceLevel.HIGH.value)

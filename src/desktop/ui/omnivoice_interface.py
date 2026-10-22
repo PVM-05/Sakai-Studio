@@ -279,18 +279,23 @@ class OmniVoiceTaskWorker(QThread):
 
                     device_str = "ưu tiên CUDA trên GPU NVIDIA" if self.prefer_cuda else "CPU"
                     self.progressSignal.emit(25, f"Đang nhận diện người nói · {device_str}...")
+                    exact_spk = self.engine_params.get("exact_speakers", None)
+                    sensitivity = self.engine_params.get("clustering_sensitivity", "standard")
                     profiles = engine.detect_speakers_from_video(
                         self.video_path,
                         self.subtitle_blocks,
                         max_speakers=max_spk,
+                        exact_speakers=exact_spk,
+                        clustering_sensitivity=sensitivity,
                         prefer_cuda=self.prefer_cuda,
                     )
                     source_desc = "từ âm thanh video gốc"
                 else:
+                    exact_spk = self.engine_params.get("exact_speakers", None)
                     self.progressSignal.emit(35, "Đang phân tích hội thoại và đại từ trong phụ đề để phân vai...")
                     profiles = engine.detect_speakers_from_srt_text(
                         self.subtitle_blocks,
-                        max_speakers=max_spk,
+                        max_speakers=exact_spk if exact_spk is not None else max_spk,
                     )
                     source_desc = "từ văn bản phụ đề"
 
@@ -825,12 +830,7 @@ class OmniVoiceInterface(ScrollArea):
         self.combo_multi_speaker_mode = ComboBox(diarize_card)
         for label_vn, _ in MULTI_SPEAKER_MODE_ITEMS:
             self.combo_multi_speaker_mode.addItem(label_vn)
-        self.combo_multi_speaker_mode.setMinimumWidth(290)
-
-        lbl_max_spk = BodyLabel("Số người tối đa:", diarize_card)
-        self.spin_max_speakers = SpinBox(diarize_card)
-        self.spin_max_speakers.setRange(1, 6)
-        self.spin_max_speakers.setValue(4)
+        self.combo_multi_speaker_mode.setMinimumWidth(260)
 
         self.btn_auto_detect_speakers = PrimaryPushButton("Tự Động Nhận Diện Nhiều Người Nói", diarize_card)
         self.btn_auto_detect_speakers.setIcon(FluentIcon.PEOPLE)
@@ -838,10 +838,35 @@ class OmniVoiceInterface(ScrollArea):
 
         diarize_top_row.addWidget(lbl_multi_mode)
         diarize_top_row.addWidget(self.combo_multi_speaker_mode, 1)
-        diarize_top_row.addWidget(lbl_max_spk)
-        diarize_top_row.addWidget(self.spin_max_speakers)
         diarize_top_row.addWidget(self.btn_auto_detect_speakers)
         diarize_layout.addLayout(diarize_top_row)
+
+        diarize_clustering_row = QHBoxLayout()
+        diarize_clustering_row.setSpacing(8)
+
+        lbl_count_mode = BodyLabel("Quy tắc số người:", diarize_card)
+        self.combo_speaker_count_mode = ComboBox(diarize_card)
+        self.combo_speaker_count_mode.addItem("Tự động ước lượng (Tối đa)")
+        self.combo_speaker_count_mode.addItem("Cố định chính xác số người")
+
+        self.lbl_max_spk = BodyLabel("Số người tối đa:", diarize_card)
+        self.spin_max_speakers = SpinBox(diarize_card)
+        self.spin_max_speakers.setRange(1, 6)
+        self.spin_max_speakers.setValue(4)
+
+        lbl_sensitivity = BodyLabel("Độ nhạy phân tách:", diarize_card)
+        self.combo_clustering_sensitivity = ComboBox(diarize_card)
+        self.combo_clustering_sensitivity.addItem("Độ nhạy tiêu chuẩn")
+        self.combo_clustering_sensitivity.addItem("Độ nhạy cao — Dễ tách người nói")
+        self.combo_clustering_sensitivity.addItem("Độ nhạy thấp — Ưu tiên gộp giọng")
+
+        diarize_clustering_row.addWidget(lbl_count_mode)
+        diarize_clustering_row.addWidget(self.combo_speaker_count_mode, 1)
+        diarize_clustering_row.addWidget(self.lbl_max_spk)
+        diarize_clustering_row.addWidget(self.spin_max_speakers)
+        diarize_clustering_row.addWidget(lbl_sensitivity)
+        diarize_clustering_row.addWidget(self.combo_clustering_sensitivity, 1)
+        diarize_layout.addLayout(diarize_clustering_row)
 
         spk_assign_row1 = QHBoxLayout()
         spk_assign_row1.setSpacing(8)
@@ -1482,6 +1507,7 @@ class OmniVoiceInterface(ScrollArea):
         self.btn_clear_video.clicked.connect(self._clear_selected_video)
         self.btn_identify_characters.clicked.connect(self._run_auto_detect_speakers)
         self.combo_multi_speaker_mode.currentIndexChanged.connect(self._update_control_states)
+        self.combo_speaker_count_mode.currentIndexChanged.connect(self._on_speaker_count_mode_changed)
         self.btn_auto_detect_speakers.clicked.connect(self._run_auto_detect_speakers)
         self.btn_preview_speaker_preset_vi.clicked.connect(self._preview_speaker_preset_vi)
         self.btn_apply_preset_to_speaker.clicked.connect(self._apply_preset_to_target_speaker)
@@ -2805,10 +2831,33 @@ class OmniVoiceInterface(ScrollArea):
             "enable_flashinfer": self.chk_flashinfer.isChecked(),
             "multi_speaker_mode": self._get_selected_multi_speaker_mode(),
             "max_speakers": int(self.spin_max_speakers.value()),
+            "speaker_count_mode": "exact" if (hasattr(self, "combo_speaker_count_mode") and self.combo_speaker_count_mode.currentIndex() == 1) else "auto",
+            "exact_speakers": int(self.spin_max_speakers.value()) if (hasattr(self, "combo_speaker_count_mode") and self.combo_speaker_count_mode.currentIndex() == 1) else None,
+            "clustering_sensitivity": self._get_clustering_sensitivity_code(),
             "speaker_profiles": dict(self.speaker_profiles),
             "ducking_mode": "dynamic" if self.combo_ducking_mode.currentIndex() == 0 else "fixed",
             "resume_cache_dir": os.path.join(BASE_DIR, "output", "omnivoice_studio", "resume_cache"),
         }
+
+    def _on_speaker_count_mode_changed(self):
+        """Cập nhật nhãn và trạng thái khi thay đổi quy tắc số lượng người nói."""
+        if not hasattr(self, "combo_speaker_count_mode") or not hasattr(self, "lbl_max_spk"):
+            return
+        if self.combo_speaker_count_mode.currentIndex() == 1:
+            self.lbl_max_spk.setText("Số người chính xác:")
+        else:
+            self.lbl_max_spk.setText("Số người tối đa:")
+
+    def _get_clustering_sensitivity_code(self) -> str:
+        """Lấy mã định danh độ nhạy phân cụm tương ứng."""
+        if not hasattr(self, "combo_clustering_sensitivity"):
+            return "standard"
+        idx = self.combo_clustering_sensitivity.currentIndex()
+        if idx == 1:
+            return "high"
+        elif idx == 2:
+            return "low"
+        return "standard"
 
     def _append_log(self, msg: str):
         if hasattr(self, "log_edit") and self.log_edit is not None:

@@ -2905,3 +2905,42 @@ def test_tts_engine_detect_speakers_forwards_exact_k_and_sensitivity(tmp_path):
         assert kwargs.get("exact_speakers") == 2
         assert kwargs.get("distance_threshold") == 0.34
         assert kwargs.get("max_speakers") == 5
+
+
+def test_omnivoice_ui_speaker_count_mode_and_sensitivity_controls():
+    """
+    Xác minh các điều khiển Chế độ số người và Độ nhạy phân tách trên giao diện OmniVoice:
+    1. Tồn tại combo_speaker_count_mode với hai lựa chọn Tự động ước lượng và Cố định chính xác.
+    2. Chuyển sang Cố định chính xác đổi nhãn lbl_max_spk thành 'Số người chính xác:'.
+    3. Tồn tại combo_clustering_sensitivity với 3 mức độ nhạy.
+    4. _get_ui_params() trả về đúng exact_speakers và clustering_sensitivity.
+    """
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+
+    assert hasattr(ui, "combo_speaker_count_mode")
+    assert hasattr(ui, "combo_clustering_sensitivity")
+    assert hasattr(ui, "lbl_max_spk")
+
+    # Mặc định là Tự động ước lượng
+    assert ui.combo_speaker_count_mode.currentIndex() == 0
+    assert "tối đa" in ui.lbl_max_spk.text().lower()
+
+    # Chuyển sang Cố định chính xác số người
+    ui.combo_speaker_count_mode.setCurrentIndex(1)
+    assert "chính xác" in ui.lbl_max_spk.text().lower()
+
+    ui.spin_max_speakers.setValue(2)
+    ui.combo_clustering_sensitivity.setCurrentIndex(1)  # Cao - Dễ tách
+    params = ui._collect_engine_params()
+    assert params["exact_speakers"] == 2
+    assert params["clustering_sensitivity"] == "high"
+
+    # Chuyển về Tự động ước lượng
+    ui.combo_speaker_count_mode.setCurrentIndex(0)
+    assert "tối đa" in ui.lbl_max_spk.text().lower()
+    params2 = ui._collect_engine_params()
+    assert params2["exact_speakers"] is None
