@@ -86,6 +86,51 @@ def resolve_speaker_model_path(model_path: Union[str, Path, None] = None) -> str
     return ""
 
 
+def download_speaker_embedding_model(
+    target_dir: Optional[Union[str, Path]] = None,
+    progress_callback: Optional[Any] = None,
+) -> str:
+    """Tự động tải mô hình nhận diện người nói CAM++ ONNX (~27 MB) từ HuggingFace."""
+    if target_dir is None:
+        project_root = Path(__file__).resolve().parents[2]
+        target_dir = project_root / "models" / "speaker_embedding"
+    else:
+        target_dir = Path(target_dir)
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_file = target_dir / "campplus.onnx"
+    if target_file.is_file() and target_file.stat().st_size > 1000:
+        return str(target_file.resolve())
+
+    alt_file = target_dir / "campplus_cn_en_common_200k.onnx"
+    if alt_file.is_file() and alt_file.stat().st_size > 1000:
+        return str(alt_file.resolve())
+
+    try:
+        from huggingface_hub import hf_hub_download
+
+        if progress_callback:
+            progress_callback(0.1, "Đang tải mô hình nhận diện người nói CAM++ ONNX từ kho lưu trữ...")
+        downloaded = hf_hub_download(
+            repo_id="welcomyou/campplus-3dspeaker-200k-onnx",
+            filename="campplus_cn_en_common_200k.onnx",
+            local_dir=str(target_dir),
+        )
+        downloaded_path = Path(downloaded)
+        if downloaded_path.is_file() and not target_file.is_file():
+            import shutil
+
+            shutil.copyfile(str(downloaded_path), str(target_file))
+        return str(target_file.resolve()) if target_file.is_file() else str(downloaded_path.resolve())
+    except Exception as e:
+        logger.error(f"Không thể tự động tải mô hình CAM++ ONNX: {e}")
+        raise RuntimeError(
+            f"Không thể tự động tải mô hình nhận diện người nói CAM++ ONNX: {e}. "
+            "Bạn có thể tải thủ công từ https://huggingface.co/welcomyou/campplus-3dspeaker-200k-onnx "
+            "và đặt vào thư mục 'models/speaker_embedding/campplus.onnx'."
+        )
+
+
 def create_speaker_session(
     model_path: Union[str, Path, None] = None,
     device_id: int = 0,

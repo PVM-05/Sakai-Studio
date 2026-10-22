@@ -262,6 +262,21 @@ class OmniVoiceTaskWorker(QThread):
             if self.task_type == "detect_speakers":
                 max_spk = int(self.engine_params.get("max_speakers", 4))
                 if self.video_path and os.path.exists(self.video_path):
+                    from src.ai_engines.speaker_embedding_onnx import (
+                        resolve_speaker_model_path,
+                        download_speaker_embedding_model,
+                    )
+                    model_path = resolve_speaker_model_path()
+                    if not model_path:
+                        self.progressSignal.emit(10, "Đang tải mô hình nhận diện người nói CAM++ ONNX...")
+                        self.logSignal.emit("Chưa tìm thấy mô hình CAM++ ONNX cục bộ. Đang tự động tải từ kho lưu trữ...")
+                        try:
+                            download_speaker_embedding_model(
+                                progress_callback=lambda p, msg: self.progressSignal.emit(int(p * 20), msg)
+                            )
+                        except Exception as e:
+                            self.logSignal.emit(f"Không thể tự động tải mô hình CAM++: {e}")
+
                     device_str = "ưu tiên CUDA trên GPU NVIDIA" if self.prefer_cuda else "CPU"
                     self.progressSignal.emit(25, f"Đang nhận diện người nói · {device_str}...")
                     profiles = engine.detect_speakers_from_video(

@@ -2768,3 +2768,39 @@ def test_stepper_step_state_sync_and_validation():
 
 
 
+
+
+def test_download_speaker_embedding_model_uses_existing_or_downloads(tmp_path, monkeypatch):
+    """
+    Xác minh hàm download_speaker_embedding_model:
+    1. Nếu tệp campplus.onnx đã có trong thư mục chỉ định, trả về đường dẫn ngay lập tức.
+    2. Nếu chưa có, gọi hf_hub_download với repo_id và filename chính xác.
+    """
+    from pathlib import Path
+    from src.ai_engines.speaker_embedding_onnx import download_speaker_embedding_model
+
+    # Trường hợp 1: Tệp đã tồn tại
+    fake_model = tmp_path / "campplus.onnx"
+    fake_model.write_bytes(b"dummy onnx content" * 100)
+    res = download_speaker_embedding_model(target_dir=tmp_path)
+    assert res == str(fake_model.resolve())
+
+    # Trường hợp 2: Tệp chưa tồn tại, kích hoạt hf_hub_download
+    empty_dir = tmp_path / "empty_models"
+    empty_dir.mkdir()
+    called_hf = []
+
+    def mock_hf_download(repo_id, filename, local_dir):
+        called_hf.append((repo_id, filename, local_dir))
+        out_f = Path(local_dir) / filename
+        out_f.write_bytes(b"downloaded onnx content" * 100)
+        return str(out_f)
+
+    import huggingface_hub
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", mock_hf_download)
+
+    res2 = download_speaker_embedding_model(target_dir=empty_dir)
+    assert len(called_hf) == 1
+    assert called_hf[0][0] == "welcomyou/campplus-3dspeaker-200k-onnx"
+    assert "campplus" in called_hf[0][1]
+    assert Path(res2).is_file()
