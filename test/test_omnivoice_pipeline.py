@@ -2694,6 +2694,40 @@ def test_step1_batch_actions_menu_and_safe_reset_dialog():
     assert len(ui.speaker_profiles) == 0 or all(p.status != "locked" for p in ui.speaker_profiles.values())
 
 
+def test_step2_contextual_toolbar_enables_only_on_subtitle_selection():
+    """
+    Xác minh Bước 2 (Biên Tập Phụ Đề):
+    1. Thanh công cụ ngữ cảnh tự động vô hiệu hóa các thao tác khi không có câu nào được chọn.
+    2. Thanh công cụ kích hoạt đầy đủ các chức năng khi có ít nhất 1 dòng được chọn.
+    """
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.translator import SubtitleBlock
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+
+    blk1 = SubtitleBlock(1, "00:00:01,000", "00:00:02,000", "Xin chào bạn")
+    blk2 = SubtitleBlock(2, "00:00:03,000", "00:00:04,000", "Tôi là trợ lý ảo")
+    ui.subtitle_blocks = [blk1, blk2]
+    ui._populate_subtitle_table()
+
+    # Chưa chọn dòng nào
+    ui.sub_table.clearSelection()
+    ui._update_subtitle_action_buttons()
+
+    assert not ui.btn_preview_selected_row.isEnabled(), "Chưa chọn dòng thì nút nghe thử phải tắt"
+    assert not ui.btn_insert_tag_to_sub.isEnabled(), "Chưa chọn dòng thì nút chèn biểu cảm phải tắt"
+
+    # Chọn dòng 0
+    ui.sub_table.selectRow(0)
+    ui._update_subtitle_action_buttons()
+
+    assert ui.btn_preview_selected_row.isEnabled(), "Đã chọn dòng thì nút nghe thử phải bật"
+    assert ui.btn_insert_tag_to_sub.isEnabled(), "Đã chọn dòng thì nút chèn biểu cảm phải bật"
+
+
+
 
 
 

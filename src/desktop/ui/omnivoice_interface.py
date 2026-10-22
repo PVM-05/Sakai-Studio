@@ -1000,6 +1000,7 @@ class OmniVoiceInterface(ScrollArea):
             self.combo_sub_tag.addItem(f"{vn_label} {tag_code}")
         self.btn_insert_tag_to_sub = PushButton("Chèn Thẻ Biểu Cảm Vào Câu Đang Chọn", sub_page_card)
         self.btn_insert_tag_to_sub.setIcon(FluentIcon.ADD)
+        self.btn_insert_tag_to_sub.setEnabled(False)
 
         self.btn_preview_selected_row = PushButton("Nghe Thử Câu Đang Chọn", sub_page_card)
         self.btn_preview_selected_row.setIcon(FluentIcon.VOLUME)
@@ -1031,15 +1032,22 @@ class OmniVoiceInterface(ScrollArea):
         sub_layout.addWidget(self.sub_table, 1)
         p2_layout.addWidget(sub_page_card, 1)
 
-        studio_card = CardWidget(self.page_step_2)
-        studio_card_layout = QVBoxLayout(studio_card)
+        # Nút chuyển đổi thu gọn phòng thu văn bản trực tiếp
+        self.btn_toggle_studio = PushButton("Mở Rộng Phòng Thu Văn Bản Trực Tiếp", self.page_step_2)
+        self.btn_toggle_studio.setIcon(FluentIcon.CHEVRON_RIGHT_MED)
+        self.btn_toggle_studio.clicked.connect(self._toggle_studio_card)
+        p2_layout.addWidget(self.btn_toggle_studio)
+
+        self.studio_card = CardWidget(self.page_step_2)
+        self.studio_card.setVisible(False)
+        studio_card_layout = QVBoxLayout(self.studio_card)
         studio_card_layout.setContentsMargins(14, 10, 14, 10)
         studio_card_layout.setSpacing(8)
 
-        self.workspace_pivot = Pivot(studio_card)
-        self.workspace_stack = QStackedWidget(studio_card)
+        self.workspace_pivot = Pivot(self.studio_card)
+        self.workspace_stack = QStackedWidget(self.studio_card)
 
-        self.studio_page = QWidget(studio_card)
+        self.studio_page = QWidget(self.studio_card)
         studio_layout = QVBoxLayout(self.studio_page)
         studio_layout.setContentsMargins(0, 4, 0, 0)
         studio_layout.setSpacing(8)
@@ -1095,7 +1103,7 @@ class OmniVoiceInterface(ScrollArea):
 
         self.workspace_stack.addWidget(self.studio_page)
 
-        self.sub_dub_page = QWidget(studio_card)
+        self.sub_dub_page = QWidget(self.studio_card)
         sub_dub_inner = QVBoxLayout(self.sub_dub_page)
         sub_dub_inner.addWidget(CaptionLabel("Chế độ lồng tiếng phụ đề đa nhân vật đã sẵn sàng ở bảng phía trên.", self.sub_dub_page))
         self.workspace_stack.addWidget(self.sub_dub_page)
@@ -1116,7 +1124,7 @@ class OmniVoiceInterface(ScrollArea):
 
         studio_card_layout.addWidget(self.workspace_pivot, 0, Qt.AlignLeft)
         studio_card_layout.addWidget(self.workspace_stack, 1)
-        p2_layout.addWidget(studio_card)
+        p2_layout.addWidget(self.studio_card)
 
         self.step_stack.addWidget(self.page_step_2)
 
@@ -1596,6 +1604,17 @@ class OmniVoiceInterface(ScrollArea):
         self.default_voice_settings_container.setVisible(is_vis)
         if hasattr(self, "btn_toggle_default_voice_settings"):
             self.btn_toggle_default_voice_settings.setIcon(
+                FluentIcon.CHEVRON_DOWN_MED if is_vis else FluentIcon.CHEVRON_RIGHT_MED
+            )
+
+    def _toggle_studio_card(self):
+        """Chuyển đổi trạng thái thu gọn / mở rộng của khối phòng thu trực tiếp ở Bước 2."""
+        if not hasattr(self, "studio_card"):
+            return
+        is_vis = not self.studio_card.isVisible()
+        self.studio_card.setVisible(is_vis)
+        if hasattr(self, "btn_toggle_studio"):
+            self.btn_toggle_studio.setIcon(
                 FluentIcon.CHEVRON_DOWN_MED if is_vis else FluentIcon.CHEVRON_RIGHT_MED
             )
 
@@ -3174,6 +3193,8 @@ class OmniVoiceInterface(ScrollArea):
         self.btn_clear_video.setEnabled(has_video)
         self.btn_auto_detect_speakers.setEnabled(has_subs)
         self.btn_preview_selected_row.setEnabled(has_subs and has_selection)
+        if hasattr(self, "btn_insert_tag_to_sub"):
+            self.btn_insert_tag_to_sub.setEnabled(has_subs and has_selection)
         self.btn_export_dub_wav.setEnabled(has_subs)
         self.btn_dub_merge_video.setEnabled(has_subs and has_video)
 
