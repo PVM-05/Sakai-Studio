@@ -19,6 +19,24 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Trên Windows, nạp sẵn thư viện CUDA từ CUDA Toolkit hoặc PyTorch vào không gian tiến trình
+# để ONNX Runtime phát hiện và kích hoạt chính xác CUDAExecutionProvider trên card đồ họa.
+if os.name == "nt":
+    for env_var in ("CUDA_PATH", "CUDA_PATH_V11_8"):
+        cuda_root = os.environ.get(env_var, "").strip()
+        if cuda_root:
+            cuda_bin = os.path.join(cuda_root, "bin")
+            if os.path.isdir(cuda_bin) and hasattr(os, "add_dll_directory"):
+                try:
+                    os.add_dll_directory(cuda_bin)
+                except Exception:
+                    pass
+
+try:
+    import torch
+except ImportError:
+    pass
+
 try:
     import onnxruntime as ort
 except ImportError:

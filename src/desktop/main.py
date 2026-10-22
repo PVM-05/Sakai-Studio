@@ -265,7 +265,15 @@ if __name__ == '__main__':
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QtWidgets.QApplication(sys.argv)
     
-    # Đặt font hệ thống mặc định hợp lệ để tiêu diệt triệt để lỗi QFont::setPointSize: Point size <= 0 (-1)
+    # Đặt font hệ thống mặc định hợp lệ và bộ lọc thông báo để triệt tiêu cảnh báo QFont::setPointSize: Point size <= 0 (-1)
+    def _qt_message_handler(mode, context, message):
+        if "QFont::setPointSize" in message and "-1" in message:
+            return
+        if message.strip():
+            sys.stderr.write(f"{message}\n")
+
+    QtCore.qInstallMessageHandler(_qt_message_handler)
+
     default_font = QtGui.QFont("Segoe UI", 9)
     default_font.setPointSize(9)
     default_font.setStyleStrategy(QtGui.QFont.PreferAntialias)
