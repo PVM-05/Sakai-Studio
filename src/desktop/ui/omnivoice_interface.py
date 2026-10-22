@@ -66,6 +66,7 @@ from src.ai_engines.translator import SubtitleBlock, parse_srt
 from src.ai_engines.speaker_diarization import CharacterVoiceProfile, normalize_character_profile
 from src.ai_engines.tts_engine import (
     TTSEngine,
+    VoiceRecommendationEngine,
     VIETNAMESE_VOICE_CATALOG,
     DEFAULT_SPEAKER_PRESETS,
     parse_timestamp_to_seconds,
@@ -940,7 +941,7 @@ class OmniVoiceInterface(ScrollArea):
         self.char_cards_layout.setSpacing(10)
         self.char_cards_layout.setAlignment(Qt.AlignLeft)
         self.char_scroll.setWidget(self.char_cards_container)
-        self.char_scroll.setFixedHeight(125)
+        self.char_scroll.setFixedHeight(230)
         char_card_layout.addWidget(self.char_scroll)
         p2_layout.addWidget(self.char_overview_card, 0)
 
@@ -2138,8 +2139,8 @@ class OmniVoiceInterface(ScrollArea):
                 badge_bg = "#d83b01"
 
             card = CardWidget(self.char_cards_container)
-            card.setMinimumWidth(230)
-            card.setMaximumWidth(290)
+            card.setMinimumWidth(260)
+            card.setMaximumWidth(320)
             card_layout = QVBoxLayout(card)
             card_layout.setContentsMargins(12, 10, 12, 10)
             card_layout.setSpacing(6)
@@ -2183,6 +2184,9 @@ class OmniVoiceInterface(ScrollArea):
 
             card_layout.addLayout(btn_row)
 
+            rec_widget = self._build_voice_recommendation_widget(spk_name)
+            card_layout.addWidget(rec_widget)
+
             self.char_cards_layout.addWidget(card)
             self._character_cards.append({
                 "name": spk_name,
@@ -2193,6 +2197,82 @@ class OmniVoiceInterface(ScrollArea):
                 "widget": card,
                 "button": btn_audition,
             })
+
+    def _build_voice_recommendation_widget(self, spk_name: str) -> QWidget:
+        """Tạo widget hiển thị Top 3 gợi ý giọng Việt Nam cho nhân vật."""
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 4, 0, 4)
+        layout.setSpacing(6)
+
+        prof = self.speaker_profiles.get(spk_name)
+        if prof is None:
+            layout.addWidget(CaptionLabel("Chưa có hồ sơ nhân vật để đề xuất giọng.", container))
+            return container
+
+        try:
+            recommendations = VoiceRecommendationEngine.recommend_voices(prof, top_k=3)
+        except Exception:
+            recommendations = []
+
+        if not recommendations:
+            layout.addWidget(CaptionLabel("Không tìm được giọng phù hợp trong danh mục.", container))
+            return container
+
+        layout.addWidget(StrongBodyLabel("Giọng đọc được gợi ý:", container))
+
+        for idx, rec in enumerate(recommendations, start=1):
+            rec_card = QFrame(container)
+            rec_card.setFrameShape(QFrame.StyledPanel)
+            rec_card_layout = QHBoxLayout(rec_card)
+            rec_card_layout.setContentsMargins(8, 4, 8, 4)
+            rec_card_layout.setSpacing(8)
+
+            preset_label = rec.get("preset_name", "")
+            score = rec.get("score", 0)
+            reason = rec.get("reason", "")
+
+            lbl_rank = BodyLabel(f"{idx}.", rec_card)
+            lbl_rank.setFixedWidth(18)
+            rec_card_layout.addWidget(lbl_rank)
+
+            lbl_name = BodyLabel(preset_label, rec_card)
+            lbl_name.setWordWrap(True)
+            rec_card_layout.addWidget(lbl_name, 1)
+
+            lbl_score = CaptionLabel(f"{score}%", rec_card)
+            lbl_score.setToolTip(reason)
+            rec_card_layout.addWidget(lbl_score)
+
+            btn_apply = PushButton("Áp Dụng", rec_card)
+            btn_apply.setIcon(FluentIcon.ACCEPT)
+            btn_apply.clicked.connect(
+                lambda checked=False, s=spk_name, p=preset_label: self._apply_recommended_voice(s, p)
+            )
+            rec_card_layout.addWidget(btn_apply)
+
+            layout.addWidget(rec_card)
+
+        return container
+
+    def _apply_recommended_voice(self, spk_name: str, preset_name: str):
+        """Áp dụng giọng được gợi ý cho nhân vật và làm mới thẻ hồ sơ."""
+        if preset_name not in VIETNAMESE_VOICE_CATALOG or spk_name not in self.speaker_profiles:
+            return
+        instruct_val = VIETNAMESE_VOICE_CATALOG[preset_name]["instruct"]
+        prof = self.speaker_profiles[spk_name]
+        prof["method"] = "preset"
+        prof["preset_name"] = preset_name
+        prof["voice_instruct"] = instruct_val
+        prof["source_audio_path"] = ""
+        prof["status"] = "locked"
+        self._update_casting_table()
+        InfoBar.success(
+            title="Đã áp dụng giọng đọc",
+            content=f"Nhân vật '{spk_name}' đã được gán giọng '{preset_name}'.",
+            parent=self,
+            duration=3000,
+        )
 
     def _audition_character_voice(self, spk_name: str, btn: Optional[PushButton] = None):
         """Nghe thử giọng nhân vật bằng cách tổng hợp câu thoại đầu tiên của nhân vật trong video."""

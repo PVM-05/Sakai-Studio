@@ -2554,6 +2554,39 @@ def test_casting_table_has_two_separate_listen_buttons():
     assert not any(t.strip() == "Nghe Thử" for t in btn_texts), f"Nút không rõ nguồn 'Nghe Thử' vẫn còn: {btn_texts}"
 
 
+def test_voice_recommendation_widget_shows_top3_for_character():
+    """
+    Xác minh _build_voice_recommendation_widget() tạo widget hiển thị tối đa 3 gợi ý giọng,
+    mỗi gợi ý có điểm phù hợp và nút Áp Dụng.
+    """
+    from PySide6.QtWidgets import QApplication, QPushButton, QLabel
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+
+    prof = CharacterVoiceProfile(
+        speaker_id="spk_0",
+        display_name="Nhân vật thử nghiệm",
+        gender="female",
+        vietnamese_accent="bac",
+        pitch_level="high",
+    )
+    ui.speaker_profiles = {"Nhân vật thử nghiệm": prof}
+
+    widget = ui._build_voice_recommendation_widget("Nhân vật thử nghiệm")
+    assert widget is not None
+
+    apply_buttons = [b for b in widget.findChildren(QPushButton) if "Áp Dụng" in b.text()]
+    assert 1 <= len(apply_buttons) <= 3, f"Số nút Áp Dụng phải từ 1 đến 3, hiện có: {len(apply_buttons)}"
+
+    labels = widget.findChildren(QLabel)
+    label_texts = [l.text() for l in labels]
+    assert any("%" in t for t in label_texts), f"Phải có nhãn điểm (%), hiện có: {label_texts}"
+
+
+
 
 
 
