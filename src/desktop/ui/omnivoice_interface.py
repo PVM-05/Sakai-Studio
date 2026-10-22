@@ -879,6 +879,13 @@ class OmniVoiceInterface(ScrollArea):
         casting_header_row.addWidget(self.btn_audition_all_speakers)
         casting_layout.addLayout(casting_header_row)
 
+        self.lbl_diarization_summary = CaptionLabel("Chưa phân tích — bấm nhận diện để bắt đầu.", casting_card)
+        self.lbl_diarization_summary.setWordWrap(True)
+        self.lbl_diarization_method = CaptionLabel("", casting_card)
+        self.lbl_diarization_method.setWordWrap(True)
+        casting_layout.addWidget(self.lbl_diarization_summary)
+        casting_layout.addWidget(self.lbl_diarization_method)
+
         self.casting_table = TableWidget(casting_card)
         self.casting_table.setColumnCount(7)
         self.casting_table.setHorizontalHeaderLabels([
@@ -3150,6 +3157,31 @@ class OmniVoiceInterface(ScrollArea):
                 ui_blk.is_speaker_locked = getattr(w_blk, "is_speaker_locked", getattr(ui_blk, "is_speaker_locked", False))
         self._populate_subtitle_table()
         self._update_casting_table()
+
+        # Cập nhật nhãn tóm tắt kết quả nhận diện
+        total_chars = len(self.speaker_profiles)
+        total_assigned = sum(1 for blk in self.subtitle_blocks if getattr(blk, "is_speaker_locked", False))
+        review_count = sum(1 for blk in self.subtitle_blocks if getattr(blk, "confidence_level", "") == "review_needed")
+        unassigned_count = sum(1 for blk in self.subtitle_blocks if getattr(blk, "confidence_level", "") == "unassigned")
+        total_subs = len(self.subtitle_blocks)
+
+        summary = (
+            f"Đã phân tích xong. Tìm thấy {total_chars} nhân vật, "
+            f"{total_assigned}/{total_subs} câu thoại được phân vai"
+        )
+        if review_count > 0:
+            summary += f", {review_count} câu cần rà soát"
+        if unassigned_count > 0:
+            summary += f", {unassigned_count} câu chưa xác định"
+        summary += "."
+        if hasattr(self, "lbl_diarization_summary"):
+            self.lbl_diarization_summary.setText(summary)
+
+        has_video = bool(self.current_video_path and os.path.exists(self.current_video_path))
+        method_text = "Nguồn: Nhận diện từ âm thanh video." if has_video else "Nguồn: Phân vai từ văn bản SRT."
+        if hasattr(self, "lbl_diarization_method"):
+            self.lbl_diarization_method.setText(method_text)
+
         summary_parts = [
             f"{spk}: {info.get('description', '')} ({info.get('count', 0)} câu)"
             for spk, info in self.speaker_profiles.items()

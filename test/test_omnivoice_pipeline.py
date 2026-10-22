@@ -2586,6 +2586,48 @@ def test_voice_recommendation_widget_shows_top3_for_character():
     assert any("%" in t for t in label_texts), f"Phải có nhãn điểm (%), hiện có: {label_texts}"
 
 
+def test_diarization_summary_label_updates_after_detection():
+    """
+    Xác minh sau khi _on_speakers_detected() được gọi,
+    nhãn lbl_diarization_summary hiển thị đủ thông tin:
+    số nhân vật, số câu đã phân vai.
+    """
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+    from src.ai_engines.translator import SubtitleBlock
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+
+    blk1 = SubtitleBlock(1, "00:00:01,000", "00:00:02,000", "Câu 1")
+    blk1.speaker = "Nhân vật A"
+    blk1.confidence_level = "high"
+    blk1.is_speaker_locked = True
+
+    blk2 = SubtitleBlock(2, "00:00:03,000", "00:00:04,000", "Câu 2")
+    blk2.speaker = "Nhân vật B"
+    blk2.confidence_level = "review_needed"
+    blk2.is_speaker_locked = True
+
+    blk3 = SubtitleBlock(3, "00:00:05,000", "00:00:06,000", "Câu 3")
+    blk3.speaker = "Nhân vật A"
+    blk3.confidence_level = "high"
+    blk3.is_speaker_locked = True
+
+    ui.subtitle_blocks = [blk1, blk2, blk3]
+    profiles = {
+        "Nhân vật A": CharacterVoiceProfile(speaker_id="spk_0", display_name="Nhân vật A"),
+        "Nhân vật B": CharacterVoiceProfile(speaker_id="spk_1", display_name="Nhân vật B"),
+    }
+    ui._on_speakers_detected(profiles)
+
+    summary_text = ui.lbl_diarization_summary.text()
+    assert "2" in summary_text, f"Phải đề cập 2 nhân vật: {summary_text}"
+    assert "câu" in summary_text or "3" in summary_text, f"Phải đề cập số câu: {summary_text}"
+
+
+
 
 
 
