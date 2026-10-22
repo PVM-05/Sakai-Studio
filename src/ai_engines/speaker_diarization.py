@@ -281,13 +281,94 @@ def _normalized_choice_probabilities(weights: np.ndarray) -> Optional[np.ndarray
     return probs
 
 
+def agglomerative_cluster_embeddings(
+    embeddings: np.ndarray,
+    threshold: float = 0.40,
+    exact_k: Optional[int] = None,
+    min_k: int = 1,
+    max_k: int = 6,
+) -> np.ndarray:
+    """
+    Phân cụm thứ bậc tích lũy (Agglomerative Hierarchical Clustering) theo khoảng cách cosin
+    và liên kết trung bình (Average Linkage).
+    
+    Hỗ trợ chế độ chỉ định chính xác số cụm (exact_k) hoặc tự động dừng theo ngưỡng khoảng cách (threshold).
+    """
+    n_samples = embeddings.shape[0]
+    if n_samples == 0:
+        return np.array([], dtype=np.int32)
+    if n_samples == 1:
+        return np.zeros(1, dtype=np.int32)
+
+    # Chuẩn hóa L2 phòng ngừa
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    norm_embs = embeddings / np.maximum(norms, 1e-12)
+
+    # Ma trận khoảng cách cosin N x N
+    sim_matrix = np.dot(norm_embs, norm_embs.T)
+    dist_matrix = np.maximum(0.0, 1.0 - sim_matrix)
+    np.fill_diagonal(dist_matrix, 0.0)
+
+    # Khởi tạo mỗi mẫu là một cụm riêng biệt
+    clusters: List[List[int]] = [[i] for i in range(n_samples)]
+
+    target_k = None
+    if exact_k is not None:
+        target_k = max(1, min(int(exact_k), n_samples))
+
+    effective_max_k = max(1, min(int(max_k), n_samples))
+
+    while len(clusters) > 1:
+        if target_k is not None and len(clusters) <= target_k:
+            break
+
+        n_c = len(clusters)
+        min_dist = float("inf")
+        merge_i, merge_j = -1, -1
+
+        # Tìm 2 cụm có khoảng cách liên kết trung bình nhỏ nhất
+        for i in range(n_c):
+            c_i = clusters[i]
+            for j in range(i + 1, n_c):
+                c_j = clusters[j]
+                sub_dists = dist_matrix[np.ix_(c_i, c_j)]
+                avg_dist = float(np.mean(sub_dists))
+                if avg_dist < min_dist:
+                    min_dist = avg_dist
+                    merge_i, merge_j = i, j
+
+        if target_k is None:
+            # Chế độ tự động theo ngưỡng: nếu khoảng cách nhỏ nhất đã vượt threshold và số cụm đã <= max_k
+            if min_dist > threshold and len(clusters) <= effective_max_k:
+                break
+            if len(clusters) <= min_k:
+                break
+
+        # Gộp cụm merge_j vào cụm merge_i và xóa cụm merge_j
+        clusters[merge_i].extend(clusters[merge_j])
+        clusters.pop(merge_j)
+
+    # Sắp xếp các cụm theo chỉ số phần tử xuất hiện đầu tiên để nhãn ổn định
+    clusters.sort(key=lambda c: min(c))
+    labels = np.zeros(n_samples, dtype=np.int32)
+    for label_idx, c_members in enumerate(clusters):
+        for member_idx in c_members:
+            labels[member_idx] = label_idx
+
+    return labels
+
+
 def cosine_cluster_embeddings(
     embeddings: np.ndarray,
     valid_indices: List[int],
     max_speakers: int = 6,
+    exact_speakers: Optional[int] = None,
+    distance_threshold: float = 0.40,
+    sample_durations: Optional[List[float]] = None,
 ) -> Tuple[np.ndarray, List[str], List[float]]:
     """
     Phân cụm các vector đặc trưng theo khoảng cách cosin và xếp hạng 3 mức độ tin cậy.
+    Sử dụng thuật toán Phân cụm Thứ bậc (AHC) kết hợp cơ chế mẫu nòng cốt (Anchor Segments).
     Trả về bộ ba (labels, confidence_levels, confidence_scores).
     """
     n_samples = embeddings.shape[0]
@@ -295,7 +376,6 @@ def cosine_cluster_embeddings(
         return np.array([], dtype=np.int32), [], []
 
     if n_samples == 1:
-        # Một câu không đủ dữ liệu để đánh giá mức tách biệt với người nói khác.
         return (
             np.zeros(1, dtype=np.int32),
             [ConfidenceLevel.REVIEW_NEEDED.value],
@@ -306,137 +386,51 @@ def cosine_cluster_embeddings(
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     norm_embs = embeddings / np.maximum(norms, 1e-12)
 
-    # Tính ma trận độ tương đồng cosin và khoảng cách cosin
-    sim_matrix = np.dot(norm_embs, norm_embs.T)
-    dist_matrix = np.maximum(0.0, 1.0 - sim_matrix)
+    # 1. Cơ chế mẫu nòng cốt (Anchor-based): Lọc các câu thoại >= 0.8s
+    anchor_indices: List[int] = []
+    if sample_durations is not None and len(sample_durations) == n_samples:
+        anchor_indices = [idx for idx, d in enumerate(sample_durations) if d >= 0.80]
+        # Nếu quá ít câu >= 0.8s, nới lỏng xuống 0.5s
+        if len(anchor_indices) < 2:
+            anchor_indices = [idx for idx, d in enumerate(sample_durations) if d >= 0.50]
 
-    # Tính tâm cụm toàn cục và khoảng cách trung bình
-    c_global = np.mean(norm_embs, axis=0)
-    c_global /= np.maximum(np.linalg.norm(c_global), 1e-12)
-    dists_to_center = 1.0 - np.dot(norm_embs, c_global)
-    mean_dist_to_center = float(np.mean(dists_to_center))
-    max_dist_to_center = float(np.max(dists_to_center))
-    max_dist = float(np.max(dist_matrix))
+    # Nếu có đủ mẫu nòng cốt và có một số mẫu ngắn cần gán
+    if len(anchor_indices) >= 2 and len(anchor_indices) < n_samples:
+        anchor_embs = norm_embs[anchor_indices]
+        anchor_labels = agglomerative_cluster_embeddings(
+            anchor_embs,
+            threshold=distance_threshold,
+            exact_k=exact_speakers,
+            max_k=max_speakers,
+        )
 
-    # Đánh giá giả thuyết 1 người nói (k = 1) ngay từ đầu:
-    # Cần thỏa mãn đồng thời: khoảng cách cặp tối đa an toàn (< 0.35) VÀ khoảng cách xa nhất tới tâm < 0.25
-    if max_dist < 0.35 and max_dist_to_center < 0.25:
+        unique_k = np.unique(anchor_labels)
+        cluster_centers: Dict[int, np.ndarray] = {}
+        for c_i in unique_k:
+            members = anchor_embs[anchor_labels == c_i]
+            c_vec = np.mean(members, axis=0)
+            cluster_centers[c_i] = c_vec / np.maximum(np.linalg.norm(c_vec), 1e-12)
+
+        # Gán nhãn cho toàn bộ n_samples
         best_labels = np.zeros(n_samples, dtype=np.int32)
-        conf_levels: List[str] = []
-        conf_scores: List[float] = []
-        for idx in range(n_samples):
-            d_own = float(dists_to_center[idx])
-            score = float(np.clip(1.0 - d_own, 0.0, 1.0))
-            conf_scores.append(score)
-            if d_own <= 0.35:
-                conf_levels.append(ConfidenceLevel.HIGH.value)
-            elif d_own > 0.40:
-                conf_levels.append(ConfidenceLevel.REVIEW_NEEDED.value)
-            else:
-                conf_levels.append(ConfidenceLevel.HIGH.value)
-        return best_labels, conf_levels, conf_scores
+        for i, idx in enumerate(anchor_indices):
+            best_labels[idx] = anchor_labels[i]
 
-    # Cho phép thử nghiệm đủ dải ứng viên từ 2 tới min(max_speakers, n_samples)
-    max_k = max(2, min(max_speakers, n_samples))
+        non_anchor = [idx for idx in range(n_samples) if idx not in anchor_indices]
+        for idx in non_anchor:
+            # Gán vào tâm cụm gần nhất
+            dists = [1.0 - float(np.dot(norm_embs[idx], cluster_centers[c_i])) for c_i in unique_k]
+            best_labels[idx] = unique_k[int(np.argmin(dists))]
+    else:
+        # Phân cụm trực tiếp toàn bộ mẫu bằng AHC
+        best_labels = agglomerative_cluster_embeddings(
+            norm_embs,
+            threshold=distance_threshold,
+            exact_k=exact_speakers,
+            max_k=max_speakers,
+        )
 
-    best_labels = np.zeros(n_samples, dtype=np.int32)
-    best_score = -1.0
-    rng = np.random.default_rng(42)
-
-    for k in range(2, max_k + 1):
-        # Khởi tạo tâm cụm k-means++ theo khoảng cách cosin
-        centers = np.zeros((k, norm_embs.shape[1]), dtype=np.float32)
-        centers[0] = norm_embs[rng.integers(0, n_samples)]
-        for c_i in range(1, k):
-            dists = np.min([np.sum((norm_embs - centers[j]) ** 2, axis=1) for j in range(c_i)], axis=0)
-            total_dist = float(np.sum(dists))
-            if not np.isfinite(total_dist) or total_dist <= 1e-12:
-                # Các embedding trùng nhau: tránh xác suất toàn số 0 gây lỗi khởi tạo cụm.
-                chosen_idx = int(rng.integers(0, n_samples))
-            else:
-                probs = _normalized_choice_probabilities(dists)
-                if probs is None:
-                    # Dự phòng an toàn nếu trọng số bị suy biến hoặc không hữu hạn.
-                    chosen_idx = int(rng.integers(0, n_samples))
-                else:
-                    chosen_idx = int(rng.choice(n_samples, p=probs))
-            centers[c_i] = norm_embs[chosen_idx]
-
-        labels = np.zeros(n_samples, dtype=np.int32)
-        for _ in range(25):
-            # Tính khoảng cách tới các tâm cụm
-            sims = np.dot(norm_embs, centers.T)
-            new_labels = np.argmax(sims, axis=1).astype(np.int32)
-            if np.array_equal(new_labels, labels):
-                break
-            labels = new_labels
-            for c_i in range(k):
-                members = norm_embs[labels == c_i]
-                if len(members) > 0:
-                    c_vec = np.mean(members, axis=0)
-                    centers[c_i] = c_vec / np.maximum(np.linalg.norm(c_vec), 1e-12)
-                else:
-                    centers[c_i] = norm_embs[rng.integers(0, n_samples)]
-
-        unique_clusters = np.unique(labels)
-        if len(unique_clusters) < 2:
-            continue
-
-        # Kiểm tra khoảng cách giữa các tâm cụm: Nếu 2 tâm cụm quá gần (< 0.30), bỏ qua nghiệm này
-        center_sims = np.dot(centers, centers.T)
-        np.fill_diagonal(center_sims, -1.0)
-        min_center_dist = float(1.0 - np.max(center_sims))
-        if min_center_dist < 0.30:
-            continue
-
-        # Đánh giá hệ số phân tách Silhouette theo khoảng cách cosin
-        sil_scores = []
-        for idx in range(n_samples):
-            own_c = labels[idx]
-            same_mask = (labels == own_c)
-            same_mask[idx] = False
-            if not np.any(same_mask):
-                # Chuẩn toán học: cụm đơn lẻ không có khoảng cách nội cụm -> gán Silhouette = 0.0
-                sil_scores.append(0.0)
-                continue
-
-            a_val = float(np.mean(dist_matrix[idx, same_mask]))
-            b_val = float("inf")
-            for other_c in unique_clusters:
-                if other_c == own_c:
-                    continue
-                other_mask = (labels == other_c)
-                if np.any(other_mask):
-                    dist_other = float(np.mean(dist_matrix[idx, other_mask]))
-                    if dist_other < b_val:
-                        b_val = dist_other
-
-            denom = max(a_val, b_val, 1e-6)
-            sil_scores.append((b_val - a_val) / denom)
-
-        mean_sil = float(np.mean(sil_scores)) if sil_scores else -1.0
-        if mean_sil > best_score:
-            best_score = mean_sil
-            best_labels = labels.copy()
-
-    # Nếu nghiệm tốt nhất có Silhouette < 0.25: dữ liệu không đủ phân tách -> giả thuyết 1 người nói (k = 1)
-    if best_score < 0.25:
-        best_labels = np.zeros(n_samples, dtype=np.int32)
-        conf_levels = []
-        conf_scores = []
-        for idx in range(n_samples):
-            d_own = float(1.0 - np.dot(norm_embs[idx], c_global))
-            score = float(np.clip(1.0 - d_own, 0.0, 1.0))
-            conf_scores.append(score)
-            if d_own <= 0.35:
-                conf_levels.append(ConfidenceLevel.HIGH.value)
-            elif d_own > 0.40:
-                conf_levels.append(ConfidenceLevel.REVIEW_NEEDED.value)
-            else:
-                conf_levels.append(ConfidenceLevel.HIGH.value)
-        return best_labels, conf_levels, conf_scores
-
-    # Tính toán tâm cụm tối ưu cuối cùng
+    # Tính toán tâm cụm cuối cùng
     unique_k = np.unique(best_labels)
     cluster_centers: Dict[int, np.ndarray] = {}
     for c_i in unique_k:
@@ -444,7 +438,6 @@ def cosine_cluster_embeddings(
         c_vec = np.mean(members, axis=0)
         cluster_centers[c_i] = c_vec / np.maximum(np.linalg.norm(c_vec), 1e-12)
 
-    # Tính toán kích thước của từng cụm
     cluster_sizes = {c_i: int(np.sum(best_labels == c_i)) for c_i in unique_k}
 
     # Phân loại 3 mức độ tin cậy cho từng mẫu
@@ -456,7 +449,6 @@ def cosine_cluster_embeddings(
         own_center = cluster_centers[own_c]
         d_own = float(1.0 - np.dot(norm_embs[idx], own_center))
 
-        # Tính khoảng cách tới tâm cụm thứ hai gần nhất
         d_second = float("inf")
         for other_c, other_center in cluster_centers.items():
             if other_c == own_c:
@@ -469,12 +461,12 @@ def cosine_cluster_embeddings(
         score = float(np.clip(1.0 - d_own, 0.0, 1.0))
         conf_scores.append(score)
 
-        # Cụm đơn lẻ (chỉ có 1-2 câu trong bộ dữ liệu lớn) cần được rà soát
-        if cluster_sizes.get(own_c, 0) < 2 and n_samples >= 4:
+        is_short = bool(sample_durations and idx < len(sample_durations) and sample_durations[idx] < 0.60)
+        if (cluster_sizes.get(own_c, 0) < 2 and n_samples >= 4) or is_short:
             conf_levels.append(ConfidenceLevel.REVIEW_NEEDED.value)
-        elif gap >= 0.20 and d_own <= 0.20:
+        elif gap >= 0.18 and d_own <= 0.22:
             conf_levels.append(ConfidenceLevel.HIGH.value)
-        elif gap < 0.12 or d_own > 0.25:
+        elif gap < 0.10 or d_own > 0.28:
             conf_levels.append(ConfidenceLevel.REVIEW_NEEDED.value)
         else:
             conf_levels.append(ConfidenceLevel.HIGH.value)

@@ -2804,3 +2804,39 @@ def test_download_speaker_embedding_model_uses_existing_or_downloads(tmp_path, m
     assert called_hf[0][0] == "welcomyou/campplus-3dspeaker-200k-onnx"
     assert "campplus" in called_hf[0][1]
     assert Path(res2).is_file()
+
+
+def test_agglomerative_clustering_handles_imbalance_and_exact_k():
+    """
+    Xác minh thuật toán phân cụm thứ bậc AHC:
+    1. Tách chính xác trường hợp mất cân bằng (10 câu của người A, 2 câu của người B).
+    2. Hỗ trợ exact_k: khi yêu cầu exact_k=2 thì ép ra đúng 2 cụm.
+    3. Hỗ trợ exact_k=3 thì ép ra đúng 3 cụm.
+    """
+    import numpy as np
+    from src.ai_engines.speaker_diarization import agglomerative_cluster_embeddings
+
+    rng = np.random.default_rng(42)
+    center_a = np.zeros(192, dtype=np.float32)
+    center_a[0] = 1.0
+    center_b = np.zeros(192, dtype=np.float32)
+    center_b[1] = 1.0
+
+    embs_a = center_a + rng.normal(0, 0.05, (10, 192)).astype(np.float32)
+    embs_b = center_b + rng.normal(0, 0.05, (2, 192)).astype(np.float32)
+    embeddings = np.vstack([embs_a, embs_b])
+
+    # 1. Tự động theo ngưỡng (threshold=0.40) -> Phải tách được đúng 2 cụm
+    labels_auto = agglomerative_cluster_embeddings(embeddings, threshold=0.40)
+    assert len(np.unique(labels_auto)) == 2
+    assert np.all(labels_auto[:10] == labels_auto[0])
+    assert np.all(labels_auto[10:] == labels_auto[10])
+    assert labels_auto[0] != labels_auto[10]
+
+    # 2. Cố định exact_k=2
+    labels_exact2 = agglomerative_cluster_embeddings(embeddings, exact_k=2)
+    assert len(np.unique(labels_exact2)) == 2
+
+    # 3. Cố định exact_k=3
+    labels_exact3 = agglomerative_cluster_embeddings(embeddings, exact_k=3)
+    assert len(np.unique(labels_exact3)) == 3
