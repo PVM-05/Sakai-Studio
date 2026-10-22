@@ -600,7 +600,18 @@ class OmniVoiceInterface(ScrollArea):
 
         p0_layout.addWidget(sub_file_card)
 
-        general_voice_card = CardWidget(self.page_step_0)
+        # Nút chuyển đổi thu gọn thiết lập giọng mặc định (mặc định đóng để giảm rối mắt)
+        self.btn_toggle_default_voice_settings = PushButton("Tùy Chọn Giọng Mặc Định (Dự Phòng)", self.page_step_0)
+        self.btn_toggle_default_voice_settings.setIcon(FluentIcon.CHEVRON_RIGHT_MED)
+        self.btn_toggle_default_voice_settings.clicked.connect(self._toggle_default_voice_settings)
+        p0_layout.addWidget(self.btn_toggle_default_voice_settings)
+
+        self.default_voice_settings_container = QWidget(self.page_step_0)
+        default_voice_layout = QVBoxLayout(self.default_voice_settings_container)
+        default_voice_layout.setContentsMargins(0, 0, 0, 0)
+        default_voice_layout.setSpacing(10)
+
+        general_voice_card = CardWidget(self.default_voice_settings_container)
         general_voice_layout = QVBoxLayout(general_voice_card)
         general_voice_layout.setContentsMargins(18, 14, 18, 14)
         general_voice_layout.setSpacing(10)
@@ -658,9 +669,9 @@ class OmniVoiceInterface(ScrollArea):
         vn_catalog_row.addWidget(self.btn_preview_vn_voice)
         vn_catalog_row.addWidget(self.btn_use_vn_voice_as_ref)
         general_voice_layout.addLayout(vn_catalog_row)
-        p0_layout.addWidget(general_voice_card)
+        default_voice_layout.addWidget(general_voice_card)
 
-        self.voice_source_stack = QStackedWidget(self.page_step_0)
+        self.voice_source_stack = QStackedWidget(self.default_voice_settings_container)
 
         self.clone_card = CardWidget(self.voice_source_stack)
         clone_layout = QGridLayout(self.clone_card)
@@ -770,7 +781,9 @@ class OmniVoiceInterface(ScrollArea):
         auto_voice_layout.addWidget(lbl_auto_desc)
         self.voice_source_stack.addWidget(self.auto_voice_card)
 
-        p0_layout.addWidget(self.voice_source_stack)
+        default_voice_layout.addWidget(self.voice_source_stack)
+        self.default_voice_settings_container.setVisible(False)
+        p0_layout.addWidget(self.default_voice_settings_container)
         self.step_stack.addWidget(self.page_step_0)
 
         # ---------------------------------------------------------------------
@@ -1568,8 +1581,23 @@ class OmniVoiceInterface(ScrollArea):
         if hasattr(config, "mmoTTSInstructCustom"):
             config.set(config.mmoTTSInstructCustom, self.edit_instruct_preview.text().strip())
 
+    def _toggle_default_voice_settings(self):
+        """Chuyển đổi trạng thái thu gọn / mở rộng của khối thiết lập giọng mặc định ở Bước 0."""
+        if not hasattr(self, "default_voice_settings_container"):
+            return
+        is_vis = not self.default_voice_settings_container.isVisible()
+        self.default_voice_settings_container.setVisible(is_vis)
+        if hasattr(self, "btn_toggle_default_voice_settings"):
+            self.btn_toggle_default_voice_settings.setIcon(
+                FluentIcon.CHEVRON_DOWN_MED if is_vis else FluentIcon.CHEVRON_RIGHT_MED
+            )
+
     def _on_mode_changed(self, index: int):
         self.voice_source_stack.setCurrentIndex(index)
+        if index == 2:
+            self.voice_source_stack.setVisible(False)
+        else:
+            self.voice_source_stack.setVisible(True)
         self._save_ui_to_config()
         self._update_control_states()
 

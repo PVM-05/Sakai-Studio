@@ -2627,6 +2627,42 @@ def test_diarization_summary_label_updates_after_detection():
     assert "câu" in summary_text or "3" in summary_text, f"Phải đề cập số câu: {summary_text}"
 
 
+def test_step0_default_voice_settings_collapsible_and_adaptive_mode():
+    """
+    Xác minh Bước 0 (Nguồn Đầu Vào):
+    1. Có nút thu gọn/mở rộng thiết lập giọng mặc định (mặc định đóng để giảm rối mắt).
+    2. Khi chuyển chế độ tạo giọng, các khối điều khiển không liên quan tự động ẩn.
+    """
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+
+    # 1. Kiểm tra trạng thái thu gọn ban đầu
+    assert hasattr(ui, "btn_toggle_default_voice_settings"), "Thiếu nút chuyển đổi thu gọn thiết lập giọng mặc định"
+    assert hasattr(ui, "default_voice_settings_container"), "Thiếu khung chứa thiết lập giọng mặc định"
+    assert ui.default_voice_settings_container.isHidden(), "Mặc định khung thiết lập giọng mặc định phải thu gọn (ẩn)"
+
+    # Bấm mở rộng
+    ui.btn_toggle_default_voice_settings.click()
+    assert not ui.default_voice_settings_container.isHidden(), "Sau khi bấm mở, khung thiết lập giọng phải hiển thị"
+
+    # 2. Kiểm tra hiển thị thích ứng theo chế độ tạo giọng
+    # Chế độ 0: Nhân bản
+    ui.combo_mode.setCurrentIndex(0)
+    assert ui.voice_source_stack.currentWidget() == ui.clone_card
+
+    # Chế độ 1: Thiết kế
+    ui.combo_mode.setCurrentIndex(1)
+    assert ui.voice_source_stack.currentWidget() == ui.design_card
+
+    # Chế độ 2: Tự động
+    ui.combo_mode.setCurrentIndex(2)
+    assert ui.voice_source_stack.isHidden()
+
+
+
 
 
 
