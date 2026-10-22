@@ -2731,7 +2731,7 @@ def test_stepper_step_state_sync_and_validation():
     """
     Xác minh thanh điều hướng 5 bước:
     1. Cập nhật kiểu dáng cho bước hiện tại.
-    2. Ngăn chặn chuyển sang Bước 1, 2 nếu chưa có tệp phụ đề nào được nạp.
+    2. Ngăn chặn chuyển sang Bước 1, 2 nếu chưa có tệp phụ đề nào được nạp khi bấm nút trên giao diện.
     3. Cho phép chuyển bước bình thường khi đã có phụ đề hợp lệ.
     """
     from PySide6.QtWidgets import QApplication
@@ -2746,14 +2746,14 @@ def test_stepper_step_state_sync_and_validation():
     can_switch = ui._can_switch_to_step(1)
     assert not can_switch, "Chưa nạp phụ đề thì không được phép chuyển sang Bước 1"
 
-    # Thử gọi chuyển bước: vẫn phải ở Bước 0
-    ui._switch_to_step(1)
+    # Thử gọi bấm nút chuyển bước trên giao diện: vẫn phải ở Bước 0
+    ui._on_step_button_clicked(1)
     assert ui.current_step_index == 0, "Không đủ điều kiện phải được giữ lại ở Bước 0"
 
     # Đã nạp phụ đề: cho phép chuyển sang Bước 1
     ui.subtitle_blocks = [SubtitleBlock(1, "00:00:01,000", "00:00:02,000", "Câu 1")]
     assert ui._can_switch_to_step(1) is True
-    ui._switch_to_step(1)
+    ui._on_step_button_clicked(1)
     assert ui.current_step_index == 1
 
 

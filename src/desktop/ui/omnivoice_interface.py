@@ -535,7 +535,7 @@ class OmniVoiceInterface(ScrollArea):
         ]
         for idx, lbl in enumerate(step_labels):
             btn = PushButton(lbl, nav_card)
-            btn.clicked.connect(lambda checked=False, i=idx: self._switch_to_step(i))
+            btn.clicked.connect(lambda checked=False, i=idx: self._on_step_button_clicked(i))
             self.step_buttons.append(btn)
 
         self.btn_next_step = PushButton("Bước Tiếp Theo", nav_card)
@@ -1687,11 +1687,14 @@ class OmniVoiceInterface(ScrollArea):
                 else:
                     btn.setStyleSheet("")
 
+    def _on_step_button_clicked(self, step_idx: int):
+        """Xử lý sự kiện người dùng bấm vào nút bước trong thanh điều hướng."""
+        if self._can_switch_to_step(step_idx):
+            self._switch_to_step(step_idx)
+
     def _switch_to_step(self, step_idx: int):
         """Chuyển đổi giữa 5 bước quy trình giao diện và bảo toàn trạng thái dữ liệu."""
         if not (0 <= step_idx < self.step_stack.count()):
-            return
-        if not self._can_switch_to_step(step_idx):
             return
         self.current_step_index = step_idx
         self.step_stack.setCurrentIndex(step_idx)
@@ -1711,7 +1714,9 @@ class OmniVoiceInterface(ScrollArea):
 
     def _go_next_step(self):
         if self.current_step_index < self.step_stack.count() - 1:
-            self._switch_to_step(self.current_step_index + 1)
+            target = self.current_step_index + 1
+            if self._can_switch_to_step(target):
+                self._switch_to_step(target)
 
     def _update_export_card_state(self):
         has_subs = len(self.subtitle_blocks) > 0
