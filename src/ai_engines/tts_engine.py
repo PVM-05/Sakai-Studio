@@ -1346,6 +1346,8 @@ class TTSEngine:
         video_path: str,
         blocks: List[SubtitleBlock],
         max_speakers: int = 4,
+        exact_speakers: Optional[int] = None,
+        clustering_sensitivity: str = "standard",
         prefer_cuda: Optional[bool] = None,
         allow_mock: Optional[bool] = None,
     ) -> Dict[str, Dict[str, Any]]:
@@ -1422,10 +1424,19 @@ class TTSEngine:
                 except Exception:
                     self.log("Không thể dọn cache CUDA trước khi chạy ONNX; tiếp tục với kiểm soát lỗi.")
 
+            sensitivity_map = {
+                "standard": 0.40,
+                "high": 0.34,
+                "low": 0.46,
+            }
+            distance_threshold = sensitivity_map.get(clustering_sensitivity, 0.40)
+
             diar_profiles = coordinator.process_video_subtitles(
                 video_path=source_audio_for_diarization,
                 blocks=blocks,
                 max_speakers=max_speakers,
+                exact_speakers=exact_speakers,
+                distance_threshold=distance_threshold,
                 prefer_cuda=use_cuda,
                 temp_dir=self.voice_prompt_cache_dir,
             )

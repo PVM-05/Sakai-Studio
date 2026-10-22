@@ -2858,3 +2858,50 @@ def test_audio_chunk_boundary_clamping_prevents_bleeding():
     )
     assert pad_before <= 0.031
     assert pad_after == 0.15
+
+
+def test_tts_engine_detect_speakers_forwards_exact_k_and_sensitivity(tmp_path):
+    """
+    Xác minh TTSEngine.detect_speakers_from_video:
+    1. Chấp nhận các tham số exact_speakers và clustering_sensitivity.
+    2. Chuyển đổi chính xác clustering_sensitivity ('high' -> 0.34, 'low' -> 0.46, 'standard' -> 0.40).
+    3. Truyền đúng exact_speakers và distance_threshold xuống process_video_subtitles.
+    """
+    from unittest.mock import MagicMock, patch
+    from src.ai_engines.tts_engine import TTSEngine, SubtitleBlock
+
+    engine = TTSEngine()
+    b1 = SubtitleBlock(index=1, start_time="00:00:01,000", end_time="00:00:03,000", text="Câu một")
+    b2 = SubtitleBlock(index=2, start_time="00:00:04,000", end_time="00:00:06,000", text="Câu hai")
+    vid_file = str(tmp_path / "mock.mp4")
+    with open(vid_file, "wb") as f:
+        f.write(b"mock")
+
+    with patch("src.ai_engines.tts_engine.VoiceSeparator") as mock_sep_cls, \
+         patch("src.ai_engines.speaker_diarization.SpeakerDiarizationCoordinator.process_video_subtitles") as mock_process:
+
+        mock_sep = MagicMock()
+        mock_sep.separate_from_video.return_value = False
+        def fake_extract(v, out):
+            with open(out, "wb") as f:
+                f.write(b"mock_audio")
+            return True
+        mock_sep._extract_audio.side_effect = fake_extract
+        mock_sep_cls.return_value = mock_sep
+        mock_process.return_value = {}
+
+        # Gọi với exact_speakers=2 và clustering_sensitivity="high"
+        engine.detect_speakers_from_video(
+            video_path=vid_file,
+            blocks=[b1, b2],
+            max_speakers=5,
+            exact_speakers=2,
+            clustering_sensitivity="high",
+            allow_mock=True,
+        )
+
+        assert mock_process.called
+        _, kwargs = mock_process.call_args
+        assert kwargs.get("exact_speakers") == 2
+        assert kwargs.get("distance_threshold") == 0.34
+        assert kwargs.get("max_speakers") == 5
