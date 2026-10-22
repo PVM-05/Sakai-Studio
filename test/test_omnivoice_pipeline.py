@@ -2727,6 +2727,37 @@ def test_step2_contextual_toolbar_enables_only_on_subtitle_selection():
     assert ui.btn_insert_tag_to_sub.isEnabled(), "Đã chọn dòng thì nút chèn biểu cảm phải bật"
 
 
+def test_stepper_step_state_sync_and_validation():
+    """
+    Xác minh thanh điều hướng 5 bước:
+    1. Cập nhật kiểu dáng cho bước hiện tại.
+    2. Ngăn chặn chuyển sang Bước 1, 2 nếu chưa có tệp phụ đề nào được nạp.
+    3. Cho phép chuyển bước bình thường khi đã có phụ đề hợp lệ.
+    """
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.translator import SubtitleBlock
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+
+    # Chưa có phụ đề: thử chuyển sang Bước 1
+    ui.subtitle_blocks = []
+    can_switch = ui._can_switch_to_step(1)
+    assert not can_switch, "Chưa nạp phụ đề thì không được phép chuyển sang Bước 1"
+
+    # Thử gọi chuyển bước: vẫn phải ở Bước 0
+    ui._switch_to_step(1)
+    assert ui.current_step_index == 0, "Không đủ điều kiện phải được giữ lại ở Bước 0"
+
+    # Đã nạp phụ đề: cho phép chuyển sang Bước 1
+    ui.subtitle_blocks = [SubtitleBlock(1, "00:00:01,000", "00:00:02,000", "Câu 1")]
+    assert ui._can_switch_to_step(1) is True
+    ui._switch_to_step(1)
+    assert ui.current_step_index == 1
+
+
+
 
 
 

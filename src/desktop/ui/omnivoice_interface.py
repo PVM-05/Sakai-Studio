@@ -1650,19 +1650,54 @@ class OmniVoiceInterface(ScrollArea):
     # =========================================================================
     # QUY TRÌNH ĐIỀU HƯỚNG 5 BƯỚC & QUẢN LÝ BẢNG NHÂN VẬT
     # =========================================================================
+    def _can_switch_to_step(self, target_idx: int) -> bool:
+        """Kiểm tra điều kiện chuyển sang bước mục tiêu."""
+        if target_idx == 0:
+            return True
+        if target_idx in (1, 2, 3, 4):
+            if not self.subtitle_blocks:
+                InfoBar.warning(
+                    title="Chưa nạp phụ đề",
+                    content="Vui lòng nạp tệp phụ đề ở Bước 1 trước khi tiếp tục.",
+                    parent=self,
+                    duration=3000,
+                )
+                return False
+        return True
+
+    def _update_step_navigation_states(self):
+        """Cập nhật hiển thị màu sắc và trạng thái của các nút bước trong thanh điều hướng."""
+        has_subs = len(self.subtitle_blocks) > 0
+        has_cast = len(self.speaker_profiles) > 0
+
+        for idx, btn in enumerate(self.step_buttons):
+            if idx == self.current_step_index:
+                btn.setStyleSheet("font-weight: bold; background-color: #0078D4; color: white; border-radius: 6px;")
+            else:
+                is_completed = False
+                if idx == 0 and has_subs:
+                    is_completed = True
+                elif idx == 1 and has_cast:
+                    is_completed = True
+                elif idx == 2 and has_subs:
+                    is_completed = True
+
+                if is_completed:
+                    btn.setStyleSheet("color: #107C41; font-weight: 500;")
+                else:
+                    btn.setStyleSheet("")
+
     def _switch_to_step(self, step_idx: int):
         """Chuyển đổi giữa 5 bước quy trình giao diện và bảo toàn trạng thái dữ liệu."""
         if not (0 <= step_idx < self.step_stack.count()):
+            return
+        if not self._can_switch_to_step(step_idx):
             return
         self.current_step_index = step_idx
         self.step_stack.setCurrentIndex(step_idx)
         self.btn_prev_step.setEnabled(step_idx > 0)
         self.btn_next_step.setEnabled(step_idx < self.step_stack.count() - 1)
-        for idx, btn in enumerate(self.step_buttons):
-            if idx == step_idx:
-                btn.setStyleSheet("font-weight: bold; background-color: #0078D4; color: white;")
-            else:
-                btn.setStyleSheet("")
+        self._update_step_navigation_states()
         if step_idx == 1:
             self._update_casting_table()
         elif step_idx == 2:
