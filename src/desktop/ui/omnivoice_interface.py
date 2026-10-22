@@ -1775,11 +1775,31 @@ class OmniVoiceInterface(ScrollArea):
             item_status.setFlags(item_status.flags() & ~Qt.ItemIsEditable)
             self.casting_table.setItem(row, 5, item_status)
 
-            # Cột 6: Thao Tác (Nghe Thử)
-            btn_act = PushButton("Nghe Thử", self.casting_table)
-            btn_act.setIcon(FluentIcon.VOLUME)
-            btn_act.clicked.connect(lambda checked=False, s=spk_name: self._preview_character_voice(s))
-            self.casting_table.setCellWidget(row, 6, btn_act)
+            # Cột 6: Hai nút nghe tách biệt
+            cell_listen = QWidget(self.casting_table)
+            layout_listen = QHBoxLayout(cell_listen)
+            layout_listen.setContentsMargins(2, 1, 2, 1)
+            layout_listen.setSpacing(4)
+
+            prof_item = self.speaker_profiles.get(spk_name)
+            has_orig_audio = bool(
+                getattr(prof_item, "source_audio_path", "")
+                or (prof_item.get("source_audio_path", "") if isinstance(prof_item, dict) else "")
+            )
+            btn_orig = PushButton("Nghe Giọng Gốc", cell_listen)
+            btn_orig.setIcon(FluentIcon.MUSIC)
+            btn_orig.setToolTip("Phát đoạn âm thanh gốc đã trích xuất từ video cho nhân vật này")
+            btn_orig.setEnabled(has_orig_audio)
+            btn_orig.clicked.connect(lambda checked=False, s=spk_name: self._preview_character_voice(s))
+            layout_listen.addWidget(btn_orig)
+
+            btn_ai = PushButton("Nghe Thử Giọng Trí Tuệ Nhân Tạo", cell_listen)
+            btn_ai.setIcon(FluentIcon.VOLUME)
+            btn_ai.setToolTip("Tổng hợp câu thoại đầu tiên bằng giọng trí tuệ nhân tạo đang được gán cho nhân vật này")
+            btn_ai.clicked.connect(lambda checked=False, s=spk_name, b=btn_ai: self._audition_character_voice(s, b))
+            layout_listen.addWidget(btn_ai)
+
+            self.casting_table.setCellWidget(row, 6, cell_listen)
 
         self._sync_speaker_selectors()
         self.casting_table.blockSignals(False)

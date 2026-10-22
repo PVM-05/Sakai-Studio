@@ -2520,6 +2520,41 @@ def test_audition_all_queue_continues_on_individual_failure():
     assert len(called_next) == 1
 
 
+def test_casting_table_has_two_separate_listen_buttons():
+    """
+    Xác minh bảng phân vai có đúng 2 nút nghe riêng biệt cho mỗi nhân vật:
+    - Nút 'Nghe Giọng Gốc' (phát mẫu âm thanh gốc).
+    - Nút 'Nghe Thử Giọng Trí Tuệ Nhân Tạo' (tổng hợp câu thử).
+    Không có nút chỉ mang tên 'Nghe Thử' không rõ nguồn gốc.
+    """
+    from PySide6.QtWidgets import QApplication, QPushButton
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+
+    ui.speaker_profiles = {
+        "Nhân vật A": CharacterVoiceProfile(
+            speaker_id="spk_0",
+            display_name="Nhân vật A",
+            source_audio_path="/fake/audio.wav",
+        )
+    }
+    ui._update_casting_table()
+
+    cell_widget = ui.casting_table.cellWidget(0, 6)
+    assert cell_widget is not None, "Ô cột 6 phải có widget chứa các nút nghe"
+
+    buttons = cell_widget.findChildren(QPushButton)
+    btn_texts = [b.text() for b in buttons]
+
+    assert any("Giọng Gốc" in t for t in btn_texts), f"Thiếu nút Nghe Giọng Gốc, chỉ có: {btn_texts}"
+    assert any("Trí Tuệ Nhân Tạo" in t for t in btn_texts), f"Thiếu nút Nghe Thử Giọng TTNNT, chỉ có: {btn_texts}"
+    assert not any(t.strip() == "Nghe Thử" for t in btn_texts), f"Nút không rõ nguồn 'Nghe Thử' vẫn còn: {btn_texts}"
+
+
+
 
 
 
