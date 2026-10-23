@@ -190,6 +190,31 @@ MULTI_SPEAKER_MODE_ITEMS = [
 ]
 
 
+def is_valid_media_file(path: str) -> bool:
+    """
+    Kiểm tra một đường dẫn có phải là tệp âm thanh hoặc video hợp lệ hay không:
+    - Đường dẫn tồn tại và là tệp thông thường (không phải thư mục).
+    - Dung lượng tệp lớn hơn 0 byte.
+    - Phần mở rộng thuộc danh sách định dạng video hoặc âm thanh được hỗ trợ.
+    """
+    if not path or not isinstance(path, str):
+        return False
+    if not os.path.isfile(path):
+        return False
+    try:
+        if os.path.getsize(path) <= 0:
+            return False
+    except OSError:
+        return False
+
+    valid_exts = {
+        ".mp4", ".mkv", ".avi", ".mov", ".flv", ".webm", ".m4v", ".wmv",
+        ".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg"
+    }
+    ext = os.path.splitext(path)[1].lower()
+    return ext in valid_exts
+
+
 class OmniVoiceTaskWorker(QThread):
     """Luồng nền thực thi các tác vụ tổng hợp giọng nói, nhận diện đa người nói và lồng tiếng video trên GPU."""
 
@@ -3179,22 +3204,22 @@ class OmniVoiceInterface(ScrollArea):
         if not hasattr(self, "btn_identify_characters"):
             return
         has_subs = len(self.subtitle_blocks) > 0
-        has_video = bool(self.current_video_path and os.path.exists(self.current_video_path))
+        has_video = is_valid_media_file(self.current_video_path)
 
         if has_subs and has_video:
             self.btn_identify_characters.setEnabled(True)
             self.lbl_detect_source_hint.setText(
-                "Sẵn sàng nhận diện từ âm thanh video và mốc thời gian SRT."
+                "Sẵn sàng nhận diện người nói từ âm thanh video gốc và mốc thời gian phụ đề."
             )
         elif has_subs and not has_video:
             self.btn_identify_characters.setEnabled(False)
             self.lbl_detect_source_hint.setText(
-                "Chỉ có tệp SRT — hãy thêm video để nhận diện giọng thực, hoặc dùng 'Tự Động Phân Tích Lại' ở Bước 2 để phân vai theo văn bản."
+                "Chỉ có tệp phụ đề SRT — hãy thêm tệp video hợp lệ để nhận diện giọng nói thực, hoặc dùng 'Tự Động Phân Tích Lại' ở Bước 2 để phân vai theo văn bản."
             )
         else:
             self.btn_identify_characters.setEnabled(False)
             self.lbl_detect_source_hint.setText(
-                "Nạp tệp SRT và video để bắt đầu nhận diện nhân vật."
+                "Nạp tệp phụ đề và tệp video hợp lệ để bắt đầu nhận diện nhân vật."
             )
 
     @staticmethod
@@ -3317,7 +3342,7 @@ class OmniVoiceInterface(ScrollArea):
         if not self.subtitle_blocks:
             InfoBar.warning("Chưa có phụ đề", "Vui lòng nạp tệp phụ đề trước khi nhận diện người nói.", parent=self, duration=3000)
             return
-        if self.current_video_path and os.path.exists(self.current_video_path):
+        if is_valid_media_file(self.current_video_path):
             self.combo_multi_speaker_mode.setCurrentIndex(1)  # Tự động nhận diện từ video
         else:
             self.combo_multi_speaker_mode.setCurrentIndex(3)  # Tự động phân vai từ văn bản phụ đề
@@ -3328,6 +3353,24 @@ class OmniVoiceInterface(ScrollArea):
         )
 
     def _on_speakers_detected(self, profiles: dict):
+        if not profiles:
+            self.is_speakers_detected = False
+            self.speaker_profiles = {}
+            if hasattr(self, "lbl_diarization_summary"):
+                self.lbl_diarization_summary.setText(
+                    "Không tìm thấy nhân vật nào từ nguồn dữ liệu. "
+                    "Vui lòng kiểm tra lại tệp âm thanh hoặc thử phân vai từ văn bản phụ đề."
+                )
+            if hasattr(self, "lbl_diarization_method"):
+                self.lbl_diarization_method.setText("Trạng thái: Không đủ dữ liệu âm thanh.")
+            InfoBar.warning(
+                "Không tìm thấy nhân vật",
+                "Không phát hiện được đoạn thoại hoặc đặc trưng giọng nói đủ điều kiện. Bạn có thể thử phân vai theo văn bản phụ đề.",
+                parent=self,
+                duration=4000,
+            )
+            return
+
         self.is_speakers_detected = True
         normalized: Dict[str, CharacterVoiceProfile] = {}
         for idx, (spk, prof) in enumerate((profiles or {}).items()):
@@ -3351,15 +3394,26 @@ class OmniVoiceInterface(ScrollArea):
 
         # Cập nhật nhãn tóm tắt kết quả nhận diện
         total_chars = len(self.speaker_profiles)
-        total_assigned = sum(1 for blk in self.subtitle_blocks if getattr(blk, "is_speaker_locked", False))
+        total_assigned = sum(
+            1 for blk in self.subtitle_blocks
+            if getattr(blk, "speaker", "") and getattr(blk, "speaker", "") not in ("Chưa xác định", "unassigned", "")
+        )
+        total_locked = sum(1 for blk in self.subtitle_blocks if getattr(blk, "is_speaker_locked", False))
         review_count = sum(1 for blk in self.subtitle_blocks if getattr(blk, "confidence_level", "") == "review_needed")
-        unassigned_count = sum(1 for blk in self.subtitle_blocks if getattr(blk, "confidence_level", "") == "unassigned")
+        unassigned_count = sum(
+            1 for blk in self.subtitle_blocks
+            if getattr(blk, "confidence_level", "") == "unassigned"
+            or not getattr(blk, "speaker", "")
+            or getattr(blk, "speaker", "") in ("Chưa xác định", "unassigned")
+        )
         total_subs = len(self.subtitle_blocks)
 
         summary = (
             f"Đã phân tích xong. Tìm thấy {total_chars} nhân vật, "
             f"{total_assigned}/{total_subs} câu thoại được phân vai"
         )
+        if total_locked > 0:
+            summary += f", {total_locked} câu đã khóa"
         if review_count > 0:
             summary += f", {review_count} câu cần rà soát"
         if unassigned_count > 0:
@@ -3368,8 +3422,8 @@ class OmniVoiceInterface(ScrollArea):
         if hasattr(self, "lbl_diarization_summary"):
             self.lbl_diarization_summary.setText(summary)
 
-        has_video = bool(self.current_video_path and os.path.exists(self.current_video_path))
-        method_text = "Nguồn: Nhận diện từ âm thanh video." if has_video else "Nguồn: Phân vai từ văn bản SRT."
+        has_video = is_valid_media_file(self.current_video_path)
+        method_text = "Nguồn: Nhận diện từ âm thanh video gốc." if has_video else "Nguồn: Phân vai từ văn bản phụ đề SRT."
         if hasattr(self, "lbl_diarization_method"):
             self.lbl_diarization_method.setText(method_text)
 

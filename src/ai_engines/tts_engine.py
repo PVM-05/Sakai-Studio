@@ -714,6 +714,10 @@ class TTSEngine:
         ducking_mode: str = "dynamic",
         speaker_model_path: Optional[str] = None,
         allow_mock: bool = False,
+        speaker_count_mode: str = "auto",
+        exact_speakers: Optional[int] = None,
+        clustering_sensitivity: str = "standard",
+        **kwargs,
     ):
         self.model: Optional[OmniVoice] = None
         self.parent_logger = parent_logger
@@ -761,6 +765,9 @@ class TTSEngine:
         self.resume_cache_dir = str(resume_cache_dir).strip() if resume_cache_dir else None
         self.ducking_mode = ducking_mode if ducking_mode in ("dynamic", "fixed") else "dynamic"
         self.allow_mock = bool(allow_mock)
+        self.speaker_count_mode = str(speaker_count_mode or "auto")
+        self.exact_speakers = exact_speakers
+        self.clustering_sensitivity = str(clustering_sensitivity or "standard")
         self._cancel_requested: bool = False
         self.last_report: Optional[DubbingReport] = None
 

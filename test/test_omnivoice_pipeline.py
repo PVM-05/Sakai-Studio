@@ -2944,3 +2944,112 @@ def test_omnivoice_ui_speaker_count_mode_and_sensitivity_controls():
     assert "tối đa" in ui.lbl_max_spk.text().lower()
     params2 = ui._collect_engine_params()
     assert params2["exact_speakers"] is None
+
+
+def test_tts_engine_init_accepts_speaker_clustering_params_and_extra_kwargs():
+    """
+    Xác minh TTSEngine.__init__():
+    1. Chấp nhận các tham số speaker_count_mode, exact_speakers, clustering_sensitivity.
+    2. Hỗ trợ **kwargs phòng ngừa, không ném ngoại lệ TypeError khi worker truyền toàn bộ params.
+    """
+    from src.ai_engines.tts_engine import TTSEngine
+
+    engine = TTSEngine(
+        speaker_count_mode="exact",
+        exact_speakers=3,
+        clustering_sensitivity="high",
+        arbitrary_future_ui_param="safe_value",
+    )
+    assert engine.speaker_count_mode == "exact"
+    assert engine.exact_speakers == 3
+    assert engine.clustering_sensitivity == "high"
+
+
+def test_on_speakers_detected_counters_and_empty_profile_handling(tmp_path):
+    """
+    Xác minh _on_speakers_detected() trong OmniVoiceInterface:
+    1. total_assigned đếm chính xác số câu có người nói hợp lệ (không dựa vào is_speaker_locked).
+    2. total_locked đếm các câu đã được người dùng xác nhận hoặc khóa.
+    3. Khi profiles rỗng ({}), is_speakers_detected KHÔNG được đặt thành True,
+       và hiển thị cảnh báo không đủ dữ liệu âm thanh thay vì báo thành công.
+    """
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+    from src.ai_engines.translator import SubtitleBlock
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+
+    b1 = SubtitleBlock(index=1, start_time="00:00:01,000", end_time="00:00:02,000", text="Câu 1")
+    b1.speaker = "Nhân vật 1"
+    b1.is_speaker_locked = False  # Đã gán nhưng CHƯA khóa thủ công
+    b1.confidence_level = "high"
+
+    b2 = SubtitleBlock(index=2, start_time="00:00:03,000", end_time="00:00:04,000", text="Câu 2")
+    b2.speaker = "Nhân vật 2"
+    b2.is_speaker_locked = True  # Đã khóa thủ công
+    b2.confidence_level = "high"
+
+    b3 = SubtitleBlock(index=3, start_time="00:00:05,000", end_time="00:00:06,000", text="Câu 3")
+    b3.speaker = "Chưa xác định"
+    b3.is_speaker_locked = False
+    b3.confidence_level = "unassigned"
+
+    ui.subtitle_blocks = [b1, b2, b3]
+    ui.is_speakers_detected = False
+
+    # Trường hợp 1: Nhận diện thành công với 2 nhân vật
+    profiles = {
+        "Nhân vật 1": CharacterVoiceProfile(speaker_id="spk_0", display_name="Nhân vật 1"),
+        "Nhân vật 2": CharacterVoiceProfile(speaker_id="spk_1", display_name="Nhân vật 2"),
+    }
+    ui._on_speakers_detected(profiles)
+
+    assert ui.is_speakers_detected is True
+    summary_text = ui.lbl_diarization_summary.text()
+    # Phải báo 2/3 câu được phân vai (thay vì 1/3 như khi chỉ đếm is_speaker_locked)
+    assert "2/3 câu" in summary_text
+    assert "1 câu đã khóa" in summary_text or "1 câu đã xác nhận" in summary_text
+
+    # Trường hợp 2: Pipeline trả về rỗng (video im lặng hoặc không đủ dữ liệu)
+    ui.is_speakers_detected = False
+    ui._on_speakers_detected({})
+    assert ui.is_speakers_detected is False
+    summary_empty = ui.lbl_diarization_summary.text()
+    assert "Không tìm thấy" in summary_empty or "Chưa có" in summary_empty or "không đủ" in summary_empty.lower()
+
+
+def test_is_valid_video_file_prevents_directory_or_corrupt_input(tmp_path):
+    """
+    Xác minh hàm kiểm tra tính hợp lệ của video:
+    - Thư mục: Không hợp lệ.
+    - Tệp không tồn tại: Không hợp lệ.
+    - Tệp 0 byte: Không hợp lệ.
+    - Tệp đuôi không phải video/audio: Không hợp lệ.
+    - Tệp video hợp lệ: Hợp lệ.
+    """
+    import os
+    from src.desktop.ui.omnivoice_interface import is_valid_media_file
+
+    fake_dir = str(tmp_path / "video_dir")
+    os.makedirs(fake_dir, exist_ok=True)
+    assert is_valid_media_file(fake_dir) is False
+
+    non_exist = str(tmp_path / "not_there.mp4")
+    assert is_valid_media_file(non_exist) is False
+
+    empty_file = str(tmp_path / "empty.mp4")
+    with open(empty_file, "wb") as f:
+        pass
+    assert is_valid_media_file(empty_file) is False
+
+    txt_file = str(tmp_path / "sub.txt")
+    with open(txt_file, "wb") as f:
+        f.write(b"hello")
+    assert is_valid_media_file(txt_file) is False
+
+    valid_vid = str(tmp_path / "good.mp4")
+    with open(valid_vid, "wb") as f:
+        f.write(b"valid_bytes_for_video")
+    assert is_valid_media_file(valid_vid) is True

@@ -854,7 +854,10 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
         self.assertIn("SRT", hint_text)
 
         # Có cả SRT lẫn video: nút chính bật
-        ui.current_video_path = self.temp_dir  # Dùng thư mục có sẵn thay cho video thật
+        valid_vid = os.path.join(self.temp_dir, 'sample.mp4')
+        with open(valid_vid, 'wb') as f:
+            f.write(b'video_data')
+        ui.current_video_path = valid_vid
         ui._update_identify_button_state()
         self.assertTrue(ui.btn_identify_characters.isEnabled())
         hint_text = ui.lbl_detect_source_hint.text()
