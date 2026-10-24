@@ -516,6 +516,98 @@ def cosine_cluster_embeddings(
     return best_labels, conf_levels, conf_scores
 
 
+def detect_speech_segments_vad(
+    audio_data: np.ndarray,
+    sample_rate: int,
+    min_speech_sec: float = 0.3,
+    frame_ms: int = 30,
+    energy_threshold_ratio: float = 0.15,
+) -> List[Tuple[float, float]]:
+    """
+    Phát hiện các đoạn có hoạt động giọng nói dựa trên năng lượng RMS khung ngắn hạn.
+    Trả về danh sách các mốc thời gian (bắt đầu, kết thúc) tính bằng giây.
+    """
+    if audio_data is None or len(audio_data) == 0 or sample_rate <= 0:
+        return []
+
+    data = np.asarray(audio_data, dtype=np.float32)
+    if data.ndim > 1:
+        data = np.mean(data, axis=1)
+
+    frame_len = max(1, int(sample_rate * (frame_ms / 1000.0)))
+    n_frames = len(data) // frame_len
+    if n_frames == 0:
+        return []
+
+    frames = data[: n_frames * frame_len].reshape((n_frames, frame_len))
+    rms = np.sqrt(np.mean(frames ** 2, axis=1))
+
+    max_rms = float(np.max(rms)) if rms.size > 0 else 0.0
+    if max_rms < 1e-4:
+        return []
+
+    # Ngưỡng năng lượng tương đối có sàn an toàn
+    threshold = max(0.005, max_rms * energy_threshold_ratio)
+    is_speech = rms >= threshold
+
+    segments: List[Tuple[float, float]] = []
+    in_speech = False
+    start_frame = 0
+
+    for i, active in enumerate(is_speech):
+        if active and not in_speech:
+            in_speech = True
+            start_frame = i
+        elif not active and in_speech:
+            in_speech = False
+            start_s = start_frame * (frame_ms / 1000.0)
+            end_s = i * (frame_ms / 1000.0)
+            if end_s - start_s >= min_speech_sec:
+                segments.append((start_s, end_s))
+
+    if in_speech:
+        start_s = start_frame * (frame_ms / 1000.0)
+        end_s = n_frames * (frame_ms / 1000.0)
+        if end_s - start_s >= min_speech_sec:
+            segments.append((start_s, end_s))
+
+    # Gộp các đoạn cách nhau dưới 0.3 giây
+    merged: List[Tuple[float, float]] = []
+    for seg in segments:
+        if not merged:
+            merged.append(seg)
+        else:
+            prev_s, prev_e = merged[-1]
+            if seg[0] - prev_e <= 0.30:
+                merged[-1] = (prev_s, max(prev_e, seg[1]))
+            else:
+                merged.append(seg)
+
+    return merged
+
+
+def trim_silence_vad(
+    chunk: np.ndarray,
+    sample_rate: int,
+    padding_sec: float = 0.05,
+) -> np.ndarray:
+    """
+    Cắt bỏ khoảng lặng ở hai đầu đoạn âm thanh, giữ lại khoảng đệm an toàn.
+    """
+    if chunk is None or len(chunk) == 0:
+        return chunk
+    segs = detect_speech_segments_vad(chunk, sample_rate, min_speech_sec=0.15)
+    if not segs:
+        return chunk
+    s_sec = max(0.0, segs[0][0] - padding_sec)
+    e_sec = min(len(chunk) / float(sample_rate), segs[-1][1] + padding_sec)
+    start_idx = int(s_sec * sample_rate)
+    end_idx = int(e_sec * sample_rate)
+    if end_idx - start_idx >= int(0.20 * sample_rate):
+        return chunk[start_idx:end_idx]
+    return chunk
+
+
 def _calculate_safe_audio_padding(
     start_s: float,
     end_s: float,
@@ -667,7 +759,8 @@ class SpeakerDiarizationCoordinator:
             padded_start = max(0.0, start_s - pad_before)
             padded_end = min(audio_duration, end_s + pad_after)
             chunk = data[int(padded_start * sr):int(padded_end * sr)]
-            if chunk.size < int(0.30 * sr):
+            chunk = trim_silence_vad(chunk, sr)
+            if chunk.size < int(0.25 * sr):
                 blk.speaker = "Chưa xác định"
                 blk.confidence_level = ConfidenceLevel.UNASSIGNED.value
                 blk.voice_ref_path = ""

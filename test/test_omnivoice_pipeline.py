@@ -3229,3 +3229,34 @@ def test_agglomerative_clustering_does_not_collapse_multispeakers_on_low_silhoue
     assert labels[0] == labels[1] == labels[2]
     assert labels[3] == labels[4] == labels[5]
     assert labels[0] != labels[3]
+
+
+def test_detect_speech_segments_vad_identifies_speech_and_trims_silence():
+    """
+    Xác minh hàm VAD và cắt khoảng lặng:
+    1. Phát hiện đúng đoạn có tiếng nói trong tín hiệu âm thanh có chứa khoảng lặng.
+    2. trim_silence_vad cắt bỏ khoảng lặng ở 2 đầu, giữ trọn vẹn phần giọng nói.
+    """
+    import numpy as np
+    from src.ai_engines.speaker_diarization import detect_speech_segments_vad, trim_silence_vad
+
+    sr = 16000
+    # Tạo 1 giây im lặng + 1.5 giây tín hiệu có tiếng (sin) + 1 giây im lặng
+    silence_start = np.zeros(int(1.0 * sr), dtype=np.float32)
+    t = np.linspace(0, 1.5, int(1.5 * sr), endpoint=False)
+    speech = (0.5 * np.sin(2 * np.pi * 300 * t)).astype(np.float32)
+    silence_end = np.zeros(int(1.0 * sr), dtype=np.float32)
+
+    full_audio = np.concatenate([silence_start, speech, silence_end])
+
+    segments = detect_speech_segments_vad(full_audio, sample_rate=sr, min_speech_sec=0.3)
+    assert len(segments) >= 1
+    # Đoạn tiếng nói phải nằm trong khoảng từ 0.8s đến 2.7s
+    seg_start, seg_end = segments[0]
+    assert 0.8 <= seg_start <= 1.1
+    assert 2.4 <= seg_end <= 2.7
+
+    # trim_silence_vad phải cắt bỏ 2 giây im lặng
+    trimmed = trim_silence_vad(full_audio, sample_rate=sr)
+    trimmed_duration = len(trimmed) / sr
+    assert 1.3 <= trimmed_duration <= 1.7
