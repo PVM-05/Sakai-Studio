@@ -1961,16 +1961,18 @@ class OmniVoiceInterface(ScrollArea):
         self.btn_insert_tag_to_sub.setEnabled(False)
 
         self.btn_preview_selected_row = PushButton("Nghe Thử Câu Đang Chọn", sub_page_card)
-
         self.btn_preview_selected_row.setIcon(FluentIcon.VOLUME)
-
         self.btn_preview_selected_row.setEnabled(False)
 
+        self.btn_export_subtitles = PushButton("Xuất Tệp Phụ Đề SRT", sub_page_card)
+        self.btn_export_subtitles.setIcon(FluentIcon.SAVE)
+        self.btn_export_subtitles.setToolTip("Lưu danh sách câu thoại và mốc thời gian hiện tại ra tệp phụ đề định dạng SRT")
+        self.btn_export_subtitles.clicked.connect(self._handle_export_subtitles_clicked)
+
         sub_top_row.addWidget(self.combo_sub_tag)
-
         sub_top_row.addWidget(self.btn_insert_tag_to_sub)
-
         sub_top_row.addWidget(self.btn_preview_selected_row)
+        sub_top_row.addWidget(self.btn_export_subtitles)
 
         sub_layout.addLayout(sub_top_row)
 
@@ -3827,6 +3829,55 @@ class OmniVoiceInterface(ScrollArea):
         if column == 1:
 
             self._sync_speaker_selectors()
+
+
+    def _export_subtitles_to_srt(self, target_path: str = "") -> bool:
+        """Xuất danh sách khối phụ đề hiện tại ra tệp định dạng SRT chuẩn UTF-8."""
+        if not self.subtitle_blocks:
+            return False
+
+        if not target_path:
+            from PySide6.QtWidgets import QFileDialog
+            from pathlib import Path
+            default_dir = os.path.dirname(self.current_video_path) if self.current_video_path else os.getcwd()
+            suggested_name = "omnivoice_subtitles.srt"
+            if self.current_video_path:
+                suggested_name = f"{Path(self.current_video_path).stem}_phu_de.srt"
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Lưu tệp phụ đề SRT",
+                os.path.join(default_dir, suggested_name),
+                "Tệp phụ đề (*.srt);;Tất cả tệp (*.*)",
+            )
+            if not file_path:
+                return False
+            target_path = file_path
+
+        try:
+            with open(target_path, "w", encoding="utf-8") as f:
+                for idx, blk in enumerate(self.subtitle_blocks, start=1):
+                    start_t = getattr(blk, "start_time", "00:00:00,000")
+                    end_t = getattr(blk, "end_time", "00:00:01,000")
+                    text = getattr(blk, "translated_text", "") or getattr(blk, "text", "")
+                    spk = getattr(blk, "speaker", "")
+                    if spk and spk not in ("Chưa xác định", "unassigned", "") and not text.startswith(f"[{spk}]"):
+                        content = f"[{spk}] {text}"
+                    else:
+                        content = text
+                    f.write(f"{idx}\n{start_t} --> {end_t}\n{content}\n\n")
+            return True
+        except Exception as e:
+            self.log(f"Lỗi khi xuất tệp phụ đề SRT: {e}")
+            return False
+
+    def _handle_export_subtitles_clicked(self):
+        """Xử lý sự kiện khi người dùng bấm nút Xuất Tệp Phụ Đề SRT."""
+        if not self.subtitle_blocks:
+            InfoBar.warning("Chưa có phụ đề", "Không có câu thoại nào để xuất tệp.", parent=self, duration=3000)
+            return
+        ok = self._export_subtitles_to_srt()
+        if ok:
+            InfoBar.success("Đã xuất phụ đề", "Tệp phụ đề SRT đã được lưu thành công.", parent=self, duration=3000)
 
     def _filter_subtitle_table(self, filter_text: str = ""):
 

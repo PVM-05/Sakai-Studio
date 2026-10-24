@@ -921,6 +921,41 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
         self.assertEqual(len(ui.subtitle_blocks), 2)
         self.assertEqual(ui.sub_table.rowCount(), 2)
 
+    def test_export_detected_subtitles_to_srt_file(self):
+        """
+        Xác minh phương thức _export_subtitles_to_srt tạo đúng tệp SRT
+        với đầy đủ mốc thời gian và nội dung câu thoại.
+        """
+        from PySide6.QtWidgets import QApplication
+        from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+        from src.ai_engines.translator import SubtitleBlock
+        import tempfile, os
+
+        app = QApplication.instance() or QApplication([])
+        ui = OmniVoiceInterface()
+
+        b1 = SubtitleBlock(1, "00:00:01,000", "00:00:02,500", "Chào bạn")
+        b1.speaker = "Nhân vật A"
+        b2 = SubtitleBlock(2, "00:00:03,000", "00:00:04,500", "Hẹn gặp lại")
+        b2.speaker = "Nhân vật B"
+        ui.subtitle_blocks = [b1, b2]
+
+        with tempfile.NamedTemporaryFile(suffix=".srt", delete=False) as f:
+            out_srt = f.name
+
+        try:
+            ok = ui._export_subtitles_to_srt(out_srt)
+            self.assertTrue(ok)
+            self.assertTrue(os.path.exists(out_srt))
+            with open(out_srt, "r", encoding="utf-8") as f:
+                content = f.read()
+            self.assertIn("00:00:01,000 --> 00:00:02,500", content)
+            self.assertIn("Chào bạn", content)
+            self.assertIn("00:00:03,000 --> 00:00:04,500", content)
+        finally:
+            if os.path.exists(out_srt):
+                os.remove(out_srt)
+
 if __name__ == "__main__":
     unittest.main()
 
