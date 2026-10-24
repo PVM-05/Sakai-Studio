@@ -2076,8 +2076,37 @@ class OmniVoiceInterface(ScrollArea):
 
         sub_layout.addLayout(sub_top_row)
 
-        self.sub_table = TableWidget(sub_page_card)
+        batch_row = QHBoxLayout()
+        batch_row.setSpacing(8)
+        batch_row.addWidget(BodyLabel("Thao tác hàng loạt:", sub_page_card))
+        self.combo_batch_speaker = ComboBox(sub_page_card)
+        self.combo_batch_speaker.setMinimumWidth(150)
+        batch_row.addWidget(self.combo_batch_speaker)
 
+        self.btn_batch_assign = PushButton("Gán Cho Các Câu Đang Chọn", sub_page_card)
+        self.btn_batch_assign.setIcon(FluentIcon.PEOPLE)
+        self.btn_batch_assign.setToolTip("Gán nhân vật đã chọn cho tất cả các dòng phụ đề đang được bôi đen và tự động khóa")
+        self.btn_batch_assign.clicked.connect(self._batch_assign_selected_speaker)
+        batch_row.addWidget(self.btn_batch_assign)
+
+        self.btn_batch_lock = PushButton("Khóa Câu Đang Chọn", sub_page_card)
+        self.btn_batch_lock.setIcon(FluentIcon.PIN)
+        self.btn_batch_lock.setToolTip("Đánh dấu khóa cho tất cả các câu đang chọn để bảo vệ không bị ghi đè")
+        self.btn_batch_lock.clicked.connect(lambda: self._batch_set_locked_state(True))
+        batch_row.addWidget(self.btn_batch_lock)
+
+        self.btn_batch_unlock = PushButton("Mở Khóa Câu Đang Chọn", sub_page_card)
+        self.btn_batch_unlock.setIcon(FluentIcon.SYNC)
+        self.btn_batch_unlock.setToolTip("Mở khóa các câu đang chọn để cho phép nhận diện lại tự động")
+        self.btn_batch_unlock.clicked.connect(lambda: self._batch_set_locked_state(False))
+        batch_row.addWidget(self.btn_batch_unlock)
+
+        batch_row.addStretch(1)
+        sub_layout.addLayout(batch_row)
+
+        self.sub_table = TableWidget(sub_page_card)
+        self.sub_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.sub_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.sub_table.setColumnCount(7)
         self.sub_table.setHorizontalHeaderLabels([
             "STT",
@@ -3342,6 +3371,17 @@ class OmniVoiceInterface(ScrollArea):
 
         self.combo_target_speaker.blockSignals(False)
 
+        if hasattr(self, "combo_batch_speaker"):
+            current_batch = self.combo_batch_speaker.currentText().strip()
+            self.combo_batch_speaker.blockSignals(True)
+            self.combo_batch_speaker.clear()
+            self.combo_batch_speaker.addItems(names)
+            if current_batch in names:
+                self.combo_batch_speaker.setCurrentText(current_batch)
+            elif names:
+                self.combo_batch_speaker.setCurrentIndex(0)
+            self.combo_batch_speaker.blockSignals(False)
+
     def _update_casting_table(self):
 
         """Đồng bộ danh sách nhân vật vào bảng Voice Casting ở Bước 2."""
@@ -3978,6 +4018,128 @@ class OmniVoiceInterface(ScrollArea):
         ok = self._export_subtitles_to_srt()
         if ok:
             InfoBar.success("Đã xuất phụ đề", "Tệp phụ đề SRT đã được lưu thành công.", parent=self, duration=3000)
+
+
+    def _get_selected_subtitle_rows(self) -> List[int]:
+        """Lấy danh sách các chỉ số dòng đang được người dùng chọn trên bảng phụ đề."""
+        if not hasattr(self, "sub_table"):
+            return []
+        rows = set()
+        for item in self.sub_table.selectedItems():
+            rows.add(item.row())
+        for idx in self.sub_table.selectedIndexes():
+            rows.add(idx.row())
+        return sorted(list(rows))
+
+    def _batch_assign_selected_speaker(self):
+        """Gán nhân vật được chọn cho toàn bộ các dòng phụ đề đang được bôi đen."""
+        rows = self._get_selected_subtitle_rows()
+        if not rows:
+            InfoBar.warning("Chưa chọn dòng", "Vui lòng chọn ít nhất một câu thoại trên bảng trước khi gán hàng loạt.", parent=self, duration=3000)
+            return
+        target_spk = self.combo_batch_speaker.currentText().strip()
+        if not target_spk:
+            return
+
+        if target_spk != "Chưa xác định" and target_spk not in self.speaker_profiles:
+            self.speaker_profiles[target_spk] = CharacterVoiceProfile(
+                speaker_id=f"spk_{len(self.speaker_profiles)}",
+                display_name=target_spk,
+            )
+
+        self.sub_table.blockSignals(True)
+        try:
+            for row in rows:
+                if row >= len(self.subtitle_blocks):
+                    continue
+                blk = self.subtitle_blocks[row]
+                blk.speaker = target_spk
+                if target_spk != "Chưa xác định":
+                    blk.is_speaker_locked = True
+                    blk.confidence_level = "high"
+                else:
+                    blk.is_speaker_locked = False
+                    blk.confidence_level = "unassigned"
+
+                prof = self.speaker_profiles.get(target_spk)
+                if prof:
+                    is_dict = isinstance(prof, dict)
+                    method = (prof.get("method") if is_dict else getattr(prof, "method", "clone")) or "clone"
+                    if method == "preset":
+                        blk.voice_ref_path = ""
+                        blk.voice_instruct = (prof.get("voice_instruct") or prof.get("instruct") if is_dict else getattr(prof, "voice_instruct", "")) or ""
+                    else:
+                        blk.voice_ref_path = (prof.get("source_audio_path") or prof.get("ref_audio_path") or prof.get("source_audio_sample") if is_dict else getattr(prof, "source_audio_path", "")) or ""
+                        blk.voice_instruct = ""
+                else:
+                    blk.voice_ref_path = ""
+                    blk.voice_instruct = ""
+
+                combo = self.sub_table.cellWidget(row, 3)
+                if isinstance(combo, ComboBox):
+                    combo.blockSignals(True)
+                    if target_spk not in [combo.itemText(i) for i in range(combo.count())]:
+                        combo.addItem(target_spk)
+                    combo.setCurrentText(target_spk)
+                    combo.blockSignals(False)
+
+                item_spk = self.sub_table.item(row, 3)
+                if item_spk:
+                    item_spk.setText(target_spk)
+
+                item_src = self.sub_table.item(row, 4)
+                if item_src:
+                    item_src.setText(self._format_voice_source_display(blk))
+
+                for c in (0, 1, 2, 3, 4, 6):
+                    it = self.sub_table.item(row, c)
+                    if it:
+                        it.setBackground(QColor(0, 0, 0, 0))
+        finally:
+            self.sub_table.blockSignals(False)
+
+        if hasattr(self, "casting_progress_bar"):
+            self.casting_progress_bar.update_progress(self.subtitle_blocks)
+        self._update_casting_table()
+        self._filter_subtitle_table()
+        InfoBar.success("Đã gán hàng loạt", f"Đã gán nhân vật '{target_spk}' cho {len(rows)} câu thoại thành công.", parent=self, duration=3000)
+
+    def _batch_set_locked_state(self, locked: bool):
+        """Khóa hoặc mở khóa hàng loạt cho các câu thoại đang được bôi đen."""
+        rows = self._get_selected_subtitle_rows()
+        if not rows:
+            InfoBar.warning("Chưa chọn dòng", "Vui lòng chọn ít nhất một câu thoại trên bảng.", parent=self, duration=3000)
+            return
+
+        self.sub_table.blockSignals(True)
+        try:
+            for row in rows:
+                if row >= len(self.subtitle_blocks):
+                    continue
+                blk = self.subtitle_blocks[row]
+                blk.is_speaker_locked = locked
+
+                conf = getattr(blk, "confidence_level", "high")
+                spk = getattr(blk, "speaker", "")
+                if not locked and conf == "review_needed":
+                    row_bg = QColor(255, 248, 225, 180)
+                elif not locked and (conf in ("unassigned", "") or not spk or spk in ("Chưa xác định", "unassigned")):
+                    row_bg = QColor(255, 235, 238, 180)
+                else:
+                    row_bg = QColor(0, 0, 0, 0)
+
+                for c in (0, 1, 2, 3, 4, 6):
+                    it = self.sub_table.item(row, c)
+                    if it:
+                        it.setBackground(row_bg)
+        finally:
+            self.sub_table.blockSignals(False)
+
+        if hasattr(self, "casting_progress_bar"):
+            self.casting_progress_bar.update_progress(self.subtitle_blocks)
+        self._filter_subtitle_table()
+        msg = f"Đã khóa {len(rows)} câu thoại." if locked else f"Đã mở khóa {len(rows)} câu thoại."
+        InfoBar.success("Thành công", msg, parent=self, duration=3000)
 
     def _filter_subtitle_table(self, filter_text: str = ""):
 
@@ -6209,6 +6371,22 @@ class OmniVoiceInterface(ScrollArea):
                         blk.voice_instruct = ""
 
                     blk.is_speaker_locked = True
+
+                elif new_spk and new_spk != "Chưa xác định":
+
+                    blk.voice_ref_path = ""
+
+                    blk.voice_instruct = ""
+
+                    blk.is_speaker_locked = True
+
+                    self.speaker_profiles[new_spk] = CharacterVoiceProfile(
+
+                        speaker_id=f"spk_{len(self.speaker_profiles)}",
+
+                        display_name=new_spk,
+
+                    )
 
                 else:
 

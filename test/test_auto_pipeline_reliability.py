@@ -1041,6 +1041,53 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
         self.assertGreater(bg3.red(), 240)
         self.assertLess(bg3.green(), 240)
 
+    def test_batch_assign_speaker_updates_selected_rows_and_locks(self):
+        """
+        Xác minh chức năng gán nhân vật hàng loạt:
+        1. Khi chọn dòng 0 và dòng 2 và bấm gán cho 'Nhân vật Đặc Biệt':
+           - Dòng 0 và 2 được cập nhật speaker='Nhân vật Đặc Biệt', is_speaker_locked=True.
+           - Dòng 1 giữ nguyên.
+        2. Chức năng khóa và mở khóa hàng loạt cập nhật đúng trạng thái.
+        """
+        from PySide6.QtWidgets import QApplication
+        from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+        from src.ai_engines.translator import SubtitleBlock
+
+        app = QApplication.instance() or QApplication([])
+        ui = OmniVoiceInterface()
+
+        b1 = SubtitleBlock(1, "00:00:01,000", "00:00:02,000", "Câu 1")
+        b2 = SubtitleBlock(2, "00:00:03,000", "00:00:04,000", "Câu 2")
+        b2.speaker = "Người cũ"
+        b3 = SubtitleBlock(3, "00:00:05,000", "00:00:06,000", "Câu 3")
+
+        ui.subtitle_blocks = [b1, b2, b3]
+        ui._populate_subtitle_table()
+
+        # Chọn dòng 0 và dòng 2
+        ui.sub_table.selectRow(0)
+        ui.sub_table.item(2, 0).setSelected(True)
+
+        # Đặt nhân vật mục tiêu trên bộ chọn hàng loạt
+        ui.combo_batch_speaker.clear()
+        ui.combo_batch_speaker.addItem("Nhân vật Đặc Biệt")
+        ui.combo_batch_speaker.setCurrentText("Nhân vật Đặc Biệt")
+
+        # Kích hoạt gán hàng loạt
+        ui._batch_assign_selected_speaker()
+
+        self.assertEqual(ui.subtitle_blocks[0].speaker, "Nhân vật Đặc Biệt")
+        self.assertTrue(ui.subtitle_blocks[0].is_speaker_locked)
+        self.assertEqual(ui.subtitle_blocks[2].speaker, "Nhân vật Đặc Biệt")
+        self.assertTrue(ui.subtitle_blocks[2].is_speaker_locked)
+        self.assertEqual(ui.subtitle_blocks[1].speaker, "Người cũ")
+
+        # Kích hoạt mở khóa hàng loạt cho dòng 0
+        ui.sub_table.clearSelection()
+        ui.sub_table.selectRow(0)
+        ui._batch_set_locked_state(False)
+        self.assertFalse(ui.subtitle_blocks[0].is_speaker_locked)
+
 if __name__ == "__main__":
     unittest.main()
 
