@@ -3332,3 +3332,42 @@ def test_diarization_supports_video_without_srt(tmp_path):
 
     assert len(empty_blocks) >= 2
     assert len(profiles) >= 1
+
+
+def test_cosine_clustering_outlier_rejection_marks_distant_samples_unassigned():
+    """
+    Xác minh trong cơ chế mẫu nòng cốt (anchor-based):
+    Nếu một đoạn thoại ngoài nòng cốt có khoảng cách cosin lớn (> 0.45) tới tất cả các tâm cụm nòng cốt,
+    hệ thống KHÔNG được ép gán vào người gần nhất mà phải từ chối gán (unassigned).
+    """
+    import numpy as np
+    from src.ai_engines.speaker_diarization import cosine_cluster_embeddings, ConfidenceLevel
+
+    # 2 mẫu nòng cốt của 2 nhân vật (dài 2.0s)
+    spk1_emb = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    spk2_emb = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32)
+
+    # Mẫu 3: Đoạn ngắn 0.3s, có vector thuộc chiều thứ 4 [0, 0, 0, 1] (khoảng cách cosin = 1.0 tới cả 2 người)
+    outlier_emb = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+
+    embs = np.vstack([spk1_emb, spk2_emb, outlier_emb])
+    durations = [2.0, 2.0, 0.3]
+
+    labels, conf_levels, conf_scores = cosine_cluster_embeddings(
+        embs,
+        valid_indices=[0, 1, 2],
+        max_speakers=2,
+        exact_speakers=2,
+        distance_threshold=0.40,
+        sample_durations=durations,
+    )
+
+    # 2 mẫu đầu được gán vào 2 cụm khác nhau
+    assert labels[0] != labels[1]
+    assert conf_levels[0] == ConfidenceLevel.HIGH.value
+    assert conf_levels[1] == ConfidenceLevel.HIGH.value
+
+    # Mẫu thứ 3 bị từ chối gán, chuyển sang Chưa xác định
+    assert conf_levels[2] == ConfidenceLevel.UNASSIGNED.value
+    assert conf_scores[2] == 0.0
+    assert labels[2] == -1

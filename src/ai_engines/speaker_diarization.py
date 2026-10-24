@@ -465,9 +465,14 @@ def cosine_cluster_embeddings(
 
         non_anchor = [idx for idx in range(n_samples) if idx not in anchor_indices]
         for idx in non_anchor:
-            # Gán vào tâm cụm gần nhất
             dists = [1.0 - float(np.dot(norm_embs[idx], cluster_centers[c_i])) for c_i in unique_k]
-            best_labels[idx] = unique_k[int(np.argmin(dists))]
+            min_dist_idx = int(np.argmin(dists))
+            min_dist = dists[min_dist_idx]
+            # Từ chối gán khi khoảng cách cosin vượt quá ngưỡng cho phép
+            if min_dist > distance_threshold:
+                best_labels[idx] = -1
+            else:
+                best_labels[idx] = unique_k[min_dist_idx]
     else:
         # Phân cụm trực tiếp toàn bộ mẫu bằng AHC
         best_labels = agglomerative_cluster_embeddings(
@@ -477,23 +482,29 @@ def cosine_cluster_embeddings(
             max_k=max_speakers,
         )
 
-    # Tính toán tâm cụm cuối cùng
-    unique_k = np.unique(best_labels)
+    # Tính toán tâm cụm cho các cụm hợp lệ (loại trừ nhãn -1 bị từ chối)
+    valid_clusters = [c for c in np.unique(best_labels) if c >= 0]
     cluster_centers: Dict[int, np.ndarray] = {}
-    for c_i in unique_k:
+    for c_i in valid_clusters:
         members = norm_embs[best_labels == c_i]
         c_vec = np.mean(members, axis=0)
         cluster_centers[c_i] = c_vec / np.maximum(np.linalg.norm(c_vec), 1e-12)
 
-    cluster_sizes = {c_i: int(np.sum(best_labels == c_i)) for c_i in unique_k}
+    cluster_sizes = {c_i: int(np.sum(best_labels == c_i)) for c_i in valid_clusters}
 
     # Phân loại 3 mức độ tin cậy cho từng mẫu dựa trên hiệu chuẩn đa tiêu chí
     conf_levels: List[str] = []
     conf_scores: List[float] = []
 
     for idx in range(n_samples):
-        vec = norm_embs[idx]
         c_i = best_labels[idx]
+        if c_i < 0 or c_i not in cluster_centers:
+            # Đoạn thoại bị từ chối ép gán -> Đánh dấu Chưa xác định
+            conf_scores.append(0.0)
+            conf_levels.append(ConfidenceLevel.UNASSIGNED.value)
+            continue
+
+        vec = norm_embs[idx]
         center = cluster_centers[c_i]
 
         # 1. Tương đồng cosin với tâm cụm gán
@@ -505,12 +516,12 @@ def cosine_cluster_embeddings(
         len_factor = min(1.0, max(0.3, dur / 1.5))
 
         # 3. Độ phân tách với các tâm cụm khác
-        other_sims = [float(np.dot(vec, cluster_centers[other_c])) for other_c in unique_k if other_c != c_i]
+        other_sims = [float(np.dot(vec, cluster_centers[other_c])) for other_c in valid_clusters if other_c != c_i]
         max_other_sim = max(other_sims) if other_sims else -1.0
         sep_margin = max(0.0, min(1.0, 1.0 - max(0.0, max_other_sim)))
 
         # Điểm tổng hợp hiệu chuẩn
-        if len(unique_k) > 1:
+        if len(valid_clusters) > 1:
             score = 0.45 * sim_score + 0.35 * len_factor + 0.20 * sep_margin
         else:
             score = 0.60 * sim_score + 0.40 * len_factor
@@ -855,6 +866,12 @@ class SpeakerDiarizationCoordinator:
             for pos, block_idx in enumerate(valid_indices):
                 blk = blocks[block_idx]
                 cluster_id = int(labels[pos])
+                if cluster_id < 0:
+                    blk.speaker = "Chưa xác định"
+                    blk.confidence_level = ConfidenceLevel.UNASSIGNED.value
+                    blk.voice_ref_path = ""
+                    blk.voice_instruct = ""
+                    continue
                 speaker_name = f"Người nói {max_existing_num + cluster_id + 1}"
                 blk.speaker = speaker_name
                 blk.confidence_level = conf_levels[pos]
