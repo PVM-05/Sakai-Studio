@@ -293,6 +293,74 @@ def _normalized_choice_probabilities(weights: np.ndarray) -> Optional[np.ndarray
     return probs
 
 
+def estimate_optimal_clusters_eigengap(
+    embeddings: np.ndarray,
+    min_k: int = 1,
+    max_k: int = 12,
+    threshold: float = 0.40,
+) -> int:
+    """
+    Ước lượng số lượng cụm người nói tối ưu dựa trên phân tích trị riêng (Eigengap analysis)
+    của ma trận Laplacian chuẩn hóa từ ma trận tương đồng cosin.
+    
+    Tự động phát hiện số lượng người nói thực tế của video mà không cần người dùng chỉ định.
+    """
+    n_samples = embeddings.shape[0]
+    if n_samples <= 1:
+        return 1
+
+    # Chuẩn hóa L2
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    norm_embs = embeddings / np.maximum(norms, 1e-12)
+
+    # Ma trận tương đồng cosin
+    sim_matrix = np.dot(norm_embs, norm_embs.T)
+    dist_matrix = np.maximum(0.0, 1.0 - sim_matrix)
+    np.fill_diagonal(dist_matrix, 0.0)
+
+    if n_samples == 2:
+        return 2 if dist_matrix[0, 1] > threshold else 1
+
+    max_dist = float(np.max(dist_matrix))
+    mean_dist = float(np.mean(dist_matrix[np.triu_indices(n_samples, k=1)]))
+    if max_dist < threshold * 0.90 and mean_dist < 0.25:
+        return 1
+
+    # Xây dựng ma trận Affinity tương đồng
+    affinity = np.maximum(0.0, sim_matrix)
+    np.fill_diagonal(affinity, 1.0)
+
+    deg = np.sum(affinity, axis=1)
+    deg_inv_sqrt = 1.0 / np.sqrt(np.maximum(deg, 1e-12))
+    laplacian = np.eye(n_samples) - (deg_inv_sqrt[:, None] * affinity * deg_inv_sqrt[None, :])
+
+    try:
+        eigenvals = np.linalg.eigvalsh(laplacian)
+    except Exception:
+        return 1
+
+    upper_k = min(max_k, n_samples - 1)
+    if upper_k < 2:
+        return 2 if max_dist > threshold else 1
+
+    gaps = []
+    for k in range(1, upper_k + 1):
+        gap = float(eigenvals[k] - eigenvals[k - 1])
+        gaps.append((k, gap))
+
+    best_k = 1
+    max_gap = -1.0
+    for k, gap in gaps:
+        if k == 1 and max_dist > threshold * 1.05 and upper_k >= 2:
+            continue
+        if gap > max_gap:
+            max_gap = gap
+            best_k = k
+
+    best_k = max(min_k, min(best_k, max_k, n_samples))
+    return int(best_k)
+
+
 def agglomerative_cluster_embeddings(
     embeddings: np.ndarray,
     threshold: float = 0.40,
@@ -327,6 +395,10 @@ def agglomerative_cluster_embeddings(
     target_k = None
     if exact_k is not None:
         target_k = max(1, min(int(exact_k), n_samples))
+    elif n_samples >= 2:
+        target_k = estimate_optimal_clusters_eigengap(
+            norm_embs, min_k=min_k, max_k=max_k, threshold=threshold
+        )
 
     effective_max_k = max(1, min(int(max_k), n_samples))
 
@@ -436,10 +508,10 @@ def cosine_cluster_embeddings(
     # 1. Cơ chế mẫu nòng cốt (Anchor-based): Lọc các câu thoại >= 0.8s
     anchor_indices: List[int] = []
     if sample_durations is not None and len(sample_durations) == n_samples:
-        anchor_indices = [idx for idx, d in enumerate(sample_durations) if d >= 0.80]
-        # Nếu quá ít câu >= 0.8s, nới lỏng xuống 0.5s
+        anchor_indices = [idx for idx, d in enumerate(sample_durations) if d >= 0.35]
+        # Nếu quá ít câu >= 0.35s, nới lỏng xuống 0.20s để nhân vật phụ câu ngắn không bị bỏ rơi
         if len(anchor_indices) < 2:
-            anchor_indices = [idx for idx, d in enumerate(sample_durations) if d >= 0.50]
+            anchor_indices = [idx for idx, d in enumerate(sample_durations) if d >= 0.20]
 
     # Nếu có đủ mẫu nòng cốt và có một số mẫu ngắn cần gán
     if len(anchor_indices) >= 2 and len(anchor_indices) < n_samples:

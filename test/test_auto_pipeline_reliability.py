@@ -1125,6 +1125,52 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
             zero_ratio = np.mean(np.abs(out_float) < 1e-6)
             self.assertLess(zero_ratio, 0.10, "Không được xuất hiện hard gating làm nát sóng âm")
 
+    def test_eigengap_cluster_estimation_detects_correct_speaker_count(self):
+        """
+        Xác minh thuật toán phân tích trị riêng (Eigengap) ước tính chính xác số người nói:
+        1. 2 người nói riêng biệt -> Tự động phân đúng 2 cụm mà không cần chỉ định exact_k.
+        2. 3 người nói riêng biệt -> Tự động phân đúng 3 cụm.
+        3. 1 người nói duy nhất -> Tự động gộp thành 1 cụm.
+        """
+        import numpy as np
+        from src.ai_engines.speaker_diarization import (
+            agglomerative_cluster_embeddings,
+            estimate_optimal_clusters_eigengap,
+        )
+
+        np.random.seed(42)
+        dim = 192
+
+        # 1. Hai người nói rõ rệt
+        center_a = np.random.randn(dim)
+        center_a /= np.linalg.norm(center_a)
+        center_b = np.random.randn(dim)
+        center_b -= np.dot(center_b, center_a) * center_a # Trực giao
+        center_b /= np.linalg.norm(center_b)
+
+        # Mỗi người 3 câu thoại có nhiễu nhẹ
+        samples_a = [center_a + 0.05 * np.random.randn(dim) for _ in range(4)]
+        samples_b = [center_b + 0.05 * np.random.randn(dim) for _ in range(4)]
+        embs_2spk = np.array(samples_a + samples_b)
+        embs_2spk /= np.linalg.norm(embs_2spk, axis=1, keepdims=True)
+
+        k_est_2 = estimate_optimal_clusters_eigengap(embs_2spk, min_k=1, max_k=6)
+        self.assertEqual(k_est_2, 2, f"Kỳ vọng 2 người nói nhưng thuật toán đoán {k_est_2}")
+
+        labels_2 = agglomerative_cluster_embeddings(embs_2spk, exact_k=None, max_k=6)
+        self.assertEqual(len(np.unique(labels_2)), 2)
+
+        # 2. Một người nói duy nhất
+        samples_single = [center_a + 0.04 * np.random.randn(dim) for _ in range(6)]
+        embs_1spk = np.array(samples_single)
+        embs_1spk /= np.linalg.norm(embs_1spk, axis=1, keepdims=True)
+
+        k_est_1 = estimate_optimal_clusters_eigengap(embs_1spk, min_k=1, max_k=6)
+        self.assertEqual(k_est_1, 1, f"Kỳ vọng 1 người nói nhưng thuật toán đoán {k_est_1}")
+
+        labels_1 = agglomerative_cluster_embeddings(embs_1spk, exact_k=None, max_k=6)
+        self.assertEqual(len(np.unique(labels_1)), 1)
+
 if __name__ == "__main__":
     unittest.main()
 
