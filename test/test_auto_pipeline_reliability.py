@@ -1171,6 +1171,28 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
         labels_1 = agglomerative_cluster_embeddings(embs_1spk, exact_k=None, max_k=6)
         self.assertEqual(len(np.unique(labels_1)), 1)
 
+    def test_safe_audio_padding_and_boundary_refinement_prevents_overlap(self):
+        """
+        Xác minh cơ chế gọt tỉa biên và tính toán khoảng đệm an toàn:
+        1. Khi hai câu thoại liền kề có mốc thời gian chồng lấn (overlap):
+           - Điểm bắt đầu hiệu dụng của câu sau tự động lùi về ranh giới an toàn, chống dính chéo âm thanh.
+        2. Khi hai câu thoại cách nhau rất sát (0.04s):
+           - Khoảng đệm không được vượt quá một nửa khoảng cách nghỉ.
+        """
+        from src.ai_engines.speaker_diarization import _calculate_safe_audio_padding
+
+        # Trường hợp 1: Chồng lấn thời gian (câu 1 kết thúc 2.4s, câu 2 bắt đầu 2.2s)
+        pad_before, pad_after = _calculate_safe_audio_padding(
+            start_s=2.2, end_s=3.0, prev_end=2.4, next_start=4.0
+        )
+        self.assertLessEqual(pad_before, 0.0, "Khi chồng lấn, khoảng đệm trước không được dương để tránh liếm sâu vào câu trước")
+
+        # Trường hợp 2: Cách nhau rất sát 0.06s (câu 1 kết thúc 2.0s, câu 2 bắt đầu 2.06s)
+        pad_before, pad_after = _calculate_safe_audio_padding(
+            start_s=2.06, end_s=3.0, prev_end=2.0, next_start=4.0
+        )
+        self.assertLessEqual(pad_before, 0.03 + 1e-6, "Khoảng đệm không được vượt quá một nửa khoảng nghỉ")
+
 if __name__ == "__main__":
     unittest.main()
 

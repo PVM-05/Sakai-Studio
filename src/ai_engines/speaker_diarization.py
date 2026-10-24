@@ -725,13 +725,26 @@ def _calculate_safe_audio_padding(
 ) -> Tuple[float, float]:
     """
     Tính toán khoảng đệm trước và sau câu thoại an toàn, không cắt lẹm vào câu trước hoặc sau.
-    Khoảng đệm tối đa là max_pad (0.15s), nhưng không vượt quá nửa khoảng nghỉ giữa hai câu liền kề.
+    Khoảng đệm tối đa là max_pad (0.15s), nhưng không vượt quá một nửa khoảng nghỉ giữa hai câu liền kề.
+    Nếu mốc thời gian bị chồng lấn (overlap), trả về đệm không dương để ngăn chặn dính chéo âm thanh.
     """
-    gap_before = max(0.0, start_s - prev_end) if prev_end > 0.0 else max_pad * 2.0
-    gap_after = max(0.0, next_start - end_s) if next_start < float("inf") else max_pad * 2.0
+    if prev_end > 0.0:
+        if start_s < prev_end:
+            pad_before = 0.0
+        else:
+            gap_before = start_s - prev_end
+            pad_before = min(max_pad, gap_before / 2.0)
+    else:
+        pad_before = max_pad
 
-    pad_before = min(max_pad, gap_before / 2.0)
-    pad_after = min(max_pad, gap_after / 2.0)
+    if next_start < float("inf"):
+        if end_s > next_start:
+            pad_after = 0.0
+        else:
+            gap_after = next_start - end_s
+            pad_after = min(max_pad, gap_after / 2.0)
+    else:
+        pad_after = max_pad
 
     return pad_before, pad_after
 
@@ -877,10 +890,20 @@ class SpeakerDiarizationCoordinator:
 
             prev_end = parsed_times[i - 1][1] if i > 0 else 0.0
             next_start = parsed_times[i + 1][0] if i + 1 < len(blocks) else audio_duration
-            pad_before, pad_after = _calculate_safe_audio_padding(start_s, end_s, prev_end, next_start)
 
-            padded_start = max(0.0, start_s - pad_before)
-            padded_end = min(audio_duration, end_s + pad_after)
+            # Xử lý ngăn chặn dính chéo giọng nói khi mốc phụ đề bị chồng lấn
+            effective_start = start_s
+            if prev_end > 0.0 and start_s < prev_end:
+                effective_start = (start_s + prev_end) / 2.0
+
+            effective_end = end_s
+            if next_start < audio_duration and end_s > next_start:
+                effective_end = (end_s + next_start) / 2.0
+
+            pad_before, pad_after = _calculate_safe_audio_padding(effective_start, effective_end, prev_end, next_start)
+
+            padded_start = max(0.0, effective_start - pad_before)
+            padded_end = min(audio_duration, effective_end + pad_after)
             chunk = data[int(padded_start * sr):int(padded_end * sr)]
             chunk = trim_silence_vad(chunk, sr)
             if chunk.size < int(0.25 * sr):
