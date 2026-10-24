@@ -1982,7 +1982,7 @@ class OmniVoiceInterface(ScrollArea):
             "Bắt Đầu",
             "Kết Thúc",
             "Người Nói",
-            "Nguồn Giọng",
+            "Loại Giọng & Nguồn",
             "Nghe Gốc",
             "Nội Dung Thoại",
         ])
@@ -5800,10 +5800,11 @@ class OmniVoiceInterface(ScrollArea):
             self.sub_table.setItem(row, 1, QTableWidgetItem(str(blk.start_time)))
             self.sub_table.setItem(row, 2, QTableWidgetItem(str(blk.end_time)))
 
-            # Cột 3: ComboBox chọn Người Nói trực tiếp
+            # Cột 3: Đặt QTableWidgetItem tương thích ngược và ComboBox trực quan
+            spk = getattr(blk, "speaker", "") or "Chưa xác định"
+            self.sub_table.setItem(row, 3, QTableWidgetItem(spk))
             combo_row_spk = ComboBox(self.sub_table)
             combo_row_spk.addItems(speaker_names)
-            spk = getattr(blk, "speaker", "") or "Chưa xác định"
             if spk in speaker_names:
                 combo_row_spk.setCurrentText(spk)
             else:
@@ -5844,6 +5845,11 @@ class OmniVoiceInterface(ScrollArea):
             return
         blk = self.subtitle_blocks[row]
         blk.speaker = new_spk
+        item_spk = self.sub_table.item(row, 3)
+        if item_spk and item_spk.text() != new_spk:
+            self.sub_table.blockSignals(True)
+            item_spk.setText(new_spk)
+            self.sub_table.blockSignals(False)
         if new_spk and new_spk != "Chưa xác định":
             blk.is_speaker_locked = True
             blk.confidence_level = "high"
@@ -5989,9 +5995,15 @@ class OmniVoiceInterface(ScrollArea):
                     blk.end_time = new_val
 
             elif col == 3:
-
                 new_spk = item.text().strip()
-
+                w = self.sub_table.cellWidget(row, 3)
+                if isinstance(w, ComboBox):
+                    w.blockSignals(True)
+                    if w.findText(new_spk) < 0:
+                        w.addItem(new_spk)
+                    w.setCurrentText(new_spk)
+                    w.blockSignals(False)
+                self._on_row_speaker_changed(row, new_spk)
                 blk.speaker = new_spk
 
                 prof = self.speaker_profiles.get(new_spk)
