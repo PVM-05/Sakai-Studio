@@ -435,7 +435,7 @@ def agglomerative_cluster_embeddings(
     # Nếu ở chế độ tự động (không chỉ định exact_k) và đã gom thành nhiều cụm (>= 2):
     # Kiểm tra hệ số Silhouette để xác thực xem dữ liệu có thực sự tách biệt thành nhiều người nói hay không.
     # Nếu hệ số phân tách Silhouette < 0.20, các mẫu chỉ là một đám mây âm thanh phân tán của 1 người nói duy nhất.
-    if target_k is None and len(clusters) > 1 and n_samples >= 3:
+    if exact_k is None and len(clusters) > 1 and n_samples >= 3:
         temp_labels = np.zeros(n_samples, dtype=np.int32)
         for c_idx, c_members in enumerate(clusters):
             for m_idx in c_members:
