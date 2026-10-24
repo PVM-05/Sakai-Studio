@@ -391,7 +391,9 @@ def agglomerative_cluster_embeddings(
             sil_scores.append((b_val - a_val) / denom)
 
         mean_sil = float(np.mean(sil_scores)) if sil_scores else -1.0
-        # Không ép gộp về một cụm duy nhất khi Silhouette thấp; bảo toàn các cụm ứng viên đã phân tách.
+        # Nếu hệ số Silhouette cực thấp (< 0.10), các cụm chỉ là phân mảnh nhân tạo của 1 người nói duy nhất.
+        if mean_sil < 0.10:
+            clusters = [[i for i in range(n_samples)]]
 
     # Sắp xếp các cụm theo chỉ số phần tử xuất hiện đầu tiên để nhãn ổn định
     clusters.sort(key=lambda c: min(c))
@@ -516,8 +518,9 @@ def cosine_cluster_embeddings(
         score = float(max(0.0, min(1.0, score)))
         conf_scores.append(score)
 
+        is_singleton = bool(cluster_sizes.get(c_i, 0) < 2 and n_samples >= 4)
         is_ambiguous = bool(other_sims and (max_other_sim >= 0.60 or (sim_center - max_other_sim < 0.25)))
-        if score >= 0.70 and dur >= 0.8 and not is_ambiguous:
+        if score >= 0.70 and dur >= 0.8 and not is_ambiguous and not is_singleton:
             level = ConfidenceLevel.HIGH.value
         elif score >= 0.35:
             level = ConfidenceLevel.REVIEW_NEEDED.value
