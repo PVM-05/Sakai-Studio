@@ -1193,6 +1193,35 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
         )
         self.assertLessEqual(pad_before, 0.03 + 1e-6, "Khoảng đệm không được vượt quá một nửa khoảng nghỉ")
 
+    def test_ui_speaker_count_controls_and_vietnamese_labels(self):
+        """
+        Xác minh các điều khiển phân vai trên giao diện OmniVoice:
+        1. Hộp số lượng nhân vật hỗ trợ dải giá trị từ 1 đến 12.
+        2. Nhãn hiển thị và danh sách chọn sử dụng 100% tiếng Việt chuẩn, không chứa ngoặc đơn.
+        3. Thay đổi chế độ cập nhật nhãn số lượng nhân vật chính xác.
+        """
+        from PySide6.QtWidgets import QApplication
+        from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+
+        app = QApplication.instance() or QApplication([])
+        ui = OmniVoiceInterface()
+
+        self.assertEqual(ui.spin_max_speakers.minimum(), 1)
+        self.assertEqual(ui.spin_max_speakers.maximum(), 12)
+
+        # Kiểm tra không chứa ngoặc đơn trong combo_speaker_count_mode
+        for i in range(ui.combo_speaker_count_mode.count()):
+            txt = ui.combo_speaker_count_mode.itemText(i)
+            self.assertNotIn("(", txt)
+            self.assertNotIn(")", txt)
+
+        # Kiểm tra chuyển đổi nhãn
+        ui.combo_speaker_count_mode.setCurrentIndex(1)
+        self.assertEqual(ui.lbl_max_spk.text(), "Số lượng nhân vật chính xác:")
+
+        ui.combo_speaker_count_mode.setCurrentIndex(0)
+        self.assertEqual(ui.lbl_max_spk.text(), "Số lượng nhân vật tối đa:")
+
 if __name__ == "__main__":
     unittest.main()
 

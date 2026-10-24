@@ -1728,19 +1728,19 @@ class OmniVoiceInterface(ScrollArea):
 
         diarize_clustering_row.setSpacing(8)
 
-        lbl_count_mode = BodyLabel("Quy tắc số người:", diarize_card)
+        lbl_count_mode = BodyLabel("Quy tắc phân vai:", diarize_card)
 
         self.combo_speaker_count_mode = ComboBox(diarize_card)
 
-        self.combo_speaker_count_mode.addItem("Tự động ước lượng (Tối đa)")
+        self.combo_speaker_count_mode.addItem("Tự động ước lượng theo giới hạn tối đa")
 
-        self.combo_speaker_count_mode.addItem("Cố định chính xác số người")
+        self.combo_speaker_count_mode.addItem("Cố định chính xác số lượng nhân vật")
 
-        self.lbl_max_spk = BodyLabel("Số người tối đa:", diarize_card)
+        self.lbl_max_spk = BodyLabel("Số lượng nhân vật tối đa:", diarize_card)
 
         self.spin_max_speakers = SpinBox(diarize_card)
 
-        self.spin_max_speakers.setRange(1, 6)
+        self.spin_max_speakers.setRange(1, 12)
 
         self.spin_max_speakers.setValue(4)
 
@@ -1748,11 +1748,11 @@ class OmniVoiceInterface(ScrollArea):
 
         self.combo_clustering_sensitivity = ComboBox(diarize_card)
 
-        self.combo_clustering_sensitivity.addItem("Độ nhạy tiêu chuẩn")
+        self.combo_clustering_sensitivity.addItem("Độ nhạy cân bằng")
 
-        self.combo_clustering_sensitivity.addItem("Độ nhạy cao — Dễ tách người nói")
+        self.combo_clustering_sensitivity.addItem("Độ nhạy cao — Phân tách chi tiết")
 
-        self.combo_clustering_sensitivity.addItem("Độ nhạy thấp — Ưu tiên gộp giọng")
+        self.combo_clustering_sensitivity.addItem("Độ nhạy thấp — Ưu tiên gộp nhóm")
 
         diarize_clustering_row.addWidget(lbl_count_mode)
 
@@ -5410,11 +5410,11 @@ class OmniVoiceInterface(ScrollArea):
 
         if self.combo_speaker_count_mode.currentIndex() == 1:
 
-            self.lbl_max_spk.setText("Số người chính xác:")
+            self.lbl_max_spk.setText("Số lượng nhân vật chính xác:")
 
         else:
 
-            self.lbl_max_spk.setText("Số người tối đa:")
+            self.lbl_max_spk.setText("Số lượng nhân vật tối đa:")
 
     def _get_clustering_sensitivity_code(self) -> str:
 
