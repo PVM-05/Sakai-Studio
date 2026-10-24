@@ -253,6 +253,18 @@ def _parse_time_to_seconds(time_val: Any) -> float:
     return 0.0
 
 
+def _format_seconds_to_srt_time(seconds: float) -> str:
+    """Chuyển đổi số giây sang chuỗi định dạng thời gian chuẩn SRT HH:MM:SS,mmm."""
+    seconds = max(0.0, float(seconds))
+    hrs = int(seconds // 3600)
+    mins = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    ms = int(round((seconds - int(seconds)) * 1000))
+    if ms >= 1000:
+        ms = 999
+    return f"{hrs:02d}:{mins:02d}:{secs:02d},{ms:03d}"
+
+
 def _normalized_choice_probabilities(weights: np.ndarray) -> Optional[np.ndarray]:
     """Chuẩn hóa trọng số k-means++ thành xác suất float64 hợp lệ cho np.random.choice.
 
@@ -658,15 +670,14 @@ class SpeakerDiarizationCoordinator:
     ) -> Dict[str, SpeakerVoiceProfile]:
         """
         Nhận diện người nói dựa trên âm thanh WAV đã trích xuất và các mốc phụ đề.
-        Không sử dụng dữ liệu ngẫu nhiên khi thiếu/không đọc được âm thanh.
+        Nếu danh sách blocks rỗng, tự động phân đoạn âm thanh bằng VAD để sinh các khối câu thoại sơ bộ.
         """
-        if not blocks:
-            return {}
         if not video_path or not os.path.isfile(video_path):
-            for blk in blocks:
-                if not getattr(blk, "is_speaker_locked", False):
-                    blk.speaker = "Chưa xác định"
-                    blk.confidence_level = ConfidenceLevel.UNASSIGNED.value
+            if blocks:
+                for blk in blocks:
+                    if not getattr(blk, "is_speaker_locked", False):
+                        blk.speaker = "Chưa xác định"
+                        blk.confidence_level = ConfidenceLevel.UNASSIGNED.value
             raise FileNotFoundError("Không tìm thấy tệp âm thanh đã trích xuất để nhận diện người nói.")
 
         # Đọc và xác thực âm thanh trước khi nạp bất kỳ mô hình ONNX nào.
@@ -712,6 +723,22 @@ class SpeakerDiarizationCoordinator:
                 data = np.interp(new_t, old_t, data).astype(np.float32)
         sr = target_sr
         audio_duration = len(data) / float(sr)
+
+        # Tự động nhận diện phân đoạn câu thoại bằng VAD khi không có tệp phụ đề SRT
+        if not blocks:
+            segs = detect_speech_segments_vad(data, sr, min_speech_sec=0.35)
+            if not segs:
+                logger.warning("Không phát hiện đoạn giọng nói nào từ âm thanh video qua VAD.")
+                return {}
+            from .translator import SubtitleBlock
+            for seg_idx, (s_sec, e_sec) in enumerate(segs, start=1):
+                new_blk = SubtitleBlock(
+                    index=seg_idx,
+                    start_time=_format_seconds_to_srt_time(s_sec),
+                    end_time=_format_seconds_to_srt_time(e_sec),
+                    text=f"Đoạn thoại {seg_idx}",
+                )
+                blocks.append(new_blk)
 
         # Làm sạch thông tin giọng cũ của các câu chưa khóa trước khi phân tích
         for blk in blocks:

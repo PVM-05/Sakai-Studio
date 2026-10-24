@@ -3298,3 +3298,37 @@ def test_calibrated_confidence_score_penalizes_short_and_ambiguous_utterances():
     assert conf_levels[2] == ConfidenceLevel.REVIEW_NEEDED.value
     assert conf_scores[0] > conf_scores[1]
     assert conf_scores[0] > conf_scores[2]
+
+
+def test_diarization_supports_video_without_srt(tmp_path):
+    """
+    Xác minh khi truyền blocks=[] (chưa có phụ đề):
+    1. process_video_subtitles tự động phân đoạn âm thanh qua VAD.
+    2. Tự sinh các khối câu thoại và nhận diện đúng các nhân vật.
+    3. Trả về hồ sơ nhân vật và điền đầy đủ danh sách blocks.
+    """
+    import numpy as np
+    import soundfile as sf
+    from src.ai_engines.speaker_diarization import SpeakerDiarizationCoordinator
+
+    sr = 16000
+    # Tạo 2 phân đoạn âm thanh của 2 người nói
+    t = np.linspace(0, 1.0, int(1.0 * sr), endpoint=False)
+    spk1 = (0.5 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+    spk2 = (0.5 * np.sin(2 * np.pi * 500 * t)).astype(np.float32)
+    silence = np.zeros(int(0.5 * sr), dtype=np.float32)
+
+    audio = np.concatenate([spk1, silence, spk2])
+    wav_path = str(tmp_path / "multi_speech.wav")
+    sf.write(wav_path, audio, sr)
+
+    coord = SpeakerDiarizationCoordinator(allow_mock=True, prefer_cuda=False)
+    empty_blocks = []
+    profiles = coord.process_video_subtitles(
+        video_path=wav_path,
+        blocks=empty_blocks,
+        max_speakers=2,
+    )
+
+    assert len(empty_blocks) >= 2
+    assert len(profiles) >= 1

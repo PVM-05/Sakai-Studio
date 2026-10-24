@@ -1365,8 +1365,6 @@ class TTSEngine:
         if not video_path or not os.path.exists(video_path):
             self.log("Không tìm thấy tệp video để phân tích giọng người nói.")
             return {}
-        if not blocks:
-            return {}
 
         self._active_diarizer_session = None
 
