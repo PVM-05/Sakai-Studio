@@ -473,45 +473,45 @@ def cosine_cluster_embeddings(
 
     cluster_sizes = {c_i: int(np.sum(best_labels == c_i)) for c_i in unique_k}
 
-    # Phân loại 3 mức độ tin cậy cho từng mẫu
+    # Phân loại 3 mức độ tin cậy cho từng mẫu dựa trên hiệu chuẩn đa tiêu chí
     conf_levels: List[str] = []
     conf_scores: List[float] = []
 
     for idx in range(n_samples):
-        own_c = best_labels[idx]
-        own_center = cluster_centers[own_c]
-        d_own = float(1.0 - np.dot(norm_embs[idx], own_center))
+        vec = norm_embs[idx]
+        c_i = best_labels[idx]
+        center = cluster_centers[c_i]
 
-        d_second = float("inf")
-        for other_c, other_center in cluster_centers.items():
-            if other_c == own_c:
-                continue
-            d_cand = float(1.0 - np.dot(norm_embs[idx], other_center))
-            if d_cand < d_second:
-                d_second = d_cand
+        # 1. Tương đồng cosin với tâm cụm gán
+        sim_center = float(np.dot(vec, center))
+        sim_score = max(0.0, min(1.0, sim_center))
 
-        gap = (d_second - d_own) if d_second != float("inf") else (1.0 - d_own)
-        score = float(np.clip(1.0 - d_own, 0.0, 1.0))
+        # 2. Hệ số thời lượng mẫu (phạt mẫu ngắn)
+        dur = sample_durations[idx] if sample_durations and idx < len(sample_durations) else 1.5
+        len_factor = min(1.0, max(0.3, dur / 1.5))
+
+        # 3. Độ phân tách với các tâm cụm khác
+        other_sims = [float(np.dot(vec, cluster_centers[other_c])) for other_c in unique_k if other_c != c_i]
+        max_other_sim = max(other_sims) if other_sims else -1.0
+        sep_margin = max(0.0, min(1.0, 1.0 - max(0.0, max_other_sim)))
+
+        # Điểm tổng hợp hiệu chuẩn
+        if len(unique_k) > 1:
+            score = 0.45 * sim_score + 0.35 * len_factor + 0.20 * sep_margin
+        else:
+            score = 0.60 * sim_score + 0.40 * len_factor
+
+        score = float(max(0.0, min(1.0, score)))
         conf_scores.append(score)
 
-        if len(unique_k) == 1:
-            if d_own <= 0.35:
-                conf_levels.append(ConfidenceLevel.HIGH.value)
-            elif d_own > 0.40:
-                conf_levels.append(ConfidenceLevel.REVIEW_NEEDED.value)
-            else:
-                conf_levels.append(ConfidenceLevel.HIGH.value)
-            continue
-
-        is_short = bool(sample_durations and idx < len(sample_durations) and sample_durations[idx] < 0.60)
-        if (cluster_sizes.get(own_c, 0) < 2 and n_samples >= 4) or is_short:
-            conf_levels.append(ConfidenceLevel.REVIEW_NEEDED.value)
-        elif gap >= 0.20 and d_own <= 0.20:
-            conf_levels.append(ConfidenceLevel.HIGH.value)
-        elif gap < 0.12 or d_own > 0.25:
-            conf_levels.append(ConfidenceLevel.REVIEW_NEEDED.value)
+        is_ambiguous = bool(other_sims and (max_other_sim >= 0.60 or (sim_center - max_other_sim < 0.25)))
+        if score >= 0.70 and dur >= 0.8 and not is_ambiguous:
+            level = ConfidenceLevel.HIGH.value
+        elif score >= 0.35:
+            level = ConfidenceLevel.REVIEW_NEEDED.value
         else:
-            conf_levels.append(ConfidenceLevel.HIGH.value)
+            level = ConfidenceLevel.UNASSIGNED.value
+        conf_levels.append(level)
 
     return best_labels, conf_levels, conf_scores
 

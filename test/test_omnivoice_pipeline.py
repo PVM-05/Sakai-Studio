@@ -3260,3 +3260,41 @@ def test_detect_speech_segments_vad_identifies_speech_and_trims_silence():
     trimmed = trim_silence_vad(full_audio, sample_rate=sr)
     trimmed_duration = len(trimmed) / sr
     assert 1.3 <= trimmed_duration <= 1.7
+
+
+def test_calibrated_confidence_score_penalizes_short_and_ambiguous_utterances():
+    """
+    Xác minh thuật toán cosine_cluster_embeddings:
+    1. Câu thoại dài, nằm gần tâm cụm có độ tin cậy 'high'.
+    2. Câu thoại quá ngắn (< 0.5s) hoặc nằm ở ranh giới giữa 2 người nói bị hạ mức 'review_needed'.
+    """
+    import numpy as np
+    from src.ai_engines.speaker_diarization import cosine_cluster_embeddings, ConfidenceLevel
+
+    # 2 cụm người nói rõ ràng
+    spk1_emb = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    spk2_emb = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+
+    # Mẫu 1: Rất chuẩn người 1, dài 2.0s -> HIGH
+    m1 = spk1_emb.copy()
+    # Mẫu 2: Nằm gần ranh giới giữa 2 người (45 độ) -> REVIEW_NEEDED
+    m2 = np.array([0.707, 0.707, 0.0], dtype=np.float32)
+    # Mẫu 3: Rất chuẩn người 2 nhưng siêu ngắn 0.3s -> REVIEW_NEEDED
+    m3 = spk2_emb.copy()
+
+    embs = np.vstack([m1, m2, m3])
+    durations = [2.0, 2.0, 0.3]
+
+    labels, conf_levels, conf_scores = cosine_cluster_embeddings(
+        embs,
+        valid_indices=[0, 1, 2],
+        max_speakers=2,
+        exact_speakers=2,
+        sample_durations=durations,
+    )
+
+    assert conf_levels[0] == ConfidenceLevel.HIGH.value
+    assert conf_levels[1] == ConfidenceLevel.REVIEW_NEEDED.value
+    assert conf_levels[2] == ConfidenceLevel.REVIEW_NEEDED.value
+    assert conf_scores[0] > conf_scores[1]
+    assert conf_scores[0] > conf_scores[2]
