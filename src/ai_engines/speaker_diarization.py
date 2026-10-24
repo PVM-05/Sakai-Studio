@@ -379,8 +379,7 @@ def agglomerative_cluster_embeddings(
             sil_scores.append((b_val - a_val) / denom)
 
         mean_sil = float(np.mean(sil_scores)) if sil_scores else -1.0
-        if mean_sil < 0.20:
-            clusters = [[i for i in range(n_samples)]]
+        # Không ép gộp về một cụm duy nhất khi Silhouette thấp; bảo toàn các cụm ứng viên đã phân tách.
 
     # Sắp xếp các cụm theo chỉ số phần tử xuất hiện đầu tiên để nhãn ổn định
     clusters.sort(key=lambda c: min(c))
@@ -842,3 +841,6 @@ class SpeakerDiarizationCoordinator:
         finally:
             close_speaker_session(session)
 
+
+
+_agglomerative_clustering = agglomerative_cluster_embeddings

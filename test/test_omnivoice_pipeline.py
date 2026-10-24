@@ -3196,3 +3196,36 @@ def test_subtitle_table_has_7_columns_with_listen_button():
 
     btn_listen = ui.sub_table.cellWidget(0, 5)
     assert isinstance(btn_listen, QPushButton)
+
+
+def test_agglomerative_clustering_does_not_collapse_multispeakers_on_low_silhouette():
+    """
+    Xác minh thuật toán _agglomerative_clustering không ép gộp toàn bộ về 1 người
+    khi các mẫu có độ phân tách cosin rõ ràng giữa 2 người khác nhau nhưng hệ số Silhouette thấp.
+    """
+    import numpy as np
+    from src.ai_engines.speaker_diarization import agglomerative_cluster_embeddings as _agglomerative_clustering
+
+    # Giả lập 2 nhóm vector đặc trưng của 2 người nói khác nhau
+    spk1_embs = np.array([
+        [0.98, 0.10, 0.05],
+        [0.95, 0.15, 0.08],
+        [0.97, 0.08, 0.12],
+    ], dtype=np.float32)
+    spk2_embs = np.array([
+        [0.10, 0.98, 0.05],
+        [0.15, 0.95, 0.08],
+        [0.08, 0.97, 0.12],
+    ], dtype=np.float32)
+
+    embs = np.vstack([spk1_embs, spk2_embs])
+    embs = embs / np.linalg.norm(embs, axis=1, keepdims=True)
+
+    labels = _agglomerative_clustering(embs, threshold=0.40, exact_k=None, max_k=4)
+    unique_clusters = np.unique(labels)
+
+    # Phải phát hiện đúng 2 người nói riêng biệt, KHÔNG bị gộp thành 1 cụm
+    assert len(unique_clusters) == 2
+    assert labels[0] == labels[1] == labels[2]
+    assert labels[3] == labels[4] == labels[5]
+    assert labels[0] != labels[3]
