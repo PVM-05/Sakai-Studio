@@ -3053,3 +3053,44 @@ def test_is_valid_video_file_prevents_directory_or_corrupt_input(tmp_path):
     with open(valid_vid, "wb") as f:
         f.write(b"valid_bytes_for_video")
     assert is_valid_media_file(valid_vid) is True
+
+
+def test_check_media_and_srt_duration_detects_discrepancy(tmp_path):
+    """
+    Xác minh hàm check_media_and_srt_duration:
+    1. Phát hiện chênh lệch khi thời lượng video và phụ đề lệch vượt ngưỡng 5 giây.
+    2. Trả về thông tin đầy đủ: video_duration, srt_duration, diff, is_mismatch.
+    3. Cảnh báo khi phụ đề dài hơn video.
+    """
+    import cv2
+    import numpy as np
+    from src.desktop.ui.omnivoice_interface import check_media_and_srt_duration
+    from src.ai_engines.translator import SubtitleBlock
+
+    # Tạo video ngắn 2 giây (50 frames, 25 fps)
+    video_file = str(tmp_path / "short_video.mp4")
+    out = cv2.VideoWriter(video_file, cv2.VideoWriter_fourcc(*"mp4v"), 25.0, (100, 100))
+    for _ in range(50):
+        out.write(np.zeros((100, 100, 3), dtype=np.uint8))
+    out.release()
+
+    # Phụ đề dài 15 giây -> Lệch 13 giây > ngưỡng 5 giây
+    blocks = [
+        SubtitleBlock(1, "00:00:01,000", "00:00:05,000", "Câu một"),
+        SubtitleBlock(2, "00:00:06,000", "00:00:15,000", "Câu hai"),
+    ]
+
+    res = check_media_and_srt_duration(video_file, blocks, threshold_sec=5.0)
+    assert res["is_mismatch"] is True
+    assert round(res["video_duration"], 1) == 2.0
+    assert round(res["srt_duration"], 1) == 15.0
+    assert res["diff"] >= 12.9
+    assert "chênh lệch" in res["message"].lower() or "cảnh báo" in res["message"].lower()
+
+    # Trường hợp đồng bộ (lệch dưới 1 giây)
+    synced_blocks = [
+        SubtitleBlock(1, "00:00:00,500", "00:00:02,000", "Câu khớp"),
+    ]
+    res_sync = check_media_and_srt_duration(video_file, synced_blocks, threshold_sec=5.0)
+    assert res_sync["is_mismatch"] is False
+
