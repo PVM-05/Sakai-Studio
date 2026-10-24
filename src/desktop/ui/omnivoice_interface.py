@@ -990,6 +990,103 @@ class OmniVoiceTaskWorker(QThread):
 
     _run_task = _run_engine_task
 
+
+class _ProgressBarCanvas(QWidget):
+    """Vùng vẽ thanh tiến độ phân đoạn ba màu bằng QPainter."""
+
+    def __init__(self, owner: "CastingProgressBarWidget"):
+        super().__init__(owner)
+        self.owner = owner
+
+    def paintEvent(self, event):
+        from PySide6.QtGui import QPainter, QColor, QPainterPath
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        w = self.width()
+        h = self.height()
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, w, h, 4, 4)
+        painter.setClipPath(path)
+
+        painter.fillRect(0, 0, w, h, QColor("#E0E0E0"))
+
+        r_high = getattr(self.owner, "ratio_high", 0.0)
+        r_rev = getattr(self.owner, "ratio_review", 0.0)
+
+        w_high = int(round(w * r_high))
+        w_rev = int(round(w * r_rev))
+
+        if w_high > 0:
+            painter.fillRect(0, 0, w_high, h, QColor("#4CAF50"))
+        if w_rev > 0:
+            painter.fillRect(w_high, 0, w_rev, h, QColor("#FFA726"))
+
+        painter.end()
+
+
+class CastingProgressBarWidget(QWidget):
+    """Tiện ích hiển thị thanh tiến độ phân vai ba màu và thông số chi tiết."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.ratio_high: float = 0.0
+        self.ratio_review: float = 0.0
+        self.ratio_unassigned: float = 0.0
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 2, 0, 2)
+        layout.setSpacing(4)
+
+        self.bar_canvas = _ProgressBarCanvas(self)
+        self.bar_canvas.setFixedHeight(10)
+        layout.addWidget(self.bar_canvas)
+
+        self.lbl_details = CaptionLabel("Chưa có dữ liệu câu thoại.", self)
+        self.lbl_details.setWordWrap(True)
+        layout.addWidget(self.lbl_details)
+
+    def update_progress(self, blocks: List[Any]):
+        """Cập nhật các tỷ lệ và nhãn chi tiết theo danh sách câu thoại."""
+        total = len(blocks) if blocks else 0
+        if total == 0:
+            self.ratio_high = 0.0
+            self.ratio_review = 0.0
+            self.ratio_unassigned = 0.0
+            self.lbl_details.setText("Chưa có dữ liệu câu thoại.")
+            self.bar_canvas.update()
+            return
+
+        high_count = sum(
+            1 for b in blocks
+            if getattr(b, "is_speaker_locked", False) or getattr(b, "confidence_level", "") == "high"
+        )
+        review_count = sum(
+            1 for b in blocks
+            if not getattr(b, "is_speaker_locked", False) and getattr(b, "confidence_level", "") == "review_needed"
+        )
+        unassigned_count = sum(
+            1 for b in blocks
+            if not getattr(b, "is_speaker_locked", False) and getattr(b, "confidence_level", "") in ("unassigned", "")
+        )
+        assigned_count = sum(
+            1 for b in blocks
+            if getattr(b, "speaker", "") and getattr(b, "speaker", "") not in ("Chưa xác định", "unassigned", "")
+        )
+        locked_count = sum(1 for b in blocks if getattr(b, "is_speaker_locked", False))
+
+        self.ratio_high = high_count / float(total)
+        self.ratio_review = review_count / float(total)
+        self.ratio_unassigned = unassigned_count / float(total)
+
+        pct = int(round((assigned_count / float(total)) * 100))
+        self.lbl_details.setText(
+            f"Tiến độ phân vai: {assigned_count}/{total} câu thoại ({pct}%) · "
+            f"{locked_count} câu đã khóa · {review_count} câu cần rà soát · {unassigned_count} câu chưa xác định"
+        )
+        self.bar_canvas.update()
+
+
 class OmniVoiceInterface(ScrollArea):
 
     """
@@ -1789,6 +1886,8 @@ class OmniVoiceInterface(ScrollArea):
         casting_layout.addWidget(self.lbl_diarization_summary)
 
         casting_layout.addWidget(self.lbl_diarization_method)
+        self.casting_progress_bar = CastingProgressBarWidget(casting_card)
+        casting_layout.addWidget(self.casting_progress_bar)
 
         self.casting_table = TableWidget(casting_card)
 
@@ -5583,6 +5682,8 @@ class OmniVoiceInterface(ScrollArea):
             self._update_casting_table()
 
         self._update_sub_video_status_label()
+        if hasattr(self, 'casting_progress_bar'):
+            self.casting_progress_bar.update_progress(self.subtitle_blocks)
 
         self._update_subtitle_action_buttons()
 
@@ -6289,6 +6390,8 @@ class OmniVoiceInterface(ScrollArea):
         if hasattr(self, "lbl_diarization_summary"):
 
             self.lbl_diarization_summary.setText(summary)
+        if hasattr(self, 'casting_progress_bar'):
+            self.casting_progress_bar.update_progress(self.subtitle_blocks)
 
         has_video = is_valid_media_file(self.current_video_path)
 

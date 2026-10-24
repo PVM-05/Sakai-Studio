@@ -956,6 +956,51 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
             if os.path.exists(out_srt):
                 os.remove(out_srt)
 
+    def test_casting_progress_bar_calculates_ratios_correctly(self):
+        """
+        Xác minh tiện ích CastingProgressBarWidget:
+        1. Tính đúng tỷ lệ phần trăm phân đoạn: đã gán/khóa, cần rà soát, chưa xác định.
+        2. Cập nhật nhãn chi tiết tiếng Việt chuẩn xác theo dữ liệu câu thoại.
+        """
+        from PySide6.QtWidgets import QApplication
+        from src.desktop.ui.omnivoice_interface import CastingProgressBarWidget
+        from src.ai_engines.translator import SubtitleBlock
+
+        app = QApplication.instance() or QApplication([])
+        widget = CastingProgressBarWidget()
+
+        b1 = SubtitleBlock(1, "00:00:01,000", "00:00:02,000", "Câu 1")
+        b1.speaker = "Người nói 1"
+        b1.confidence_level = "high"
+        b1.is_speaker_locked = True
+
+        b2 = SubtitleBlock(2, "00:00:03,000", "00:00:04,000", "Câu 2")
+        b2.speaker = "Người nói 2"
+        b2.confidence_level = "review_needed"
+        b2.is_speaker_locked = False
+
+        b3 = SubtitleBlock(3, "00:00:05,000", "00:00:06,000", "Câu 3")
+        b3.speaker = ""
+        b3.confidence_level = "unassigned"
+        b3.is_speaker_locked = False
+
+        b4 = SubtitleBlock(4, "00:00:07,000", "00:00:08,000", "Câu 4")
+        b4.speaker = "Người nói 1"
+        b4.confidence_level = "high"
+        b4.is_speaker_locked = True
+
+        widget.update_progress([b1, b2, b3, b4])
+
+        self.assertAlmostEqual(widget.ratio_high, 0.50, places=2)
+        self.assertAlmostEqual(widget.ratio_review, 0.25, places=2)
+        self.assertAlmostEqual(widget.ratio_unassigned, 0.25, places=2)
+
+        text = widget.lbl_details.text()
+        self.assertIn("3/4", text)
+        self.assertIn("2 câu đã khóa", text)
+        self.assertIn("1 câu cần rà soát", text)
+        self.assertIn("1 câu chưa xác định", text)
+
 if __name__ == "__main__":
     unittest.main()
 
