@@ -61,6 +61,7 @@ from PySide6.QtWidgets import (
 )
 
 from PySide6.QtCore import Qt, Signal, QThread, QUrl
+from PySide6.QtGui import QColor, QPainter, QPainterPath
 
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
@@ -5931,16 +5932,37 @@ class OmniVoiceInterface(ScrollArea):
         has_valid_video = is_valid_media_file(self.current_video_path)
 
         for row, blk in enumerate(self.subtitle_blocks):
+            conf = getattr(blk, "confidence_level", "high")
+            is_locked = getattr(blk, "is_speaker_locked", False)
+            spk_val = getattr(blk, "speaker", "")
+
+            # Phối màu nền nhẹ nhàng trực quan phân biệt mức độ tin cậy
+            if not is_locked and conf == "review_needed":
+                row_bg = QColor(255, 248, 225, 180)  # Vàng nhạt cảnh báo cần rà soát
+            elif not is_locked and (conf in ("unassigned", "") or not spk_val or spk_val in ("Chưa xác định", "unassigned")):
+                row_bg = QColor(255, 235, 238, 180)  # Đỏ nhạt chưa xác định
+            else:
+                row_bg = QColor(0, 0, 0, 0)  # Trong suốt mặc định
+
             item_stt = QTableWidgetItem(str(blk.index))
             item_stt.setFlags(item_stt.flags() & ~Qt.ItemIsEditable)
+            item_stt.setBackground(row_bg)
             self.sub_table.setItem(row, 0, item_stt)
 
-            self.sub_table.setItem(row, 1, QTableWidgetItem(str(blk.start_time)))
-            self.sub_table.setItem(row, 2, QTableWidgetItem(str(blk.end_time)))
+            item_start = QTableWidgetItem(str(blk.start_time))
+            item_start.setBackground(row_bg)
+            self.sub_table.setItem(row, 1, item_start)
+
+            item_end = QTableWidgetItem(str(blk.end_time))
+            item_end.setBackground(row_bg)
+            self.sub_table.setItem(row, 2, item_end)
 
             # Cột 3: Đặt QTableWidgetItem tương thích ngược và ComboBox trực quan
             spk = getattr(blk, "speaker", "") or "Chưa xác định"
-            self.sub_table.setItem(row, 3, QTableWidgetItem(spk))
+            item_spk = QTableWidgetItem(spk)
+            item_spk.setBackground(row_bg)
+            self.sub_table.setItem(row, 3, item_spk)
+
             combo_row_spk = ComboBox(self.sub_table)
             combo_row_spk.addItems(speaker_names)
             if spk in speaker_names:
@@ -5956,6 +5978,7 @@ class OmniVoiceInterface(ScrollArea):
             # Cột 4: Nguồn giọng
             item_src = QTableWidgetItem(self._format_voice_source_display(blk))
             item_src.setFlags(item_src.flags() & ~Qt.ItemIsEditable)
+            item_src.setBackground(row_bg)
             self.sub_table.setItem(row, 4, item_src)
 
             # Cột 5: Nút Nghe Gốc
@@ -5970,7 +5993,9 @@ class OmniVoiceInterface(ScrollArea):
 
             # Cột 6: Nội Dung Thoại
             txt = blk.translated_text if blk.translated_text else blk.text
-            self.sub_table.setItem(row, 6, QTableWidgetItem(txt))
+            item_txt = QTableWidgetItem(txt)
+            item_txt.setBackground(row_bg)
+            self.sub_table.setItem(row, 6, item_txt)
 
         self.sub_table.blockSignals(False)
         self._filter_subtitle_table()
@@ -6013,6 +6038,25 @@ class OmniVoiceInterface(ScrollArea):
         self.sub_table.blockSignals(True)
         self.sub_table.setItem(row, 4, item_src)
         self.sub_table.blockSignals(False)
+
+        # Cập nhật lại màu nền dòng sau khi người dùng đổi nhân vật
+        conf_now = getattr(blk, "confidence_level", "high")
+        is_locked_now = getattr(blk, "is_speaker_locked", False)
+        spk_now = getattr(blk, "speaker", "")
+        if not is_locked_now and conf_now == "review_needed":
+            new_bg = QColor(255, 248, 225, 180)
+        elif not is_locked_now and (conf_now in ("unassigned", "") or not spk_now or spk_now in ("Chưa xác định", "unassigned")):
+            new_bg = QColor(255, 235, 238, 180)
+        else:
+            new_bg = QColor(0, 0, 0, 0)
+
+        for col_idx in (0, 1, 2, 3, 4, 6):
+            cell_item = self.sub_table.item(row, col_idx)
+            if cell_item:
+                cell_item.setBackground(new_bg)
+
+        if hasattr(self, "casting_progress_bar"):
+            self.casting_progress_bar.update_progress(self.subtitle_blocks)
 
         self._update_casting_table()
         self._update_character_profiles_overview()

@@ -1001,6 +1001,46 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
         self.assertIn("1 câu cần rà soát", text)
         self.assertIn("1 câu chưa xác định", text)
 
+    def test_subtitle_table_row_background_colors_reflect_confidence(self):
+        """
+        Xác minh màu nền các dòng trên bảng phụ đề:
+        - Dòng 'review_needed' có màu nền vàng nhạt.
+        - Dòng 'unassigned' có màu nền đỏ nhạt.
+        - Dòng 'high' hoặc đã khóa giữ màu nền mặc định.
+        """
+        from PySide6.QtWidgets import QApplication
+        from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+        from src.ai_engines.translator import SubtitleBlock
+
+        app = QApplication.instance() or QApplication([])
+        ui = OmniVoiceInterface()
+
+        b1 = SubtitleBlock(1, "00:00:01,000", "00:00:02,000", "Câu tin cậy cao")
+        b1.speaker = "Người nói 1"
+        b1.confidence_level = "high"
+        b1.is_speaker_locked = True
+
+        b2 = SubtitleBlock(2, "00:00:03,000", "00:00:04,000", "Câu cần rà soát")
+        b2.speaker = "Người nói 1"
+        b2.confidence_level = "review_needed"
+        b2.is_speaker_locked = False
+
+        b3 = SubtitleBlock(3, "00:00:05,000", "00:00:06,000", "Câu chưa xác định")
+        b3.speaker = ""
+        b3.confidence_level = "unassigned"
+        b3.is_speaker_locked = False
+
+        ui.subtitle_blocks = [b1, b2, b3]
+        ui._populate_subtitle_table()
+
+        bg2 = ui.sub_table.item(1, 0).background().color()
+        self.assertGreater(bg2.red(), 240)
+        self.assertGreater(bg2.green(), 230)
+
+        bg3 = ui.sub_table.item(2, 0).background().color()
+        self.assertGreater(bg3.red(), 240)
+        self.assertLess(bg3.green(), 240)
+
 if __name__ == "__main__":
     unittest.main()
 
