@@ -864,6 +864,63 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
         self.assertIn("video", hint_text.lower())
 
 
+    def test_step0_identify_button_enabled_with_video_only(self):
+        """
+        Xác minh nút nhận diện nhân vật tại Bước 1 mở khi chỉ có video (chưa có SRT):
+        1. Nút btn_identify_characters được kích hoạt (enabled=True).
+        2. Nhãn hiển thị thông báo sẵn sàng nhận diện trực tiếp từ video qua VAD.
+        """
+        from PySide6.QtWidgets import QApplication
+        from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+
+        app = QApplication.instance() or QApplication([])
+        ui = OmniVoiceInterface()
+
+        valid_vid = os.path.join(self.temp_dir, 'standalone.mp4')
+        with open(valid_vid, 'wb') as f:
+            f.write(b'video_data')
+
+        ui.subtitle_blocks = []
+        ui.current_video_path = valid_vid
+        ui._update_identify_button_state()
+
+        self.assertTrue(ui.btn_identify_characters.isEnabled())
+        hint = ui.lbl_detect_source_hint.text()
+        self.assertIn("video", hint.lower())
+        self.assertIn("tự động", hint.lower())
+
+    def test_speakers_detected_populates_empty_subtitles_from_worker(self):
+        """
+        Xác minh khi phụ đề ban đầu rỗng, _on_speakers_detected tiếp nhận
+        toàn bộ các câu thoại do worker sinh ra và nạp vào bảng phụ đề.
+        """
+        from PySide6.QtWidgets import QApplication
+        from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+        from src.ai_engines.translator import SubtitleBlock
+        from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+        from unittest.mock import MagicMock
+
+        app = QApplication.instance() or QApplication([])
+        ui = OmniVoiceInterface()
+        ui.subtitle_blocks = []
+
+        worker = MagicMock()
+        b1 = SubtitleBlock(1, "00:00:01,000", "00:00:02,000", "Đoạn thoại 1")
+        b1.speaker = "Người nói 1"
+        b2 = SubtitleBlock(2, "00:00:03,000", "00:00:04,000", "Đoạn thoại 2")
+        b2.speaker = "Người nói 2"
+        worker.subtitle_blocks = [b1, b2]
+        ui._worker = worker
+
+        profiles = {
+            "Người nói 1": CharacterVoiceProfile(speaker_id="spk_0", display_name="Người nói 1"),
+            "Người nói 2": CharacterVoiceProfile(speaker_id="spk_1", display_name="Người nói 2"),
+        }
+        ui._on_speakers_detected(profiles)
+
+        self.assertEqual(len(ui.subtitle_blocks), 2)
+        self.assertEqual(ui.sub_table.rowCount(), 2)
+
 if __name__ == "__main__":
     unittest.main()
 

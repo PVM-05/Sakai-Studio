@@ -5708,45 +5708,31 @@ class OmniVoiceInterface(ScrollArea):
             return
 
         has_subs = len(self.subtitle_blocks) > 0
-
         has_video = is_valid_media_file(self.current_video_path)
 
         if has_subs and has_video:
-
             self.btn_identify_characters.setEnabled(True)
-
             dur_info = check_media_and_srt_duration(self.current_video_path, self.subtitle_blocks)
-
             if dur_info.get("is_mismatch"):
-
                 self.lbl_detect_source_hint.setText(dur_info["message"])
-
             else:
-
                 self.lbl_detect_source_hint.setText(
-
                     "Sẵn sàng nhận diện người nói từ âm thanh video gốc và mốc thời gian phụ đề."
-
                 )
-
-        elif has_subs and not has_video:
-
-            self.btn_identify_characters.setEnabled(False)
-
+        elif not has_subs and has_video:
+            self.btn_identify_characters.setEnabled(True)
             self.lbl_detect_source_hint.setText(
-
-                "Chỉ có tệp phụ đề SRT — hãy thêm tệp video hợp lệ để nhận diện giọng nói thực, hoặc dùng 'Tự Động Phân Tích Lại' ở Bước 2 để phân vai theo văn bản."
-
+                "Sẵn sàng nhận diện trực tiếp từ video: hệ thống sẽ tự động phát hiện các đoạn giọng nói và phân vai nhân vật."
             )
-
-        else:
-
+        elif has_subs and not has_video:
             self.btn_identify_characters.setEnabled(False)
-
             self.lbl_detect_source_hint.setText(
-
-                "Nạp tệp phụ đề và tệp video hợp lệ để bắt đầu nhận diện nhân vật."
-
+                "Chỉ có tệp phụ đề SRT — hãy thêm tệp video hợp lệ để nhận diện giọng nói thực, hoặc dùng 'Tự Động Phân Tích Lại' ở Bước 2 để phân vai theo văn bản."
+            )
+        else:
+            self.btn_identify_characters.setEnabled(False)
+            self.lbl_detect_source_hint.setText(
+                "Nạp tệp video hoặc phụ đề để bắt đầu nhận diện nhân vật."
             )
 
     @staticmethod
@@ -6104,18 +6090,15 @@ class OmniVoiceInterface(ScrollArea):
 
             return
 
-        if not self.subtitle_blocks:
-
-            InfoBar.warning("Chưa có phụ đề", "Vui lòng nạp tệp phụ đề trước khi nhận diện người nói.", parent=self, duration=3000)
-
+        has_subs = len(self.subtitle_blocks) > 0
+        has_video = is_valid_media_file(self.current_video_path)
+        if not has_subs and not has_video:
+            InfoBar.warning("Chưa có dữ liệu", "Vui lòng nạp tệp video hoặc tệp phụ đề trước khi phân tích.", parent=self, duration=3000)
             return
 
-        if is_valid_media_file(self.current_video_path):
-
+        if has_video:
             self.combo_multi_speaker_mode.setCurrentIndex(1)  # Tự động nhận diện từ video
-
         else:
-
             self.combo_multi_speaker_mode.setCurrentIndex(3)  # Tự động phân vai từ văn bản phụ đề
 
         self._launch_worker(
@@ -6185,20 +6168,16 @@ class OmniVoiceInterface(ScrollArea):
         self._sync_speaker_selectors()
 
         # Đồng bộ lại thông tin phân vai từ bản sao phụ đề của worker về danh sách UI
-
-        if self._worker and self._worker.subtitle_blocks and len(self._worker.subtitle_blocks) == len(self.subtitle_blocks):
-
-            for ui_blk, w_blk in zip(self.subtitle_blocks, self._worker.subtitle_blocks):
-
-                ui_blk.speaker = getattr(w_blk, "speaker", ui_blk.speaker)
-
-                ui_blk.voice_ref_path = getattr(w_blk, "voice_ref_path", ui_blk.voice_ref_path)
-
-                ui_blk.voice_instruct = getattr(w_blk, "voice_instruct", ui_blk.voice_instruct)
-
-                ui_blk.confidence_level = getattr(w_blk, "confidence_level", getattr(ui_blk, "confidence_level", "high"))
-
-                ui_blk.is_speaker_locked = getattr(w_blk, "is_speaker_locked", getattr(ui_blk, "is_speaker_locked", False))
+        if self._worker and self._worker.subtitle_blocks:
+            if not self.subtitle_blocks:
+                self.subtitle_blocks = list(self._worker.subtitle_blocks)
+            elif len(self._worker.subtitle_blocks) == len(self.subtitle_blocks):
+                for ui_blk, w_blk in zip(self.subtitle_blocks, self._worker.subtitle_blocks):
+                    ui_blk.speaker = getattr(w_blk, "speaker", ui_blk.speaker)
+                    ui_blk.voice_ref_path = getattr(w_blk, "voice_ref_path", ui_blk.voice_ref_path)
+                    ui_blk.voice_instruct = getattr(w_blk, "voice_instruct", ui_blk.voice_instruct)
+                    ui_blk.confidence_level = getattr(w_blk, "confidence_level", getattr(ui_blk, "confidence_level", "high"))
+                    ui_blk.is_speaker_locked = getattr(w_blk, "is_speaker_locked", getattr(ui_blk, "is_speaker_locked", False))
 
         self._populate_subtitle_table()
 
