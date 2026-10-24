@@ -185,6 +185,7 @@ def create_speaker_session(
     available = set(ort.get_available_providers())
     options = ort.SessionOptions()
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    options.log_severity_level = int(os.environ.get('ORT_LOG_SEVERITY_LEVEL', '3'))
     providers = []
     if prefer_cuda and "CUDAExecutionProvider" in available:
         providers.append((
