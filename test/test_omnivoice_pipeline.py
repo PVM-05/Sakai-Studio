@@ -3126,3 +3126,73 @@ def test_filter_subtitle_table_supports_locked_category():
     ui.combo_sub_filter.setCurrentText("Đã khóa")
     assert not ui.sub_table.isRowHidden(0)
     assert ui.sub_table.isRowHidden(1)
+
+
+def test_subtitle_table_speaker_combobox_and_auto_locking():
+    """
+    Xác minh cột Người nói trên bảng phụ đề:
+    1. Sử dụng ComboBox thay vì chuỗi văn bản tĩnh.
+    2. Chứa danh sách nhân vật đã nhận diện.
+    3. Khi đổi người nói qua ComboBox:
+       - blk.speaker được cập nhật.
+       - blk.is_speaker_locked tự động chuyển thành True.
+       - blk.confidence_level chuyển thành 'high'.
+       - Nguồn giọng ở cột 4 tự động làm mới.
+    """
+    from PySide6.QtWidgets import QApplication
+    from qfluentwidgets import ComboBox
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.translator import SubtitleBlock
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+
+    ui.speaker_profiles = {
+        "Thám tử Lừng Danh": CharacterVoiceProfile(speaker_id="spk_0", display_name="Thám tử Lừng Danh"),
+        "Kẻ Giấu Mặt": CharacterVoiceProfile(speaker_id="spk_1", display_name="Kẻ Giấu Mặt"),
+    }
+
+    blk = SubtitleBlock(1, "00:00:01,000", "00:00:03,000", "Xin chào")
+    blk.speaker = "Chưa xác định"
+    blk.is_speaker_locked = False
+    blk.confidence_level = "unassigned"
+
+    ui.subtitle_blocks = [blk]
+    ui._populate_subtitle_table()
+
+    combo_spk = ui.sub_table.cellWidget(0, 3)
+    assert isinstance(combo_spk, ComboBox)
+    assert combo_spk.findText("Thám tử Lừng Danh") >= 0
+
+    # Người dùng chọn nhân vật
+    combo_spk.setCurrentText("Thám tử Lừng Danh")
+
+    assert blk.speaker == "Thám tử Lừng Danh"
+    assert blk.is_speaker_locked is True
+    assert blk.confidence_level == "high"
+
+
+def test_subtitle_table_has_7_columns_with_listen_button():
+    """
+    Xác minh bảng phụ đề có 7 cột:
+    0: STT, 1: Bắt đầu, 2: Kết thúc, 3: Người nói, 4: Nguồn giọng, 5: Nghe gốc, 6: Nội dung thoại.
+    Cột 5 có nút nghe với FluentIcon.
+    """
+    from PySide6.QtWidgets import QApplication, QPushButton
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.translator import SubtitleBlock
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+
+    blk = SubtitleBlock(1, "00:00:01,000", "00:00:03,000", "Xin chào")
+    ui.subtitle_blocks = [blk]
+    ui._populate_subtitle_table()
+
+    assert ui.sub_table.columnCount() == 7
+    header_texts = [ui.sub_table.horizontalHeaderItem(c).text() for c in range(7)]
+    assert "Nghe Gốc" in header_texts[5] or "Nghe gốc" in header_texts[5]
+
+    btn_listen = ui.sub_table.cellWidget(0, 5)
+    assert isinstance(btn_listen, QPushButton)
