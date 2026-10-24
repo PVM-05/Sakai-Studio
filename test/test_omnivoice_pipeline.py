@@ -3094,3 +3094,35 @@ def test_check_media_and_srt_duration_detects_discrepancy(tmp_path):
     res_sync = check_media_and_srt_duration(video_file, synced_blocks, threshold_sec=5.0)
     assert res_sync["is_mismatch"] is False
 
+
+
+def test_filter_subtitle_table_supports_locked_category():
+    """
+    Xác minh bộ lọc phụ đề hỗ trợ tùy chọn 'Đã khóa':
+    1. combo_sub_filter chứa mục 'Đã khóa'.
+    2. Khi chọn 'Đã khóa', chỉ hiện câu có is_speaker_locked = True, ẩn câu is_speaker_locked = False.
+    """
+    from PySide6.QtWidgets import QApplication
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.translator import SubtitleBlock
+
+    app = QApplication.instance() or QApplication([])
+    ui = OmniVoiceInterface()
+
+    blk1 = SubtitleBlock(1, "00:00:01,000", "00:00:02,000", "Câu 1")
+    blk1.is_speaker_locked = True
+
+    blk2 = SubtitleBlock(2, "00:00:03,000", "00:00:04,000", "Câu 2")
+    blk2.is_speaker_locked = False
+
+    ui.subtitle_blocks = [blk1, blk2]
+    ui._populate_subtitle_table()
+
+    # Kiểm tra combo_sub_filter có mục 'Đã khóa'
+    items = [ui.combo_sub_filter.itemText(i) for i in range(ui.combo_sub_filter.count())]
+    assert "Đã khóa" in items
+
+    # Lọc theo 'Đã khóa'
+    ui.combo_sub_filter.setCurrentText("Đã khóa")
+    assert not ui.sub_table.isRowHidden(0)
+    assert ui.sub_table.isRowHidden(1)
