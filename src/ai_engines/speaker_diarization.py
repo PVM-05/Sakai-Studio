@@ -574,7 +574,17 @@ def detect_speech_segments_vad(
 
     # Ngưỡng năng lượng tương đối có sàn an toàn
     threshold = max(0.005, max_rms * energy_threshold_ratio)
-    is_speech = rms >= threshold
+
+    # Phân tích tỷ lệ năng lượng trong dải tần số giọng nói con người (150 Hz - 4000 Hz)
+    # Loại trừ tạp âm cao tần (tiếng rít kim loại, tiếng súng) và ù trầm tần số cực thấp
+    fft_vals = np.abs(np.fft.rfft(frames, axis=1))
+    freqs = np.fft.rfftfreq(frame_len, d=1.0 / sample_rate)
+    voice_mask = (freqs >= 150.0) & (freqs <= 4000.0)
+    voice_power = np.sum(fft_vals[:, voice_mask] ** 2, axis=1)
+    total_power = np.maximum(np.sum(fft_vals ** 2, axis=1), 1e-12)
+    voice_ratio = voice_power / total_power
+
+    is_speech = (rms >= threshold) & (voice_ratio >= 0.40)
 
     segments: List[Tuple[float, float]] = []
     in_speech = False

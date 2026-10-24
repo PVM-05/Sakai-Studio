@@ -3371,3 +3371,29 @@ def test_cosine_clustering_outlier_rejection_marks_distant_samples_unassigned():
     assert conf_levels[2] == ConfidenceLevel.UNASSIGNED.value
     assert conf_scores[2] == 0.0
     assert labels[2] == -1
+
+
+def test_vad_spectral_band_filters_out_high_frequency_noise():
+    """
+    Xác minh hàm detect_speech_segments_vad:
+    1. Tín hiệu nhiễu cao tần (tần số 7000 Hz) có năng lượng RMS lớn nhưng bị loại bỏ do ngoài dải giọng nói.
+    2. Tín hiệu giọng nói (tần số 400 Hz) có năng lượng tương đương được giữ lại chính xác.
+    """
+    import numpy as np
+    from src.ai_engines.speaker_diarization import detect_speech_segments_vad
+
+    sr = 16000
+    t = np.linspace(0, 1.0, int(1.0 * sr), endpoint=False)
+    # Tín hiệu nhiễu cao tần (tiếng súng/rít kim loại) 7000 Hz
+    hf_noise = (0.5 * np.sin(2 * np.pi * 7000 * t)).astype(np.float32)
+    silence = np.zeros(int(0.5 * sr), dtype=np.float32)
+    # Tín hiệu giọng nói con người 400 Hz
+    voice = (0.5 * np.sin(2 * np.pi * 400 * t)).astype(np.float32)
+
+    audio = np.concatenate([hf_noise, silence, voice])
+
+    segs = detect_speech_segments_vad(audio, sample_rate=sr, min_speech_sec=0.3)
+    assert len(segs) == 1
+    # Chỉ có đoạn giọng nói (từ 1.5s đến 2.5s) được công nhận
+    assert 1.4 <= segs[0][0] <= 1.6
+    assert 2.4 <= segs[0][1] <= 2.6
