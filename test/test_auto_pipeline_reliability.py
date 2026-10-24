@@ -1088,6 +1088,43 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
         ui._batch_set_locked_state(False)
         self.assertFalse(ui.subtitle_blocks[0].is_speaker_locked)
 
+    def test_voice_separator_preserves_audio_fidelity_without_hard_gating(self):
+        """
+        Xác minh bộ lọc âm thanh trong VoiceSeparator:
+        - Không áp dụng hard-gating làm nát sóng âm và mất tín hiệu.
+        - Bảo toàn dải tần giọng nói và biên độ âm lượng chuẩn hóa mượt mà.
+        """
+        import tempfile
+        import os
+        import numpy as np
+        from scipy.io import wavfile
+        from src.ai_engines.voice_separator import VoiceSeparator
+
+        sr = 16000
+        # Tạo tín hiệu giả lập: 0.5s đầu là giọng nói (400 Hz), 0.5s sau là 800 Hz
+        t = np.linspace(0, 1.0, sr, endpoint=False)
+        speech = 0.5 * np.sin(2 * np.pi * 400 * t) + 0.3 * np.sin(2 * np.pi * 1200 * t)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            in_wav = os.path.join(tmpdir, "in.wav")
+            out_wav = os.path.join(tmpdir, "out.wav")
+            wavfile.write(in_wav, sr, (speech * 32767).astype(np.int16))
+
+            sep = VoiceSeparator(backend="scipy")
+            ok = sep.separate(in_wav, out_wav)
+            self.assertTrue(ok)
+            self.assertTrue(os.path.exists(out_wav))
+
+            out_sr, out_data = wavfile.read(out_wav)
+            self.assertEqual(out_sr, 16000)
+            # Tín hiệu không bị triệt tiêu thành 0 ở phần sau
+            out_float = out_data.astype(np.float32) / 32768.0
+            rms = np.sqrt(np.mean(out_float ** 2))
+            self.assertGreater(rms, 0.05, "Âm thanh không được bị triệt tiêu bởi gating thô sơ")
+            # Kiểm tra không có hiện tượng hard zeroing diện rộng (tỷ lệ mẫu bằng chính xác 0 phải < 10%)
+            zero_ratio = np.mean(np.abs(out_float) < 1e-6)
+            self.assertLess(zero_ratio, 0.10, "Không được xuất hiện hard gating làm nát sóng âm")
+
 if __name__ == "__main__":
     unittest.main()
 
