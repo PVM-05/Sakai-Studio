@@ -669,6 +669,9 @@ class OmniVoiceTaskWorker(QThread):
 
                     sensitivity = self.engine_params.get("clustering_sensitivity", "standard")
 
+                    ai_vocal_sep = bool(self.engine_params.get("ai_vocal_separation", True))
+                    if ai_vocal_sep:
+                        self.progressSignal.emit(18, "Đang tách sạch nhạc nền và tiếng ồn bằng trí tuệ nhân tạo...")
                     profiles = engine.detect_speakers_from_video(
 
                         self.video_path,
@@ -682,6 +685,8 @@ class OmniVoiceTaskWorker(QThread):
                         clustering_sensitivity=sensitivity,
 
                         prefer_cuda=self.prefer_cuda,
+
+                        enable_ai_vocal_separation=ai_vocal_sep,
 
                     )
 
@@ -1772,6 +1777,15 @@ class OmniVoiceInterface(ScrollArea):
         diarize_clustering_row.addWidget(self.combo_clustering_sensitivity, 1)
 
         diarize_layout.addLayout(diarize_clustering_row)
+
+        diarize_options_row = QHBoxLayout()
+        diarize_options_row.setSpacing(8)
+        self.chk_ai_vocal_separation = CheckBox("Tách sạch nhạc nền bằng trí tuệ nhân tạo", diarize_card)
+        self.chk_ai_vocal_separation.setChecked(True)
+        self.chk_ai_vocal_separation.setToolTip("Triệt tiêu bài hát, nhạc nền và tạp âm môi trường trước khi trích xuất giọng nói")
+        diarize_options_row.addWidget(self.chk_ai_vocal_separation)
+        diarize_options_row.addStretch(1)
+        diarize_layout.addLayout(diarize_options_row)
 
         spk_assign_row1 = QHBoxLayout()
 
@@ -3043,6 +3057,8 @@ class OmniVoiceInterface(ScrollArea):
         config.set(config.mmoTTSSyncDuration, self.chk_sync_sub_duration.isChecked())
 
         config.set(config.mmoTTSDenoise, self.chk_denoise.isChecked())
+        if hasattr(self, "chk_ai_vocal_separation") and hasattr(config, "mmoTTSAIVocalSeparation"):
+            config.set(config.mmoTTSAIVocalSeparation, self.chk_ai_vocal_separation.isChecked())
 
         config.set(config.mmoTTSPreprocessPrompt, self.chk_preprocess_prompt.isChecked())
 
@@ -5410,6 +5426,8 @@ class OmniVoiceInterface(ScrollArea):
             "exact_speakers": int(self.spin_max_speakers.value()) if (hasattr(self, "combo_speaker_count_mode") and self.combo_speaker_count_mode.currentIndex() == 1) else None,
 
             "clustering_sensitivity": self._get_clustering_sensitivity_code(),
+
+            "ai_vocal_separation": self.chk_ai_vocal_separation.isChecked() if hasattr(self, "chk_ai_vocal_separation") else True,
 
             "speaker_profiles": dict(self.speaker_profiles),
 

@@ -1320,6 +1320,29 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
             ratio_out = fft_out[idx_600] / max(fft_out[idx_40], 1e-6)
             self.assertGreater(ratio_out, ratio_in * 1.5, "Tỷ lệ giọng nói so với tạp âm nền phải được cải thiện rõ rệt")
 
+    def test_ui_ai_vocal_separation_checkbox_and_config(self):
+        """
+        Xác minh ô kiểm 'Tách sạch nhạc nền bằng trí tuệ nhân tạo' trên giao diện OmniVoice:
+        - Tồn tại trên giao diện và mặc định được bật.
+        - Thu thập đúng tham số 'ai_vocal_separation' khi gọi _collect_engine_parameters.
+        """
+        from PySide6.QtWidgets import QApplication
+        from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+
+        app = QApplication.instance() or QApplication([])
+        ui = OmniVoiceInterface()
+
+        self.assertTrue(hasattr(ui, "chk_ai_vocal_separation"))
+        self.assertTrue(ui.chk_ai_vocal_separation.isChecked())
+
+        params = ui._collect_engine_params()
+        self.assertIn("ai_vocal_separation", params)
+        self.assertTrue(params["ai_vocal_separation"])
+
+        ui.chk_ai_vocal_separation.setChecked(False)
+        params_off = ui._collect_engine_params()
+        self.assertFalse(params_off["ai_vocal_separation"])
+
 if __name__ == "__main__":
     unittest.main()
 

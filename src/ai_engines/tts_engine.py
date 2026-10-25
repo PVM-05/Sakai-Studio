@@ -1051,7 +1051,8 @@ class TTSEngine:
             return None
 
         self.log(f"Đang tách giọng nói gốc từ video để làm mẫu nhân bản: {os.path.basename(video_path)}")
-        separator = VoiceSeparator()
+        sep_backend = "ai" if enable_ai_vocal_separation else "scipy"
+        separator = VoiceSeparator(backend=sep_backend)
 
         temp_audio_path = os.path.join(
             self.voice_prompt_cache_dir,
@@ -1357,6 +1358,7 @@ class TTSEngine:
         clustering_sensitivity: str = "standard",
         prefer_cuda: Optional[bool] = None,
         allow_mock: Optional[bool] = None,
+        enable_ai_vocal_separation: bool = True,
     ) -> Dict[str, Dict[str, Any]]:
         """
         Tự động nhận diện nhiều người nói trực tiếp từ âm thanh gốc của video theo mốc thời gian phụ đề (.srt).

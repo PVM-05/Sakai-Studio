@@ -836,6 +836,7 @@ class Config(QConfig):
         OptionsValidator(["single", "auto_video_cluster", "per_line_video_clone", "auto_srt_text", "custom_table"]),
     )
     mmoTTSMaxSpeakers = RangeConfigItem("MMO", "TTSMaxSpeakers", 4, RangeValidator(1, 16))
+    mmoTTSAIVocalSeparation = ConfigItem("MMO", "TTSAIVocalSeparation", True, BoolValidator())
     mmoTTSDuckingMode = OptionsConfigItem("MMO", "TTSDuckingMode", "dynamic", OptionsValidator(["dynamic", "fixed"]))
     mmoTTSTShift = ConfigItem("MMO", "TTSTShift", 0.1)
     mmoTTSLayerPenalty = ConfigItem("MMO", "TTSLayerPenalty", 5.0)
