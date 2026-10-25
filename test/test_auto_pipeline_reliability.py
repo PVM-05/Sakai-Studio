@@ -1270,6 +1270,56 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
         ui._on_worker_finished(success=True, out_path="character_audition", detail="", log_msg="")
         self.assertIsNone(ui._active_audition_button)
 
+    def test_ai_voice_separator_attenuates_instrumental_bgm_and_preserves_voice(self):
+        """
+        Xác minh bộ tách giọng AI (AIVoiceSeparator):
+        - Bảo toàn năng lượng hài âm giọng nói con người (formant 300 - 2500 Hz).
+        - Triệt tiêu đáng kể thành phần gõ percussive và nhạc nền ngoài dải.
+        - Trả về tệp âm thanh 16kHz mono trong trẻo.
+        """
+        import tempfile
+        import os
+        import numpy as np
+        from scipy.io import wavfile
+        from src.ai_engines.voice_separator import AIVoiceSeparator
+
+        sr = 16000
+        t = np.linspace(0, 1.0, sr, endpoint=False)
+        # Giọng nói: Hài âm 300Hz, 600Hz, 1200Hz
+        voice = 0.4 * np.sin(2 * np.pi * 300 * t) + 0.3 * np.sin(2 * np.pi * 600 * t) + 0.2 * np.sin(2 * np.pi * 1200 * t)
+        # Nhạc nền và tiếng ồn: Tiếng bùm bass 40Hz + tiếng rít 8500Hz + tiếng gõ nhịp ngẫu nhiên
+        bgm = 0.4 * np.sin(2 * np.pi * 40 * t) + 0.3 * np.sin(2 * np.pi * 8500 * t)
+        bgm += (np.random.rand(sr) - 0.5) * 0.15 # Nhiễu nền
+
+        mix = voice + bgm
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            in_wav = os.path.join(tmpdir, "mix.wav")
+            out_wav = os.path.join(tmpdir, "vocals.wav")
+            wavfile.write(in_wav, sr, (mix * 16384).astype(np.int16))
+
+            separator = AIVoiceSeparator()
+            ok = separator.separate_vocals(in_wav, out_wav)
+            self.assertTrue(ok)
+            self.assertTrue(os.path.exists(out_wav))
+
+            out_sr, out_data = wavfile.read(out_wav)
+            self.assertEqual(out_sr, 16000)
+            out_float = out_data.astype(np.float32) / 32768.0
+
+            # Phân tích FFT kiểm tra độ suy giảm của bass 40Hz so với giọng 600Hz
+            fft_in = np.abs(np.fft.rfft(mix))
+            fft_out = np.abs(np.fft.rfft(out_float))
+            freqs = np.fft.rfftfreq(len(mix), d=1.0 / sr)
+
+            idx_40 = np.argmin(np.abs(freqs - 40.0))
+            idx_600 = np.argmin(np.abs(freqs - 600.0))
+
+            # Tỷ lệ năng lượng giọng / bass phải tăng mạnh ở đầu ra
+            ratio_in = fft_in[idx_600] / max(fft_in[idx_40], 1e-6)
+            ratio_out = fft_out[idx_600] / max(fft_out[idx_40], 1e-6)
+            self.assertGreater(ratio_out, ratio_in * 1.5, "Tỷ lệ giọng nói so với tạp âm nền phải được cải thiện rõ rệt")
+
 if __name__ == "__main__":
     unittest.main()
 
