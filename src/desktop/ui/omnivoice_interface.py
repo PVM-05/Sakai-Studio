@@ -32,6 +32,8 @@ import time
 
 import shutil
 
+import tempfile
+
 from pathlib import Path
 
 from typing import List, Optional, Dict, Any
@@ -1115,6 +1117,9 @@ class OmniVoiceInterface(ScrollArea):
         self.current_video_path: str = ""
 
         self.last_generated_audio_path: str = ""
+
+        self.voice_prompt_cache_dir: str = os.path.join(tempfile.gettempdir(), "sakai_omnivoice_cache")
+        os.makedirs(self.voice_prompt_cache_dir, exist_ok=True)
 
         self.subtitle_blocks: List[SubtitleBlock] = []
 
@@ -4180,21 +4185,35 @@ class OmniVoiceInterface(ScrollArea):
 
                 self.sub_table.setRowHidden(row, False)
 
+    def _is_valid_widget(self, widget: Any) -> bool:
+        """Kiểm tra an toàn đối tượng widget C++ của PySide6 còn tồn tại hay đã bị xóa."""
+        if widget is None:
+            return False
+        try:
+            from shiboken6 import isValid
+            return bool(isValid(widget))
+        except Exception:
+            try:
+                _ = widget.objectName()
+                return True
+            except RuntimeError:
+                return False
+
     def _reset_audition_button(self):
 
-        """Khôi phục trạng thái nút nghe thử giọng của nhân vật."""
+        """Khôi phục trạng thái nút nghe thử giọng của nhân vật an toàn."""
 
-        if hasattr(self, "_active_audition_button") and self._active_audition_button:
+        btn = getattr(self, "_active_audition_button", None)
+        self._active_audition_button = None
 
-            default_t = self._active_audition_button.property("default_text") or "Nghe Thử Giọng"
-
-            self._active_audition_button.setText(default_t)
-
-            self._active_audition_button.setIcon(FluentIcon.VOLUME)
-
-            self._active_audition_button.setEnabled(True)
-
-            self._active_audition_button = None
+        if self._is_valid_widget(btn):
+            try:
+                default_t = btn.property("default_text") or "Nghe Thử Giọng"
+                btn.setText(default_t)
+                btn.setIcon(FluentIcon.VOLUME)
+                btn.setEnabled(True)
+            except RuntimeError:
+                pass
 
     def _on_player_media_status_changed(self, status):
 
@@ -6247,9 +6266,11 @@ class OmniVoiceInterface(ScrollArea):
         end_s = parse_timestamp_to_seconds(blk.end_time)
         dur = max(0.2, end_s - start_s)
 
-        os.makedirs(self.voice_prompt_cache_dir, exist_ok=True)
+        cache_dir = getattr(self, "voice_prompt_cache_dir", "") or os.path.join(tempfile.gettempdir(), "sakai_omnivoice_cache")
+        self.voice_prompt_cache_dir = cache_dir
+        os.makedirs(cache_dir, exist_ok=True)
         out_wav = os.path.join(
-            self.voice_prompt_cache_dir,
+            cache_dir,
             f"seg_{blk.index}_{int(start_s * 1000)}_{int(end_s * 1000)}.wav",
         )
 
@@ -7681,13 +7702,15 @@ class OmniVoiceInterface(ScrollArea):
 
                 self.last_generated_audio_path = result_path
 
-                if hasattr(self, "_active_audition_button") and self._active_audition_button:
-
-                    self._active_audition_button.setEnabled(True)
-
-                    self._active_audition_button.setText("Dừng Phát")
-
-                    self._active_audition_button.setIcon(FluentIcon.PAUSE)
+                if self._is_valid_widget(getattr(self, "_active_audition_button", None)):
+                    try:
+                        self._active_audition_button.setEnabled(True)
+                        self._active_audition_button.setText("Dừng Phát")
+                        self._active_audition_button.setIcon(FluentIcon.PAUSE)
+                    except RuntimeError:
+                        self._active_audition_button = None
+                else:
+                    self._active_audition_button = None
 
                 self._play_audio_file(result_path)
 
@@ -7769,13 +7792,15 @@ class OmniVoiceInterface(ScrollArea):
 
             self.btn_play_pause_output.setIcon(FluentIcon.PAUSE)
 
-            if hasattr(self, "_active_audition_button") and self._active_audition_button:
-
-                self._active_audition_button.setEnabled(True)
-
-                self._active_audition_button.setText("Dừng Phát")
-
-                self._active_audition_button.setIcon(FluentIcon.PAUSE)
+            if self._is_valid_widget(getattr(self, "_active_audition_button", None)):
+                try:
+                    self._active_audition_button.setEnabled(True)
+                    self._active_audition_button.setText("Dừng Phát")
+                    self._active_audition_button.setIcon(FluentIcon.PAUSE)
+                except RuntimeError:
+                    self._active_audition_button = None
+            else:
+                self._active_audition_button = None
 
         elif state == QMediaPlayer.PausedState:
 
@@ -7783,13 +7808,15 @@ class OmniVoiceInterface(ScrollArea):
 
             self.btn_play_pause_output.setIcon(FluentIcon.PLAY)
 
-            if hasattr(self, "_active_audition_button") and self._active_audition_button:
-
-                self._active_audition_button.setEnabled(True)
-
-                self._active_audition_button.setText("Tiếp Tục")
-
-                self._active_audition_button.setIcon(FluentIcon.PLAY)
+            if self._is_valid_widget(getattr(self, "_active_audition_button", None)):
+                try:
+                    self._active_audition_button.setEnabled(True)
+                    self._active_audition_button.setText("Tiếp Tục")
+                    self._active_audition_button.setIcon(FluentIcon.PLAY)
+                except RuntimeError:
+                    self._active_audition_button = None
+            else:
+                self._active_audition_button = None
 
         else:
 

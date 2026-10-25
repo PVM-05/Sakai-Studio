@@ -1222,6 +1222,54 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
         ui.combo_speaker_count_mode.setCurrentIndex(0)
         self.assertEqual(ui.lbl_max_spk.text(), "Số lượng nhân vật tối đa:")
 
+    def test_play_subtitle_original_segment_initializes_cache_dir_safely(self):
+        """
+        Xác minh OmniVoiceInterface khởi tạo thuộc tính voice_prompt_cache_dir đầy đủ:
+        - Không ném AttributeError khi bấm nút Nghe gốc câu thoại.
+        """
+        from PySide6.QtWidgets import QApplication
+        from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+        from src.ai_engines.translator import SubtitleBlock
+
+        app = QApplication.instance() or QApplication([])
+        ui = OmniVoiceInterface()
+
+        self.assertTrue(hasattr(ui, "voice_prompt_cache_dir"))
+        self.assertTrue(os.path.isdir(ui.voice_prompt_cache_dir))
+
+        # Gọi _play_subtitle_original_segment khi chưa có video -> Phải thoát êm dịu, không crash
+        blk = SubtitleBlock(1, "00:00:01,000", "00:00:02,000", "Thử nghiệm")
+        ui._play_subtitle_original_segment(blk, None)
+
+    def test_on_worker_finished_handles_deleted_audition_button_gracefully(self):
+        """
+        Xác minh _on_worker_finished và _reset_audition_button xử lý an toàn khi đối tượng
+        PushButton C++ đã bị Qt xóa (deleted) do vẽ lại bảng, không ném RuntimeError shiboken.
+        """
+        from PySide6.QtWidgets import QApplication, QWidget
+        from qfluentwidgets import PushButton
+        from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+
+        app = QApplication.instance() or QApplication([])
+        ui = OmniVoiceInterface()
+
+        # Tạo một nút con trong một container tạm rồi xóa container
+        temp_container = QWidget()
+        btn = PushButton("Nghe Thử Giọng", temp_container)
+        ui._active_audition_button = btn
+
+        # Xóa container khiến đối tượng C++ của btn bị delete
+        temp_container.deleteLater()
+        # Ép xóa đối tượng C++
+        del temp_container
+        import gc
+        gc.collect()
+
+        # Gọi _reset_audition_button và _on_worker_finished không được crash
+        ui._reset_audition_button()
+        ui._on_worker_finished(success=True, out_path="character_audition", detail="", log_msg="")
+        self.assertIsNone(ui._active_audition_button)
+
 if __name__ == "__main__":
     unittest.main()
 
