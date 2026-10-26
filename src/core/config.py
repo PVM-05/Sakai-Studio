@@ -521,7 +521,10 @@ def _coerce_backend_mode(value):
         # Opt-in backends (ONNX / diffusion scaffolds) register extra
         # mode names at import time; honour any registered name instead
         # of silently coercing it to STTN.
-        from backend import inpainter_registry as _reg
+        try:
+            from src.ai_engines import inpainter_registry as _reg
+        except ImportError:
+            from backend import inpainter_registry as _reg
         if _reg.is_registered(normalized):
             return RegisteredMode(normalized)
         logger.warning(f"Unknown inpaint mode {value!r}; falling back to STTN")
@@ -537,7 +540,10 @@ def is_known_backend_mode(value) -> bool:
         normalized = value.strip().casefold()
         if normalized in _MODE_ALIASES:
             return True
-        from backend import inpainter_registry as _reg
+        try:
+            from src.ai_engines import inpainter_registry as _reg
+        except ImportError:
+            from backend import inpainter_registry as _reg
         return _reg.is_registered(normalized)
     return False
 

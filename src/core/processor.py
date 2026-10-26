@@ -265,7 +265,10 @@ def _available_host_ram_gb() -> Optional[float]:
 # dispatch in SubtitleRemover._create_inpainter no longer needs an
 # if-elif chain. Opt-in third-party backends can `register()` from
 # their own module to inject a new mode without modifying core code.
-from backend import inpainter_registry as _inpainter_registry
+try:
+    from src.ai_engines import inpainter_registry as _inpainter_registry
+except ImportError:
+    from backend import inpainter_registry as _inpainter_registry
 
 _inpainter_registry.register("sttn", lambda device, config: STTNInpainter(device, config))
 _inpainter_registry.register("lama", lambda device, config: LAMAInpainter(device, config))
@@ -276,7 +279,12 @@ _inpainter_registry.register("auto", lambda device, config: AutoInpainter(device
 # triggers `maybe_register()` which checks env vars and only patches
 # the registry when the user has opted in.
 try:
-    from backend import inpainters_onnx as _inpainters_onnx  # noqa: F401
+    from src.ai_engines import inpainters_onnx as _inpainters_onnx  # noqa: F401
+except ImportError:
+    try:
+        from backend import inpainters_onnx as _inpainters_onnx  # noqa: F401
+    except Exception as _exc:
+        logger.debug(f"ONNX inpainters module did not load: {_exc}")
 except Exception as _exc:
     logger.debug(f"ONNX inpainters module did not load: {_exc}")
 
@@ -284,7 +292,12 @@ except Exception as _exc:
 # ONLY when the user has set its enable env var; otherwise the import
 # is a no-op.
 try:
-    from backend import inpainters_diffusion as _inpainters_diffusion  # noqa: F401
+    from src.ai_engines import inpainters_diffusion as _inpainters_diffusion  # noqa: F401
+except ImportError:
+    try:
+        from backend import inpainters_diffusion as _inpainters_diffusion  # noqa: F401
+    except Exception as _exc:
+        logger.debug(f"Diffusion inpainters module did not load: {_exc}")
 except Exception as _exc:
     logger.debug(f"Diffusion inpainters module did not load: {_exc}")
 
@@ -1642,7 +1655,10 @@ class ProSubtitleRemover:
             if self.config.whisper_fallback and not Path(input_path).is_dir():
                 try:
                     import tempfile as _tmp_mod
-                    from backend import whisper_fallback as _wf
+                    try:
+                        from src.ai_engines import whisper_fallback as _wf
+                    except ImportError:
+                        from backend import whisper_fallback as _wf
                     if self.config.whisper_backend == "ffmpeg":
                         segments = _wf.run_ffmpeg_whisper_segments(
                             input_path,
@@ -2059,6 +2075,8 @@ class ProSubtitleRemover:
 
                     if not self._srt_entries:
                         try:
+                            from src.ai_engines import whisper_fallback as _wf
+                        except ImportError:
                             from backend import whisper_fallback as _wf
                             import tempfile as _tmp_mod
                             logger.info("No OCR subtitle entries found. Attempting Whisper Speech-to-Text for SRT export...")
@@ -2213,7 +2231,13 @@ class ProSubtitleRemover:
         if mode not in ("edl", "fcpxml"):
             return
         try:
-            from backend import nle_sidecar
+            from src.video_ops import nle_sidecar
+        except ImportError:
+            try:
+                from backend import nle_sidecar
+            except Exception as exc:
+                logger.debug(f"NLE sidecar module unavailable: {exc}")
+                return
         except Exception as exc:
             logger.debug(f"NLE sidecar module unavailable: {exc}")
             return

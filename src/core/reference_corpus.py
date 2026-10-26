@@ -20,7 +20,10 @@ from urllib.parse import urlparse
 import cv2
 import numpy as np
 
-from backend import processor
+try:
+    from src.core import processor
+except ImportError:
+    from backend import processor
 
 
 REFERENCE_CORPUS_SCHEMA = "vsr.reference_corpus.v1"

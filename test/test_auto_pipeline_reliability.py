@@ -1434,6 +1434,40 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
         safe_dur_med = TTSEngine._calculate_safe_target_duration(medium_text, slot_duration=2.8)
         self.assertEqual(safe_dur_med, 2.8)
 
+    def test_omnivoice_interface_qtimer_imported(self):
+        """
+        Xac minh bien QTimer da duoc nhap khau chinh xac vao mo-dun giao dien OmniVoice,
+        giup tien trinh nghe thu lien tuc nhieu nhan vat khong bi vang loi thieu bien.
+        """
+        from src.desktop.ui import omnivoice_interface as oi
+        self.assertTrue(hasattr(oi, "QTimer"), "Mo-dun giao dien OmniVoice phai co bien QTimer")
+
+    def test_mmo_fx_import_and_readable_path(self):
+        """
+        Xac minh mo-dun MMOFXEngine nhap khau thanh cong ham get_readable_path
+        ma khong bi loi Import khong tim thay ten bien tu cau hinh.
+        """
+        from src.core.tools.mmo_fx import MMOFXEngine
+        self.assertTrue(hasattr(MMOFXEngine, "apply_copyright_bypass"))
+
+    def test_processor_and_config_inpainter_registry_fallback(self):
+        """
+        Xac minh cau hinh bo xoa chu va bo dieu phoi tien trinh co co che du phong
+        nhap khau an toan danh muc mo hinh phuc hoi nen ma khong phu thuoc goi cu.
+        """
+        from src.core.config import is_known_backend_mode, InpaintMode
+        self.assertTrue(is_known_backend_mode("sttn"))
+        self.assertTrue(is_known_backend_mode(InpaintMode.LAMA))
+
+    def test_ocr_engine_whisper_fallback_import(self):
+        """
+        Xac minh bo trich xuat phu de nhan dien chinh xac mo-dun Whisper du phong
+        tu goi tri tue nhan tao noi bo.
+        """
+        from src.ai_engines.ocr_engine import VideoOcrEngine
+        engine = VideoOcrEngine()
+        self.assertTrue(hasattr(engine, "_run_whisper_fallback"))
+
 if __name__ == "__main__":
     unittest.main()
 

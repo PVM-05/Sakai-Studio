@@ -522,10 +522,13 @@ class VideoOcrEngine:
     def _run_whisper_fallback(self, video_path: str, fps: float) -> Optional[list]:
         """Chạy Whisper AI speech-to-text khi OCR không phát hiện được chữ."""
         try:
-            from backend import whisper_fallback as _wf
+            from src.ai_engines import whisper_fallback as _wf
         except ImportError:
-            logger.info("whisper_fallback module không khả dụng.")
-            return None
+            try:
+                from backend import whisper_fallback as _wf
+            except ImportError:
+                logger.info("whisper_fallback module không khả dụng.")
+                return None
 
         temp_dir = None
         try:

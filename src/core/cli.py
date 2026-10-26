@@ -315,7 +315,10 @@ def main():
         is_known_backend_mode,
     )
     from src.core.resume_checkpoint import ProcessingPaused
-    from backend import inpainter_registry
+    try:
+        from src.ai_engines import inpainter_registry
+    except ImportError:
+        from backend import inpainter_registry
 
     # Built-in modes first, then whatever opt-in backends registered at
     # import time (ONNX / diffusion scaffolds gated by env vars).

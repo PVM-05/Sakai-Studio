@@ -62,7 +62,7 @@ from PySide6.QtWidgets import (
 
 )
 
-from PySide6.QtCore import Qt, Signal, QThread, QUrl
+from PySide6.QtCore import Qt, Signal, QThread, QUrl, QTimer
 from PySide6.QtGui import QColor, QPainter, QPainterPath
 
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
@@ -4865,15 +4865,14 @@ class OmniVoiceInterface(ScrollArea):
 
         # 5. Chuyển trạng thái nút sang Đang tạo giọng...
 
-        if btn is not None:
-
-            self._active_audition_button = btn
-
-            btn.setText("Đang tạo giọng...")
-
-            btn.setIcon(FluentIcon.SYNC)
-
-            btn.setEnabled(False)
+        if btn is not None and self._is_valid_widget(btn):
+            try:
+                self._active_audition_button = btn
+                btn.setText("Đang tạo giọng...")
+                btn.setIcon(FluentIcon.SYNC)
+                btn.setEnabled(False)
+            except RuntimeError:
+                self._active_audition_button = None
 
         out_dir = os.path.join(BASE_DIR, "output", "omnivoice_studio", "auditions")
 
@@ -6112,6 +6111,7 @@ class OmniVoiceInterface(ScrollArea):
         return "Chưa có giọng"
 
     def _populate_subtitle_table(self):
+        self._reset_audition_button()
         self.sub_table.blockSignals(True)
         self.sub_table.setRowCount(len(self.subtitle_blocks))
 
@@ -6296,8 +6296,10 @@ class OmniVoiceInterface(ScrollArea):
 
         if not os.path.isfile(out_wav) or os.path.getsize(out_wav) == 0:
             import subprocess
+            from src.core.tools.ffmpeg_cli import FFmpegCLI
+            ffmpeg_bin = getattr(FFmpegCLI.instance(), "ffmpeg_path", "ffmpeg") or "ffmpeg"
             cmd = [
-                "ffmpeg",
+                ffmpeg_bin,
                 "-y",
                 "-ss", str(max(0.0, start_s)),
                 "-t", str(dur),
@@ -6321,10 +6323,13 @@ class OmniVoiceInterface(ScrollArea):
 
         if os.path.isfile(out_wav) and os.path.getsize(out_wav) > 0:
             self._reset_audition_button()
-            if btn is not None:
-                self._active_audition_button = btn
-                btn.setProperty("default_text", btn.text())
-                btn.setIcon(FluentIcon.PAUSE)
+            if btn is not None and self._is_valid_widget(btn):
+                try:
+                    self._active_audition_button = btn
+                    btn.setProperty("default_text", btn.text())
+                    btn.setIcon(FluentIcon.PAUSE)
+                except RuntimeError:
+                    self._active_audition_button = None
             self._play_audio_file(out_wav)
 
     def _on_subtitle_table_edited(self, item: QTableWidgetItem):

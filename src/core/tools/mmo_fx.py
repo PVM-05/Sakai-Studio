@@ -1,11 +1,11 @@
 import os
 import subprocess
 from pathlib import Path
-from src.core.config import get_readable_path
+from src.core.tools.common_tools import get_readable_path
 
 class MMOFXEngine:
     """
-    Engine chuyên xử lý các hiệu ứng Lách Bản Quyền (Copyright Bypass) cho dân MMO.
+    Bộ xử lý hiệu ứng chuyển đổi tránh trùng khớp bản quyền video tự động.
     Sử dụng FFmpeg để can thiệp sâu vào cấu trúc video.
     """
     
