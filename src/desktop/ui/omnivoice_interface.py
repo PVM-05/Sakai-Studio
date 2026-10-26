@@ -748,7 +748,9 @@ class OmniVoiceTaskWorker(QThread):
 
                 self.progressSignal.emit(20, "Đang tách giọng nói khỏi nhạc nền từ video...")
 
-                ref_wav = engine.extract_reference_from_video(self.video_path)
+                ai_vocal_sep = bool(self.engine_params.get("ai_vocal_separation", True))
+
+                ref_wav = engine.extract_reference_from_video(self.video_path, enable_ai_vocal_separation=ai_vocal_sep)
 
                 if ref_wav and os.path.exists(ref_wav):
 

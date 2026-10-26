@@ -131,15 +131,15 @@ class AIVoiceSeparator:
             phase = np.angle(Zxx)
 
             from scipy.ndimage import median_filter
-            H = median_filter(mag, size=(1, 15))
-            P = median_filter(mag, size=(17, 1))
+            H = median_filter(mag, size=(1, 7))
+            P = median_filter(mag, size=(7, 1))
 
             eps = 1e-8
-            mask_vocal = (H ** 2) / (H ** 2 + P ** 2 + eps)
+            mask_vocal = (H ** 1.5) / (H ** 1.5 + P ** 1.5 + eps)
 
-            voice_freq_mask = (f >= 200.0) & (f <= 3500.0)
-            mask_vocal[voice_freq_mask, :] = np.clip(mask_vocal[voice_freq_mask, :] * 1.25, 0.0, 1.0)
-            out_of_band = (f < 120.0) | (f > 5500.0)
+            voice_freq_mask = (f >= 85.0) & (f <= 6800.0)
+            mask_vocal[voice_freq_mask, :] = np.clip(mask_vocal[voice_freq_mask, :] * 1.15, 0.0, 1.0)
+            out_of_band = (f < 70.0) | (f > 7500.0)
             mask_vocal[out_of_band, :] *= 0.35
 
             Z_clean = (mag * mask_vocal) * np.exp(1j * phase)

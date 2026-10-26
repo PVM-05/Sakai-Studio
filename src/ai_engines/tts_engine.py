@@ -717,6 +717,7 @@ class TTSEngine:
         speaker_count_mode: str = "auto",
         exact_speakers: Optional[int] = None,
         clustering_sensitivity: str = "standard",
+        enable_ai_vocal_separation: bool = True,
         **kwargs,
     ):
         self.model: Optional[OmniVoice] = None
@@ -729,6 +730,7 @@ class TTSEngine:
         self.ref_audio_path = ref_audio_path if (ref_audio_path and str(ref_audio_path).strip()) else None
         self.ref_text = ref_text if (ref_text and str(ref_text).strip()) else None
         self.auto_extract_ref = bool(auto_extract_ref)
+        self.enable_ai_vocal_separation = bool(enable_ai_vocal_separation)
         self.instruct = instruct if (instruct and str(instruct).strip()) else None
 
         # Tham số OmniVoiceGenerationConfig đầy đủ
@@ -1041,7 +1043,11 @@ class TTSEngine:
             self.log(f"Lỗi khi tạo mẫu nhân bản giọng nói: {str(e)}")
             return False
 
-    def extract_reference_from_video(self, video_path: str) -> Optional[str]:
+    def extract_reference_from_video(
+        self,
+        video_path: str,
+        enable_ai_vocal_separation: Optional[bool] = None,
+    ) -> Optional[str]:
         """
         Trích xuất giọng mẫu tự động từ video đầu vào bằng VoiceSeparator.
         Tự động chọn đoạn 3-10 giây đầu tiên có giọng nói rõ ràng nhất.
@@ -1051,7 +1057,12 @@ class TTSEngine:
             return None
 
         self.log(f"Đang tách giọng nói gốc từ video để làm mẫu nhân bản: {os.path.basename(video_path)}")
-        sep_backend = "ai" if enable_ai_vocal_separation else "scipy"
+        use_ai_sep = (
+            self.enable_ai_vocal_separation
+            if enable_ai_vocal_separation is None
+            else bool(enable_ai_vocal_separation)
+        )
+        sep_backend = "ai" if use_ai_sep else "scipy"
         separator = VoiceSeparator(backend=sep_backend)
 
         temp_audio_path = os.path.join(
@@ -1710,7 +1721,11 @@ class TTSEngine:
         }
 
         if target_duration is not None and target_duration > 0.4:
-            gen_kwargs["duration"] = float(target_duration)
+            safe_d = self._calculate_safe_target_duration(text_clean, float(target_duration))
+            if safe_d is not None and safe_d > 0.4:
+                gen_kwargs["duration"] = float(safe_d)
+            elif self.speed != 1.0:
+                gen_kwargs["speed"] = float(self.speed)
         elif self.speed != 1.0:
             gen_kwargs["speed"] = float(self.speed)
 
@@ -1840,24 +1855,148 @@ class TTSEngine:
             return False
 
     @staticmethod
-    def _safe_time_stretch(audio_arr: np.ndarray, speed_factor: float) -> np.ndarray:
+    def _safe_time_stretch(
+        audio_arr: np.ndarray,
+        speed_factor: float,
+        sample_rate: int = 24000,
+    ) -> np.ndarray:
         """
-        Co giãn thời lượng âm thanh trong ngưỡng an toàn (0.80x - 1.35x) bằng nội suy tuyến tính
-        kèm làm mượt biên độ hai đầu (fade-in/fade-out) để tránh chồng lấn sang câu tiếp theo mà không cắt cụt từ.
+        Co giãn thời lượng âm thanh trong ngưỡng an toàn (0.75x - 1.35x)
+        bảo toàn 100% cao độ và đặc trưng formant bằng thuật toán WSOLA thuần NumPy,
+        loại bỏ hoàn toàn hiện tượng méo tiếng hoặc biến thành giọng chuột sóc the thé.
         """
         if audio_arr.size == 0 or abs(speed_factor - 1.0) < 0.02:
             return audio_arr
-        clamped_factor = max(0.80, min(1.35, float(speed_factor)))
-        new_len = max(1, int(round(len(audio_arr) / clamped_factor)))
-        old_indices = np.linspace(0.0, len(audio_arr) - 1, num=new_len, dtype=np.float32)
-        base_idx = np.arange(len(audio_arr), dtype=np.float32)
-        stretched = np.interp(old_indices, base_idx, audio_arr).astype(np.float32)
-        fade_len = min(240, len(stretched) // 10)
+
+        clamped_factor = max(0.75, min(1.35, float(speed_factor)))
+        alpha = 1.0 / clamped_factor
+
+        win_size = int(0.028 * sample_rate)
+        if win_size % 2 != 0:
+            win_size += 1
+
+        synth_hop = win_size // 2
+        ana_hop = int(round(synth_hop / alpha))
+        search_range = int(0.014 * sample_rate)
+
+        if len(audio_arr) < win_size + search_range + 10:
+            return audio_arr
+
+        window = np.hanning(win_size).astype(np.float32)
+        out_len = int(round(len(audio_arr) * alpha))
+        output = np.zeros(out_len + win_size, dtype=np.float32)
+        weights = np.zeros(out_len + win_size, dtype=np.float32)
+
+        output[:win_size] += audio_arr[:win_size] * window
+        weights[:win_size] += window
+
+        synth_pos = synth_hop
+        ana_nom = ana_hop
+        step_cand = max(1, sample_rate // 4000)
+
+        while synth_pos + win_size <= out_len and ana_nom < len(audio_arr):
+            ref_seg = output[synth_pos : synth_pos + win_size]
+            start_search = max(0, ana_nom - search_range)
+            end_search = min(len(audio_arr) - win_size, ana_nom + search_range)
+
+            if end_search <= start_search:
+                break
+
+            best_pos = start_search
+            best_corr = -1e9
+            for cand in range(start_search, end_search, step_cand):
+                cand_seg = audio_arr[cand : cand + win_size]
+                corr = float(np.dot(ref_seg, cand_seg))
+                if corr > best_corr:
+                    best_corr = corr
+                    best_pos = cand
+
+            grain = audio_arr[best_pos : best_pos + win_size] * window
+            output[synth_pos : synth_pos + win_size] += grain
+            weights[synth_pos : synth_pos + win_size] += window
+
+            synth_pos += synth_hop
+            ana_nom += ana_hop
+
+        nz = weights > 1e-4
+        output[nz] /= weights[nz]
+        res = output[:out_len]
+
+        fade_len = min(240, len(res) // 10)
         if fade_len > 2:
             ramp = np.linspace(0.0, 1.0, fade_len, dtype=np.float32)
-            stretched[:fade_len] *= ramp
-            stretched[-fade_len:] *= ramp[::-1]
-        return stretched
+            res[:fade_len] *= ramp
+            res[-fade_len:] *= ramp[::-1]
+        return res
+
+    @staticmethod
+    def _overlay_audio_segment(
+        full_audio: np.ndarray,
+        audio_arr: np.ndarray,
+        start_sample: int,
+        sample_rate: int = 24000,
+    ) -> np.ndarray:
+        """
+        Ghép nối mượt mà đoạn âm thanh vào luồng tổng bằng kỹ thuật Crossfade công suất tương đương,
+        loại bỏ hoàn toàn hiện tượng Hard Clipping và nổ lách tách do cộng dồn tín hiệu vượt ngưỡng.
+        """
+        if audio_arr.size == 0:
+            return full_audio
+
+        end_sample = start_sample + len(audio_arr)
+        if end_sample > len(full_audio):
+            pad_extra = (end_sample - len(full_audio)) + int(0.5 * sample_rate)
+            full_audio = np.pad(full_audio, (0, pad_extra))
+
+        existing = full_audio[start_sample:end_sample]
+        active_indices = np.where(np.abs(existing) > 1e-4)[0]
+        if len(active_indices) > 0:
+            max_fade = min(int(0.12 * sample_rate), len(audio_arr), len(existing))
+            fade_len = min(max_fade, int(active_indices[-1]) + 1)
+            if fade_len > 4:
+                t = np.linspace(0.0, np.pi / 2.0, fade_len, dtype=np.float32)
+                fade_out = np.cos(t) ** 2
+                fade_in = np.sin(t) ** 2
+                blended = existing[:fade_len] * fade_out + audio_arr[:fade_len] * fade_in
+                full_audio[start_sample : start_sample + fade_len] = blended
+                full_audio[start_sample + fade_len : end_sample] = audio_arr[fade_len:]
+            else:
+                full_audio[start_sample:end_sample] = np.maximum(-1.0, np.minimum(1.0, existing + audio_arr))
+        else:
+            full_audio[start_sample:end_sample] = audio_arr
+
+        # Bộ giới hạn biên độ mềm bảo vệ chống nổ âm lượng
+        seg = full_audio[start_sample:end_sample]
+        peak = float(np.max(np.abs(seg))) if len(seg) > 0 else 0.0
+        if peak > 0.98:
+            full_audio[start_sample:end_sample] = np.tanh(seg / 0.98) * 0.98
+
+        return full_audio
+
+    @staticmethod
+    def _calculate_safe_target_duration(text: str, slot_duration: float) -> Optional[float]:
+        """
+        Tính toán thời lượng tổng hợp an toàn dựa trên tốc độ nói tự nhiên của tiếng Việt:
+        - Nếu khung phụ đề quá dài so với câu ngắn (ví dụ 2 từ trong 4s): Không ép kéo dài dị dạng, trả về None.
+        - Nếu khung phụ đề quá ngắn so với câu dài (ví dụ 30 từ trong 1.5s): Chặn lại ở ngưỡng co nén tối đa 0.75x.
+        - Nếu nằm trong dải tốc độ bình thường: Trả về chính xác slot_duration để đồng bộ khớp khung hình.
+        """
+        clean = text.strip()
+        if not clean or slot_duration <= 0.0:
+            return None
+
+        words = max(1, len(clean.split()))
+        natural_dur = max(0.6, words / 3.8)
+
+        # Khung phụ đề quá dài: để nói tự nhiên và để khoảng lặng tự nhiên phía sau
+        if slot_duration > natural_dur * 1.35:
+            return None
+
+        # Khung phụ đề quá ngắn: chặn ở ngưỡng co nén tối đa cho phép
+        if slot_duration < natural_dur * 0.70:
+            return round(natural_dur * 0.75, 2)
+
+        return round(slot_duration, 2)
 
     def _compute_block_cache_path(
         self,
@@ -2025,7 +2164,7 @@ class TTSEngine:
             if not self.auto_extract_ref and self.ref_audio_path and os.path.exists(self.ref_audio_path):
                 self.set_reference_voice(self.ref_audio_path, self.ref_text)
             elif self.auto_extract_ref and video_path and os.path.exists(video_path):
-                self.extract_reference_from_video(video_path)
+                self.extract_reference_from_video(video_path, enable_ai_vocal_separation=self.enable_ai_vocal_separation)
             elif self.ref_audio_path and os.path.exists(self.ref_audio_path):
                 self.set_reference_voice(self.ref_audio_path, self.ref_text)
 
@@ -2058,7 +2197,7 @@ class TTSEngine:
 
             target_dur: Optional[float] = None
             if self.sync_to_subtitle_duration and slot_duration >= 0.8:
-                target_dur = slot_duration
+                target_dur = self._calculate_safe_target_duration(text_to_speak, slot_duration)
 
             override_prompt: Optional[VoiceClonePrompt] = None
             override_ref: Optional[str] = None
@@ -2187,12 +2326,7 @@ class TTSEngine:
                     if cached_arr.ndim > 1:
                         cached_arr = np.mean(cached_arr, axis=1)
                     start_sample = int(start_sec * self.sample_rate)
-                    end_sample = start_sample + len(cached_arr)
-                    if end_sample > len(full_audio):
-                        full_audio = np.pad(full_audio, (0, end_sample - len(full_audio) + int(0.5 * self.sample_rate)))
-                    full_audio[start_sample:end_sample] = np.clip(
-                        full_audio[start_sample:end_sample] + cached_arr, -1.0, 1.0
-                    )
+                    full_audio = self._overlay_audio_segment(full_audio, cached_arr, start_sample, self.sample_rate)
                     report.succeeded_count += 1
                     report.resumed_from_cache_count += 1
                     self.log(f"Khôi phục từ bộ nhớ đệm [{i + 1}/{len(blocks)}] ({spk_label}): {text_to_speak}")
@@ -2270,7 +2404,7 @@ class TTSEngine:
                     if avail_before_next > 0.4 and cur_dur_sec > avail_before_next * 1.03:
                         needed_speed = cur_dur_sec / avail_before_next
                         if needed_speed <= 1.35:
-                            audio_arr = self._safe_time_stretch(audio_arr, needed_speed)
+                            audio_arr = self._safe_time_stretch(audio_arr, needed_speed, sample_rate=self.sample_rate)
                             report.stretched_count += 1
 
                 # Lưu vào bộ nhớ đệm khôi phục tác vụ nếu được bật
@@ -2281,15 +2415,7 @@ class TTSEngine:
                         pass
 
                 start_sample = int(start_sec * self.sample_rate)
-                end_sample = start_sample + len(audio_arr)
-
-                # Tự động mở rộng bộ đệm âm thanh nếu câu cuối (hoặc câu dài) vượt quá độ dài dự kiến ban đầu
-                if end_sample > len(full_audio):
-                    pad_extra = (end_sample - len(full_audio)) + int(0.5 * self.sample_rate)
-                    full_audio = np.pad(full_audio, (0, pad_extra))
-
-                existing = full_audio[start_sample:end_sample]
-                full_audio[start_sample:end_sample] = np.clip(existing + audio_arr, -1.0, 1.0)
+                full_audio = self._overlay_audio_segment(full_audio, audio_arr, start_sample, self.sample_rate)
                 report.succeeded_count += 1
 
             except Exception as e:

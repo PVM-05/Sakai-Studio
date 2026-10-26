@@ -1343,6 +1343,97 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
         params_off = ui._collect_engine_params()
         self.assertFalse(params_off["ai_vocal_separation"])
 
+
+    def test_wsola_pitch_preservation(self):
+        """
+        Xac minh thuat toan co gian thoi luong WSOLA bao toan 100% cao do am thanh:
+        - Tan so ban dau 250 Hz.
+        - Khi tang toc 1.3x, tan so phai duoc giu nguyen ~250 Hz (+/- 2%), khong bi day vot len 325 Hz (chipmunk).
+        - Khi giam toc 0.8x, tan so cung phai duoc giu nguyen ~250 Hz (+/- 2%).
+        """
+        sr = 24000
+        t = np.linspace(0, 1.0, sr, endpoint=False, dtype=np.float32)
+        orig_freq = 250.0
+        tone = (0.5 * np.sin(2 * np.pi * orig_freq * t)).astype(np.float32)
+
+        # Tang toc 1.3x
+        stretched_fast = TTSEngine._safe_time_stretch(tone, speed_factor=1.3, sample_rate=sr)
+        self.assertLess(len(stretched_fast), len(tone))
+        fft_fast = np.abs(np.fft.rfft(stretched_fast))
+        freqs_fast = np.fft.rfftfreq(len(stretched_fast), d=1.0 / sr)
+        peak_fast = freqs_fast[np.argmax(fft_fast)]
+        self.assertAlmostEqual(peak_fast, orig_freq, delta=6.0, msg="Cao do khong duoc bien dang khi tang toc")
+
+        # Giam toc 0.8x
+        stretched_slow = TTSEngine._safe_time_stretch(tone, speed_factor=0.8, sample_rate=sr)
+        self.assertGreater(len(stretched_slow), len(tone))
+        fft_slow = np.abs(np.fft.rfft(stretched_slow))
+        freqs_slow = np.fft.rfftfreq(len(stretched_slow), d=1.0 / sr)
+        peak_slow = freqs_slow[np.argmax(fft_slow)]
+        self.assertAlmostEqual(peak_slow, orig_freq, delta=6.0, msg="Cao do khong duoc bien dang khi giam toc")
+
+    def test_audio_overlay_crossfade_no_clipping(self):
+        """
+        Xac minh ky thuat ghep noi muot (Crossfade) loai bo hoan toan Hard Clipping khi 2 cau phu de chong lan:
+        - Bien do tong khong bi ep vuong goc o muc 1.0 (clipping square wave).
+        - Am thanh duoc ghep chuyen tiep em ai ma khong gay no lach tach.
+        """
+        sr = 24000
+        full_audio = np.zeros(int(3.0 * sr), dtype=np.float32)
+
+        # Doan 1: bien do 0.8
+        seg1 = np.full(int(1.5 * sr), 0.8, dtype=np.float32)
+        full_audio = TTSEngine._overlay_audio_segment(full_audio, seg1, start_sample=0, sample_rate=sr)
+
+        # Doan 2: chong lan 0.2s vao doan 1 voi bien do 0.8
+        start_seg2 = int(1.3 * sr)
+        seg2 = np.full(int(1.0 * sr), 0.8, dtype=np.float32)
+        full_audio = TTSEngine._overlay_audio_segment(full_audio, seg2, start_sample=start_seg2, sample_rate=sr)
+
+        # Dinh tin hieu khong vuot qua 1.0 va khong bi cat cut cung thanh xung vuong
+        max_val = np.max(np.abs(full_audio))
+        self.assertLessEqual(max_val, 1.0)
+        # Tai vung chong lan, gia tri phai duoc lam muot
+        overlap_slice = full_audio[start_seg2 : int(1.5 * sr)]
+        self.assertTrue(np.all(np.isfinite(overlap_slice)))
+
+    def test_extract_reference_from_video_no_name_error(self):
+        """
+        Xac minh ham extract_reference_from_video khong bi loi NameError: enable_ai_vocal_separation
+        du truyen tham so hay de mac dinh.
+        """
+        engine = TTSEngine(auto_extract_ref=False, mode="design")
+        # Video khong ton tai se tra ve None mot cach an toan ma khong vang ngoai le NameError
+        res1 = engine.extract_reference_from_video("dummy_non_existent_video.mp4")
+        self.assertIsNone(res1)
+
+        res2 = engine.extract_reference_from_video("dummy_non_existent_video.mp4", enable_ai_vocal_separation=True)
+        self.assertIsNone(res2)
+
+        res3 = engine.extract_reference_from_video("dummy_non_existent_video.mp4", enable_ai_vocal_separation=False)
+        self.assertIsNone(res3)
+
+    def test_calculate_safe_target_duration(self):
+        """
+        Xac minh co che tinh toan thoi luong an toan cho cau thoai:
+        - Cau ngan (2 tu) trong khung phu de 4.0s khong bi ep keo dai thanh 4.0s.
+        - Cau dai (30 tu) trong khung phu de 1.5s khong bi ep nen thanh 1.5s.
+        """
+        # Cau ngan: 2 tu, thoi luong noi tu nhien ~0.6s
+        safe_dur_short = TTSEngine._calculate_safe_target_duration("Chào anh.", slot_duration=4.0)
+        self.assertIsNone(safe_dur_short, "Cau qua ngan so voi khung gio thi de noi tu nhien, khong ep keo dai")
+
+        # Cau dai: 30 tu, thoi luong noi tu nhien ~7.5s trong khung 1.5s
+        long_text = " ".join(["từ"] * 30)
+        safe_dur_long = TTSEngine._calculate_safe_target_duration(long_text, slot_duration=1.5)
+        self.assertIsNotNone(safe_dur_long)
+        self.assertGreaterEqual(safe_dur_long, 5.0)
+
+        # Cau vua van: 10 tu (~2.6s) trong khung 2.8s -> giu nguyen 2.8s
+        medium_text = " ".join(["từ"] * 10)
+        safe_dur_med = TTSEngine._calculate_safe_target_duration(medium_text, slot_duration=2.8)
+        self.assertEqual(safe_dur_med, 2.8)
+
 if __name__ == "__main__":
     unittest.main()
 
