@@ -36,6 +36,7 @@ from src.ai_engines.translator import SubtitleTranslator, SubtitleBlock
 from src.core.tools.subtitle_exporter import SubtitleExporter
 from src.desktop.ui.component.stepper import StepperWidget
 from src.core.tools.folder_memory import FolderMemoryDialog
+from src.core.tools.common_tools import is_video_file
 from src.ai_engines.ocr_engine import VideoOcrEngine, SubtitleSegment
 from src.core.tools.subtitle_remover_remote_call import SubtitleRemoverRemoteCall
 from src.desktop.ui.component.video_display_component import VideoDisplayComponent
@@ -905,6 +906,47 @@ class AutoPipelineInterface(QWidget):
         self._load_pipeline_config()
         self._connect_signals()
         self._update_settings_summary()
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event):
+        mime = event.mimeData()
+        if mime and hasattr(mime, 'hasUrls') and mime.hasUrls():
+            for url in mime.urls():
+                p = os.path.abspath(os.path.normpath(url.toLocalFile())) if url.toLocalFile() else ""
+                if p and is_video_file(p):
+                    event.acceptProposedAction()
+                    return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        mime = event.mimeData()
+        if mime and hasattr(mime, 'hasUrls') and mime.hasUrls():
+            for url in mime.urls():
+                p = os.path.abspath(os.path.normpath(url.toLocalFile())) if url.toLocalFile() else ""
+                if p and is_video_file(p):
+                    event.acceptProposedAction()
+                    return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        mime = event.mimeData()
+        if mime and hasattr(mime, 'hasUrls') and mime.hasUrls():
+            files = [os.path.abspath(os.path.normpath(u.toLocalFile())) for u in mime.urls() if u.toLocalFile()]
+            video_files = [f for f in files if is_video_file(f)]
+            if video_files:
+                self.video_queue = video_files
+                self._select_video_file_by_path(video_files[0])
+                self.btn_view_queue.setEnabled(True)
+                if len(video_files) == 1:
+                    self.lbl_video_status.setText(f"Đã nạp Video: {os.path.basename(video_files[0])}")
+                    InfoBar.success("Đã nạp Video", f"Tệp: {os.path.basename(video_files[0])}", parent=self, duration=2500)
+                else:
+                    self.lbl_video_status.setText(f"Hàng đợi kéo thả ({len(video_files)} video): {os.path.basename(video_files[0])}")
+                    InfoBar.success("Đã nạp video hàng loạt", f"Đã xếp hàng đợi {len(video_files)} video để xử lý tuần tự!", parent=self, duration=3000)
+                self.lbl_video_status.setStyleSheet("color: #107c41; font-weight: bold;")
+                event.acceptProposedAction()
+                return
+        super().dropEvent(event)
 
     def showEvent(self, event: QShowEvent):
         super().showEvent(event)

@@ -15,7 +15,7 @@ from src.core.tools.constant import InpaintMode, SubtitleDetectMode
 
 class SettingInterface(QtWidgets.QVBoxLayout):
 
-    def __init__(self, parent):
+    def __init__(self, parent=None):
         super().__init__()
         self.setContentsMargins(0, 0, 0, 0)
         self.setSpacing(12)
@@ -276,12 +276,12 @@ class SettingInterface(QtWidgets.QVBoxLayout):
 
 
     def set_inpaint_mode_enabled(self, enabled):
-        """启用或禁用 inpaint 模式下拉框"""
+        """Bật hoặc vô hiệu hóa hộp chọn chế độ phục hồi nền"""
         self.inpaint_combo.setEnabled(enabled)
 
     def reset_setting(self):
-        """重置所有设置为默认值"""
-        # 这里需要实现重置逻辑
+        """Đặt lại toàn bộ cài đặt về giá trị mặc định"""
+        # Triển khai đặt lại cấu hình mặc định
         pass
 
     def update_gpu_info(self):

@@ -21,10 +21,19 @@ Base = declarative_base()
 def init_db(target_engine=None):
     use_engine = target_engine or engine
     Base.metadata.create_all(bind=use_engine)
-
-
-# Tự động tạo bảng nếu chưa có
-init_db()
+    try:
+        with use_engine.connect() as conn:
+            from sqlalchemy import text
+            res = conn.execute(text("PRAGMA table_info(users)"))
+            cols = [row[1] for row in res.fetchall()]
+            if cols and "password_hash" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN password_hash VARCHAR(255)"))
+                conn.commit()
+            if cols and "full_name" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN full_name VARCHAR(255)"))
+                conn.commit()
+    except Exception:
+        pass
 
 
 class User(Base):
@@ -32,6 +41,8 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     username = Column(String(100), unique=True, index=True, nullable=False)
+    password_hash = Column(String(255), nullable=True)
+    full_name = Column(String(255), nullable=True)
     email = Column(String(255), unique=True, index=True, nullable=True)
     plan = Column(String(50), default="Tiêu chuẩn")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -101,17 +112,17 @@ class ExtractJob(Base):
     created_at = Column(DateTime, default=func.now())
     completed_at = Column(DateTime, nullable=True)
 
+
+# Tự động khởi tạo bảng cơ sở dữ liệu và di trú cấu trúc
+init_db()
+
+
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
-
-
-def init_db(target_engine=None):
-    use_engine = target_engine or engine
-    Base.metadata.create_all(bind=use_engine)
 
 
 def create_task_job(

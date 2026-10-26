@@ -6,14 +6,14 @@ from dataclasses import dataclass
 from functools import cached_property
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QMenu, QAbstractItemView, QTableWidgetItem, QHeaderView
-from PySide6.QtCore import Qt, Signal, QModelIndex, QUrl
+from PySide6.QtCore import Qt, Signal, QModelIndex, QUrl, QEvent
 from qfluentwidgets import TableWidget, BodyLabel, FluentIcon, InfoBar, InfoBarPosition
 from PySide6.QtGui import QAction, QColor, QBrush
 import platform
 import subprocess
 
 from src.core.config import config, tr
-from src.core.tools.common_tools import is_image_file
+from src.core.tools.common_tools import is_image_file, is_video_file
 
 @unique
 class TaskStatus(Enum):
@@ -116,7 +116,60 @@ class TaskListComponent(QWidget):
         self.table.customContextMenuRequested.connect(self.show_context_menu)
         self.table.clicked.connect(self.on_task_clicked)
         
+        self.setAcceptDrops(True)
+        self.table.setAcceptDrops(True)
+        self.table.installEventFilter(self)
+        if hasattr(self.table, 'viewport') and self.table.viewport():
+            self.table.viewport().installEventFilter(self)
+
         layout.addWidget(self.table)
+
+    def eventFilter(self, watched, event):
+        if watched in (self.table, getattr(self.table, 'viewport', lambda: None)()):
+            if event.type() == QEvent.DragEnter:
+                self.dragEnterEvent(event)
+                return event.isAccepted()
+            elif event.type() == QEvent.DragMove:
+                self.dragMoveEvent(event)
+                return event.isAccepted()
+            elif event.type() == QEvent.Drop:
+                self.dropEvent(event)
+                return event.isAccepted()
+        return super().eventFilter(watched, event)
+
+    def dragEnterEvent(self, event):
+        mime = event.mimeData()
+        if mime and hasattr(mime, 'hasUrls') and mime.hasUrls():
+            for url in mime.urls():
+                p = os.path.abspath(os.path.normpath(url.toLocalFile())) if url.toLocalFile() else ""
+                if p and (is_video_file(p) or is_image_file(p)):
+                    event.acceptProposedAction()
+                    return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        mime = event.mimeData()
+        if mime and hasattr(mime, 'hasUrls') and mime.hasUrls():
+            for url in mime.urls():
+                p = os.path.abspath(os.path.normpath(url.toLocalFile())) if url.toLocalFile() else ""
+                if p and (is_video_file(p) or is_image_file(p)):
+                    event.acceptProposedAction()
+                    return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        mime = event.mimeData()
+        if mime and hasattr(mime, 'hasUrls') and mime.hasUrls():
+            added_any = False
+            for url in mime.urls():
+                p = os.path.abspath(os.path.normpath(url.toLocalFile())) if url.toLocalFile() else ""
+                if p and (is_video_file(p) or is_image_file(p)):
+                    self.add_task(p)
+                    added_any = True
+            if added_any:
+                event.acceptProposedAction()
+                return
+        super().dropEvent(event)
         
     def add_task(self, video_path):
         """添加任务到列表

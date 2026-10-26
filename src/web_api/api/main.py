@@ -888,3 +888,130 @@ async def extract_delete_history(job_id: str, db: Session = Depends(get_db)):
     if not success:
         raise HTTPException(status_code=404, detail="Không tìm thấy mục lịch sử trích xuất")
     return {"status": "Đã xóa mục lịch sử thành công"}
+
+
+# =========================================================================
+# XÁC THỰC NGƯỜI DÙNG SAAS (/auth)
+# =========================================================================
+
+import hashlib
+import secrets
+
+_ACTIVE_SESSIONS = {}
+
+
+def _hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+
+@app.post("/auth/register")
+async def auth_register(request: Request, db: Session = Depends(get_db)):
+    data = await request.json()
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    email = (data.get("email") or "").strip()
+    full_name = (data.get("full_name") or "").strip()
+
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="Tên tài khoản và mật khẩu không được để trống")
+
+    from src.web_api.api.database import User
+    existing = db.query(User).filter((User.username == username) | (User.email == email)).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Tên tài khoản hoặc email đã tồn tại trong hệ thống")
+
+    new_user = User(
+        username=username,
+        password_hash=_hash_password(password),
+        email=email or None,
+        full_name=full_name or None,
+        plan="Tiêu chuẩn",
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+
+    token = secrets.token_urlsafe(32)
+    _ACTIVE_SESSIONS[token] = new_user.id
+
+    return {
+        "success": True,
+        "token": token,
+        "user": {
+            "id": new_user.id,
+            "username": new_user.username,
+            "email": new_user.email,
+            "full_name": new_user.full_name,
+            "plan": new_user.plan,
+        }
+    }
+
+
+@app.post("/auth/login")
+async def auth_login(request: Request, db: Session = Depends(get_db)):
+    data = await request.json()
+    identifier = (data.get("identifier") or "").strip()
+    password = data.get("password") or ""
+
+    if not identifier or not password:
+        raise HTTPException(status_code=401, detail="Vui lòng cung cấp đầy đủ thông tin đăng nhập")
+
+    from src.web_api.api.database import User
+    user = db.query(User).filter((User.username == identifier) | (User.email == identifier)).first()
+    if not user or user.password_hash != _hash_password(password):
+        raise HTTPException(status_code=401, detail="Tên đăng nhập hoặc mật khẩu không chính xác")
+
+    token = secrets.token_urlsafe(32)
+    _ACTIVE_SESSIONS[token] = user.id
+
+    return {
+        "success": True,
+        "token": token,
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "full_name": user.full_name,
+            "plan": user.plan,
+        }
+    }
+
+
+@app.get("/auth/me")
+async def auth_me(request: Request, db: Session = Depends(get_db)):
+    auth_header = request.headers.get("Authorization", "")
+    token = ""
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+
+    if not token or token not in _ACTIVE_SESSIONS:
+        raise HTTPException(status_code=401, detail="Phiên làm việc không hợp lệ hoặc đã hết hạn")
+
+    user_id = _ACTIVE_SESSIONS[token]
+    from src.web_api.api.database import User
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Người dùng không tồn tại")
+
+    return {
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "full_name": user.full_name,
+            "plan": user.plan,
+        }
+    }
+
+
+@app.post("/auth/logout")
+async def auth_logout(request: Request):
+    auth_header = request.headers.get("Authorization", "")
+    token = ""
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+
+    if token in _ACTIVE_SESSIONS:
+        del _ACTIVE_SESSIONS[token]
+
+    return {"success": True, "message": "Đã đăng xuất thành công"}

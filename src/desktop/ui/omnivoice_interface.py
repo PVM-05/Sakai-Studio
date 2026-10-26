@@ -128,6 +128,7 @@ from qfluentwidgets import (
 from src.core.config import config, BASE_DIR
 
 from src.core.tools.folder_memory import FolderMemoryDialog
+from src.core.tools.common_tools import is_video_file
 
 from src.ai_engines.translator import SubtitleBlock, parse_srt
 
@@ -1165,6 +1166,71 @@ class OmniVoiceInterface(ScrollArea):
         self._switch_to_step(0)
 
         self._update_identify_button_state()
+
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event):
+        mime = event.mimeData()
+        if mime and hasattr(mime, 'hasUrls') and mime.hasUrls():
+            for url in mime.urls():
+                p = os.path.abspath(os.path.normpath(url.toLocalFile())) if url.toLocalFile() else ""
+                if p and (is_video_file(p) or p.lower().endswith(('.srt', '.vtt', '.ass', '.txt', '.wav', '.mp3', '.pt'))):
+                    event.acceptProposedAction()
+                    return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        mime = event.mimeData()
+        if mime and hasattr(mime, 'hasUrls') and mime.hasUrls():
+            for url in mime.urls():
+                p = os.path.abspath(os.path.normpath(url.toLocalFile())) if url.toLocalFile() else ""
+                if p and (is_video_file(p) or p.lower().endswith(('.srt', '.vtt', '.ass', '.txt', '.wav', '.mp3', '.pt'))):
+                    event.acceptProposedAction()
+                    return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        mime = event.mimeData()
+        if mime and hasattr(mime, 'hasUrls') and mime.hasUrls():
+            sub_file = None
+            vid_file = None
+            audio_file = None
+            for url in mime.urls():
+                p = os.path.abspath(os.path.normpath(url.toLocalFile())) if url.toLocalFile() else ""
+                if not p or not os.path.exists(p):
+                    continue
+                if p.lower().endswith(('.srt', '.vtt', '.ass', '.txt')) and not sub_file:
+                    sub_file = p
+                elif is_video_file(p) and not vid_file:
+                    vid_file = p
+                elif p.lower().endswith(('.wav', '.mp3', '.pt')) and not audio_file:
+                    audio_file = p
+
+            handled = False
+            if sub_file or vid_file:
+                if hasattr(self, 'workspace_pivot') and hasattr(self, 'workspace_stack'):
+                    self.workspace_pivot.setCurrentItem("sub_dub_page")
+                    self.workspace_stack.setCurrentIndex(1)
+                if sub_file:
+                    self._load_subtitle_file_internal(sub_file)
+                if vid_file:
+                    self.current_video_path = vid_file
+                    if hasattr(self, '_update_sub_video_status_label'):
+                        self._update_sub_video_status_label()
+                handled = True
+            elif audio_file:
+                self.current_ref_audio_path = audio_file
+                if hasattr(self, 'lbl_ref_status'):
+                    self.lbl_ref_status.setText(f"Tệp âm thanh mẫu đang nạp: {os.path.basename(audio_file)}")
+                if hasattr(self, '_update_control_states'):
+                    self._update_control_states()
+                InfoBar.success("Đã nạp mẫu giọng", os.path.basename(audio_file), parent=self, duration=2500)
+                handled = True
+
+            if handled:
+                event.acceptProposedAction()
+                return
+        super().dropEvent(event)
 
     def _init_ui(self):
 

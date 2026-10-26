@@ -21,7 +21,7 @@ from src.core.config import config, tr
 from src.core.tools.constant import InpaintMode, SubtitleDetectMode
 from src.core.tools.subtitle_remover_remote_call import SubtitleRemoverRemoteCall
 from src.core.tools.process_manager import ProcessManager
-from src.core.tools.common_tools import get_readable_path, is_image_file, read_image
+from src.core.tools.common_tools import get_readable_path, is_image_file, read_image, is_video_file
 from src.core.tools.subtitle_exporter import SubtitleExporter
 from src.ai_engines.ocr_engine import VideoOcrEngine
 
@@ -437,6 +437,49 @@ class HomeInterface(QWidget):
         right_layout.addWidget(button_container)
 
         main_layout.addLayout(right_layout, 1)
+
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event):
+        mime = event.mimeData()
+        if mime and hasattr(mime, 'hasUrls') and mime.hasUrls():
+            for url in mime.urls():
+                p = os.path.abspath(os.path.normpath(url.toLocalFile())) if url.toLocalFile() else ""
+                if p and (is_video_file(p) or is_image_file(p)):
+                    event.acceptProposedAction()
+                    return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        mime = event.mimeData()
+        if mime and hasattr(mime, 'hasUrls') and mime.hasUrls():
+            for url in mime.urls():
+                p = os.path.abspath(os.path.normpath(url.toLocalFile())) if url.toLocalFile() else ""
+                if p and (is_video_file(p) or is_image_file(p)):
+                    event.acceptProposedAction()
+                    return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        mime = event.mimeData()
+        if mime and hasattr(mime, 'hasUrls') and mime.hasUrls():
+            files = [os.path.abspath(os.path.normpath(u.toLocalFile())) for u in mime.urls() if u.toLocalFile()]
+            valid_files = [f for f in files if is_video_file(f) or is_image_file(f)]
+            if valid_files:
+                files_loaded = []
+                for path in reversed(valid_files):
+                    if self.load_video(path):
+                        self.append_output(f"{tr['SubtitleExtractorGUI']['OpenVideoSuccess']}: {path}")
+                        files_loaded.append(path)
+                    else:
+                        self.append_output(f"{tr['SubtitleExtractorGUI']['OpenVideoFailed']}: {path}")
+                for path in reversed(files_loaded):
+                    self.task_list_component.add_task(path)
+                    index = max(0, self.task_list_component.find_task_index_by_path(path))
+                    self.task_list_component.select_task(index)
+                event.acceptProposedAction()
+                return
+        super().dropEvent(event)
     
     def save_remover_config(self):
         try:
@@ -1690,36 +1733,35 @@ class HomeInterface(QWidget):
             if isFinished:
                 self.processing_finished()
         except Exception as e:
-            # 捕获 any exception, 防止 crash
-            print(f"更新进度时出错: {str(e)}")
+            # Bắt ngoại lệ để tránh dừng đột ngột
+            print(f"Lỗi khi cập nhật tiến độ: {str(e)}")
 
     @Slot(list)
     def append_log(self, log):
         self.append_output(*log)
 
     def append_output(self, *args):
-        """添加文本到输出区域并控制滚动
+        """Thêm văn bản vào vùng hiển thị đầu ra và tự động cuộn theo tiến trình
         Args:
-            *args: 要输出的内容，多个参数将用空格连接
+            *args: Nội dung cần hiển thị, các tham số sẽ được nối bằng dấu cách
         """
-        # 将所有参数转换为字符串并用空格连接
         text = ' '.join(str(arg) for arg in args).rstrip()
         timestamp = datetime.now().strftime('%H:%M:%S')
-        # 转义HTML特殊字符
         escaped = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        # 根据内容判断消息类型并着色
-        if '错误' in text or 'Error' in text or '失败' in text or 'Failed' in text:
+        if any(k in text for k in ['Lỗi', 'Thất bại', 'lỗi', 'thất bại', 'Error', 'Failed', 'error', 'failed', '错误', '失败']):
             color = '#e74c3c'
-        elif '成功' in text or '完成' in text or 'Success' in text or 'Finished' in text:
+        elif any(k in text for k in ['Thành công', 'Hoàn thành', 'thành công', 'hoàn thành', 'Success', 'Finished', 'success', 'finished', '成功', '完成']):
             color = '#27ae60'
-        elif '警告' in text or 'Warning' in text:
+        elif any(k in text for k in ['Cảnh báo', 'cảnh báo', 'Lưu ý', 'Warning', 'warning', '警告']):
             color = '#f39c12'
         else:
             color = '#2980b9'
         html = f'<span style="color:#888;">[{timestamp}]</span> <span style="color:{color};">{escaped}</span><br>'
         self.output_text.append(html)
-        print(*args)  # 保持原始的 print 行为
-        # 如果启用了自动滚动，则滚动到底部
+        try:
+            print(*args)
+        except Exception:
+            pass
         if self.auto_scroll:
             scrollbar = self.output_text.verticalScrollBar()
             scrollbar.setValue(scrollbar.maximum())

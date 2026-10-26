@@ -1350,7 +1350,7 @@ class YtdlpInterface(ScrollArea):
             
             # Populate Playlist Checklist Table
             self.playlist_card.show()
-            self.playlist_header_title.setText(f"Danh sách video trong Playlist ({len(entries)} video):")
+            self.playlist_header_title.setText(f"Danh sách video trong danh sách phát: {len(entries)} video")
             self.playlist_table.setRowCount(0)
             self.playlist_table.setRowCount(len(entries))
             
@@ -1443,9 +1443,9 @@ class YtdlpInterface(ScrollArea):
                 },
                 {
                     'id': 'playlist_audio',
-                    'type': 'Audio Only',
+                    'type': 'Chỉ âm thanh',
                     'raw_type': 'Audio Only',
-                    'quality': 'Tải toàn bộ Playlist (MP3)',
+                    'quality': 'Tải toàn bộ danh sách phát định dạng âm thanh MP3',
                     'ext': 'mp3',
                     'size': 'Tùy chọn',
                     'codec': 'Auto'
@@ -1474,22 +1474,22 @@ class YtdlpInterface(ScrollArea):
                     else:
                         size_str = f"{size / (1024*1024):.2f} MiB"
                 else:
-                    size_str = "Unknown"
+                    size_str = "Không rõ dung lượng"
                     
                 if is_video and is_audio:
-                    type_str = "Video + Audio"
+                    type_str = "Video và âm thanh"
                     raw_type = "Video + Audio"
                     resolution = f.get('resolution') or f.get('format_note') or f"{f.get('width')}x{f.get('height')}"
                     fps = f.get('fps')
                     if fps: resolution += f" {fps}fps"
                 elif is_video:
-                    type_str = "Video + Audio"  # Will be merged with best audio
+                    type_str = "Video và âm thanh"  # Will be merged with best audio
                     raw_type = "Video Only"
                     resolution = f.get('resolution') or f.get('format_note') or f"{f.get('width')}x{f.get('height')}"
                     fps = f.get('fps')
                     if fps: resolution += f" {fps}fps"
                 else:
-                    type_str = "Audio Only"
+                    type_str = "Chỉ âm thanh"
                     raw_type = "Audio Only"
                     resolution = f.get('format_note') or (f"{int(f.get('abr', 0))} kbps" if f.get('abr') else "Audio")
                     

@@ -14,6 +14,7 @@ from src.desktop.ui.component.video_display_component import VideoDisplayCompone
 from src.desktop.ui.component.task_list_component import TaskListComponent, TaskStatus, TaskOptions
 from src.core.config import config, tr
 from src.core.tools.subtitle_exporter import SubtitleExporter
+from src.core.tools.common_tools import is_video_file
 from src.ai_engines.ocr_engine import VideoOcrEngine
 
 
@@ -216,12 +217,47 @@ class ExtractorInterface(QWidget):
         right_layout.addWidget(button_container)
         main_layout.addLayout(right_layout, 1)
 
+        self.setAcceptDrops(True)
+
         # Cải tiến: Cho phép nhãn cấu hình tự động xuống dòng tránh bị che khuất
         from PySide6.QtWidgets import QWidget
         for child in self.findChildren(QWidget):
             if hasattr(child, 'contentLabel') and hasattr(child, 'titleLabel'):
                 child.contentLabel.setWordWrap(True)
                 child.titleLabel.setWordWrap(True)
+
+    def dragEnterEvent(self, event):
+        mime = event.mimeData()
+        if mime and hasattr(mime, 'hasUrls') and mime.hasUrls():
+            for url in mime.urls():
+                p = os.path.abspath(os.path.normpath(url.toLocalFile())) if url.toLocalFile() else ""
+                if p and is_video_file(p):
+                    event.acceptProposedAction()
+                    return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        mime = event.mimeData()
+        if mime and hasattr(mime, 'hasUrls') and mime.hasUrls():
+            for url in mime.urls():
+                p = os.path.abspath(os.path.normpath(url.toLocalFile())) if url.toLocalFile() else ""
+                if p and is_video_file(p):
+                    event.acceptProposedAction()
+                    return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        mime = event.mimeData()
+        if mime and hasattr(mime, 'hasUrls') and mime.hasUrls():
+            files = [os.path.abspath(os.path.normpath(u.toLocalFile())) for u in mime.urls() if u.toLocalFile()]
+            valid_files = [f for f in files if is_video_file(f)]
+            if valid_files:
+                for f in valid_files:
+                    self.task_list_component.add_task(f)
+                self._load_video(valid_files[0])
+                event.acceptProposedAction()
+                return
+        super().dropEvent(event)
 
     def _open_file(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -304,12 +340,15 @@ class ExtractorInterface(QWidget):
             InfoBar.error("Lỗi mở tệp", str(e), parent=self, duration=3000)
 
     def _start_extraction(self):
-        if not self.video_path or not os.path.exists(self.video_path):
-            InfoBar.warning("Cảnh báo", "Vui lòng chọn tệp video trước khi trích xuất!", parent=self, duration=3000)
+        if self._extract_thread and self._extract_thread.isRunning():
+            self._extract_thread.stop()
+            self.btn_extract.setText("Đang hủy...")
+            self.btn_extract.setEnabled(False)
+            InfoBar.info("Đang hủy", "Đang dừng tiến trình trích xuất phụ đề...", parent=self, duration=2000)
             return
 
-        if self._extract_thread and self._extract_thread.isRunning():
-            InfoBar.info("Thông báo", "Đang trong quá trình trích xuất phụ đề...", parent=self, duration=3000)
+        if not self.video_path or not os.path.exists(self.video_path):
+            InfoBar.warning("Cảnh báo", "Vui lòng chọn tệp video trước khi trích xuất!", parent=self, duration=3000)
             return
 
         idx = self.mode_card.comboBox.currentIndex()
@@ -322,8 +361,9 @@ class ExtractorInterface(QWidget):
         sub_areas = self.video_display_component.selection_rects
         save_dir = config.srtSaveDirectory.value or ""
 
-        self.btn_extract.setEnabled(False)
-        self.btn_extract.setText("Đang trích xuất...")
+        self.btn_extract.setEnabled(True)
+        self.btn_extract.setText("Hủy trích xuất")
+        self.btn_extract.setIcon(FluentIcon.CANCEL)
 
         InfoBar.info("Đang xử lý", "Đang bắt đầu nhận diện chữ và trích xuất phụ đề...", parent=self, duration=3000)
 
@@ -335,6 +375,7 @@ class ExtractorInterface(QWidget):
     def _on_extraction_finished(self, out_srt_path: str, success: bool, message: str):
         self.btn_extract.setEnabled(True)
         self.btn_extract.setText("Trích xuất SRT")
+        self.btn_extract.setIcon(FluentIcon.DOCUMENT)
 
         if success and out_srt_path:
             self.last_exported_srt_path = out_srt_path

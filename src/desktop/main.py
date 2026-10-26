@@ -81,7 +81,7 @@ class SubtitleExtractorGUI(FluentWindow):
         self.showMaximized()
 
     def _lazy_check_update(self):
-        """ 延迟检查更新 """
+        """Trì hoãn kiểm tra cập nhật phiên bản mới."""
         if not config.checkUpdateOnStartup.value:
             return
         self.check_update_timer = QtCore.QTimer(self)
@@ -96,10 +96,19 @@ class SubtitleExtractorGUI(FluentWindow):
     def change_language(self, language):
         """Thay đổi ngôn ngữ nóng tức thì không cần khởi động lại ứng dụng"""
         try:
-            # 1. Nạp lại file dịch thuật tương ứng từ backend/interface/
-            translation_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backend', 'interface', f"{language}.ini")
-            if os.path.exists(translation_file):
-                tr.read(translation_file, encoding='utf-8')
+            # 1. Nạp lại file dịch thuật tương ứng từ src/core/interface/
+            core_translation = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                'core',
+                'interface',
+                f"{language}.ini"
+            )
+            if os.path.exists(core_translation):
+                tr.read(core_translation, encoding='utf-8')
+            else:
+                fallback = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backend', 'interface', f"{language}.ini")
+                if os.path.exists(fallback):
+                    tr.read(fallback, encoding='utf-8')
             
             # 2. Cập nhật tiêu đề cửa sổ chính
             self.setWindowTitle("Sakai Studio v" + VERSION)
@@ -231,7 +240,7 @@ class SubtitleExtractorGUI(FluentWindow):
             pass
 
     def load_window_position(self):
-        """Luôn luôn mở rộng toàn màn hình (Full Screen / Maximized) mỗi khi mở ứng dụng"""
+        """Luôn luôn mở rộng toàn màn hình mỗi khi mở ứng dụng"""
         try:
             self.showMaximized()
         except Exception as e:
@@ -249,13 +258,17 @@ class SubtitleExtractorGUI(FluentWindow):
         self.move(x, y)
 
     def keyPressEvent(self, event):
-        """处理键盘事件"""
-        # 检测Ctrl+C组合键
+        """Xử lý sự kiện bàn phím"""
+        # Kiểm tra tổ hợp phím Ctrl+C
         if event.key() == QtCore.Qt.Key_C and event.modifiers() == QtCore.Qt.ControlModifier:
-            print("\n程序被用户中断(Ctrl+C)，正在退出...")
+            print("\nỨng dụng được người dùng yêu cầu thoát bằng phím tắt Ctrl+C...")
             self.close()
         else:
             super().keyPressEvent(event)
+
+
+# Định danh tương thích cho các mô-đun và kiểm thử gọi MainWindow
+MainWindow = SubtitleExtractorGUI
 
 
 if __name__ == '__main__':

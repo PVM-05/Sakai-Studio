@@ -338,7 +338,7 @@ class VideoDisplayComponent(QWidget):
         self.frame_badge_label = QtWidgets.QLabel("1 / 100")
         self.frame_badge_label.setStyleSheet("color: #CCCCCC; background-color: rgba(255, 255, 255, 0.12); border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: bold; font-family: Consolas, monospace;")
 
-        # Xếp thứ tự chuẩn YouTube: Play ➔ Tua lùi ➔ Tua tới ➔ Dừng ➔ Đồng hồ ➔ Loa ➔ Slider ➔ HD Badge
+        # Xếp thứ tự chuẩn: Phát -> Tua lùi -> Tua tới -> Dừng -> Đồng hồ -> Loa -> Thanh trượt -> Thẻ số khung hình
         player_bar_layout.addWidget(self.play_btn)
         player_bar_layout.addWidget(self.rewind_btn)
         player_bar_layout.addWidget(self.forward_btn)
@@ -432,7 +432,7 @@ class VideoDisplayComponent(QWidget):
             self.volume_slider.setValue(restore_val if restore_val > 0 else 80)
 
     def on_volume_changed(self, value: int):
-        """Thay đổi âm lượng âm thanh (0-100)"""
+        """Thay đổi âm lượng âm thanh từ 0 đến 100"""
         vol_float = max(0.0, min(1.0, value / 100.0))
         if hasattr(self, 'audio_output'):
             try:

@@ -459,11 +459,44 @@ class TranslationInterface(QWidget):
 
         main_layout.addWidget(export_card)
 
+        self.setAcceptDrops(True)
+
         # Cải tiến: Cho phép nhãn cấu hình tự động xuống dòng tránh bị che khuất
         for child in self.findChildren(QWidget):
             if hasattr(child, 'contentLabel') and hasattr(child, 'titleLabel'):
                 child.contentLabel.setWordWrap(True)
                 child.titleLabel.setWordWrap(True)
+
+    def dragEnterEvent(self, event):
+        mime = event.mimeData()
+        if mime and hasattr(mime, 'hasUrls') and mime.hasUrls():
+            for url in mime.urls():
+                p = os.path.abspath(os.path.normpath(url.toLocalFile())) if url.toLocalFile() else ""
+                if p and p.lower().endswith(('.srt', '.vtt', '.ass', '.txt')):
+                    event.acceptProposedAction()
+                    return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        mime = event.mimeData()
+        if mime and hasattr(mime, 'hasUrls') and mime.hasUrls():
+            for url in mime.urls():
+                p = os.path.abspath(os.path.normpath(url.toLocalFile())) if url.toLocalFile() else ""
+                if p and p.lower().endswith(('.srt', '.vtt', '.ass', '.txt')):
+                    event.acceptProposedAction()
+                    return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        mime = event.mimeData()
+        if mime and hasattr(mime, 'hasUrls') and mime.hasUrls():
+            for url in mime.urls():
+                p = os.path.abspath(os.path.normpath(url.toLocalFile())) if url.toLocalFile() else ""
+                if p and p.lower().endswith(('.srt', '.vtt', '.ass', '.txt')) and os.path.isfile(p):
+                    self.load_subtitle_file(p)
+                    event.acceptProposedAction()
+                    return
+        super().dropEvent(event)
 
     def _connect_signals(self):
         self.file_button.clicked.connect(self._open_single_file)
