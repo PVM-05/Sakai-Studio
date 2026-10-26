@@ -925,7 +925,7 @@ class OmniVoiceTaskWorker(QThread):
 
                 )
 
-                self.species = engine.speaker_profiles
+                self.speaker_profiles = engine.speaker_profiles
 
                 if engine.speaker_profiles:
 
@@ -3965,6 +3965,8 @@ class OmniVoiceInterface(ScrollArea):
 
         self._populate_subtitle_table()
 
+        self._update_character_profiles_overview()
+
         InfoBar.success("Đã nạp mẫu giọng", f"Đã gán tệp âm thanh mẫu cho {spk_name}.", parent=self, duration=2500)
 
     def _on_casting_table_item_changed(self, item: QTableWidgetItem):
@@ -4050,6 +4052,7 @@ class OmniVoiceInterface(ScrollArea):
             self._populate_subtitle_table()
 
         self._sync_speaker_selectors()
+        self._update_character_profiles_overview()
 
     def _on_casting_cell_changed(self, row: int, column: int):
 
@@ -4190,6 +4193,7 @@ class OmniVoiceInterface(ScrollArea):
         if hasattr(self, "casting_progress_bar"):
             self.casting_progress_bar.update_progress(self.subtitle_blocks)
         self._update_casting_table()
+        self._update_character_profiles_overview()
         self._filter_subtitle_table()
         InfoBar.success("Đã gán hàng loạt", f"Đã gán nhân vật '{target_spk}' cho {len(rows)} câu thoại thành công.", parent=self, duration=3000)
 
@@ -4294,7 +4298,8 @@ class OmniVoiceInterface(ScrollArea):
             try:
                 default_t = btn.property("default_text") or "Nghe Thử Giọng"
                 btn.setText(default_t)
-                btn.setIcon(FluentIcon.VOLUME)
+                default_icon = btn.property("default_icon") or (FluentIcon.PLAY if default_t == "Nghe" else FluentIcon.VOLUME)
+                btn.setIcon(default_icon)
                 btn.setEnabled(True)
             except RuntimeError:
                 pass
@@ -4303,13 +4308,17 @@ class OmniVoiceInterface(ScrollArea):
 
         """Phục hồi nút nghe thử khi bài phát âm thanh kết thúc hoặc lỗi."""
 
-        if status in (QMediaPlayer.MediaStatus.EndOfMedia, QMediaPlayer.MediaStatus.NoMedia, QMediaPlayer.MediaStatus.InvalidMedia):
+        if status in (QMediaPlayer.MediaStatus.EndOfMedia, QMediaPlayer.MediaStatus.InvalidMedia):
 
             self._reset_audition_button()
 
             if getattr(self, "_audition_all_active", False):
 
                 QTimer.singleShot(400, self._play_next_audition_in_queue)
+
+        elif status == QMediaPlayer.MediaStatus.NoMedia:
+
+            self._reset_audition_button()
 
     def _update_character_profiles_overview(self):
 
@@ -4729,17 +4738,28 @@ class OmniVoiceInterface(ScrollArea):
 
         prof = self.speaker_profiles[spk_name]
 
-        prof["method"] = "preset"
+        if hasattr(prof, "method"):
+            prof.method = "preset"
+            prof.preset_name = preset_name
+            prof.voice_instruct = instruct_val
+            prof.source_audio_path = ""
+            prof.status = "locked"
+        else:
+            prof["method"] = "preset"
+            prof["preset_name"] = preset_name
+            prof["voice_instruct"] = instruct_val
+            prof["source_audio_path"] = ""
+            prof["status"] = "locked"
 
-        prof["preset_name"] = preset_name
+        for blk in self.subtitle_blocks:
+            if getattr(blk, "speaker", "") == spk_name:
+                blk.voice_ref_path = ""
+                blk.voice_instruct = instruct_val
+                blk.is_speaker_locked = True
 
-        prof["voice_instruct"] = instruct_val
-
-        prof["source_audio_path"] = ""
-
-        prof["status"] = "locked"
-
+        self._populate_subtitle_table()
         self._update_casting_table()
+        self._update_character_profiles_overview()
 
         InfoBar.success(
 

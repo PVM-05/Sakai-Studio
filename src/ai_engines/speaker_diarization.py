@@ -59,6 +59,7 @@ class CharacterVoiceProfile:
     style_tag: str = "natural"
     recommended_voices: List[Dict[str, Any]] = field(default_factory=list)
     error_message: str = ""
+    ref_text: str = ""
 
     # Các thuộc tính bí danh hỗ trợ tương thích ngược 2 chiều
     @property
@@ -133,6 +134,7 @@ class CharacterVoiceProfile:
             "style_tag": self.style_tag,
             "recommended_voices": list(self.recommended_voices) if self.recommended_voices else [],
             "error_message": self.error_message,
+            "ref_text": self.ref_text,
         }
 
     _ALIAS_SET_MAP = {
@@ -205,6 +207,7 @@ class CharacterVoiceProfile:
             style_tag=str(data.get("style_tag") or "natural"),
             recommended_voices=list(data.get("recommended_voices") or []),
             error_message=str(data.get("error_message") or ""),
+            ref_text=str(data.get("ref_text") or ""),
         )
         return profile
 
@@ -1024,43 +1027,59 @@ class SpeakerDiarizationCoordinator:
                         c_score = float(conf_scores[pos]) if pos < len(conf_scores) else 0.8
                         dur_weight = min(duration / 3.0, 1.5)
                         score = c_score * dur_weight * min(rms * 10.0, 1.0)
-                        candidates.append((score, duration, chunk))
+                        cand_blk = blocks[valid_indices[pos]]
+                        c_text = (getattr(cand_blk, "text", "") or getattr(cand_blk, "translated_text", "")).strip()
+                        candidates.append((score, duration, chunk, c_text))
 
                 if not candidates and members:
                     best_pos = max(members, key=lambda p: len(audio_chunks[p]))
                     ch = audio_chunks[best_pos]
-                    candidates.append((1.0, len(ch) / float(sr), ch))
+                    cand_blk = blocks[valid_indices[best_pos]]
+                    c_text = (getattr(cand_blk, "text", "") or getattr(cand_blk, "translated_text", "")).strip()
+                    candidates.append((1.0, len(ch) / float(sr), ch, c_text))
 
                 candidates.sort(key=lambda item: item[0], reverse=True)
 
                 # Ưu tiên lấy một đoạn đơn lẻ chuẩn nhất nếu độ dài >= 2.5 giây
                 # để tránh ghép nối nhiều đoạn khác nhau gây lẫn chất giọng hoặc tạp âm
                 best_single = None
-                for score, duration, chunk in candidates:
+                best_single_text = ""
+                for score, duration, chunk, c_text in candidates:
                     if duration >= 2.5:
                         best_single = chunk[: int(7.0 * sr)]
+                        best_single_text = c_text
                         break
 
                 if best_single is not None:
                     merged = best_single
+                    selected_ref_text = best_single_text
                 else:
                     collected: List[np.ndarray] = []
+                    text_parts: List[str] = []
                     collected_len = 0
                     target_samples = int(7.0 * sr)
                     pause = np.zeros(int(0.15 * sr), dtype=np.float32)
-                    for _, _, chunk in candidates:
+                    for _, _, chunk, c_text in candidates:
                         remaining = target_samples - collected_len
                         if remaining <= 0:
                             break
                         part = chunk[:remaining]
                         collected.append(part)
                         collected_len += len(part)
+                        if c_text and c_text not in text_parts:
+                            text_parts.append(c_text)
                         if collected_len < target_samples:
                             collected.append(pause)
                             collected_len += len(pause)
                     merged = np.concatenate(collected)[: int(7.5 * sr)] if collected else np.zeros(0, dtype=np.float32)
+                    selected_ref_text = " ".join(text_parts).strip()
 
                 if len(merged) > 0:
+                    # Chuẩn hóa biên độ âm lượng đỉnh ở mức -1.0 dBFS (peak 0.90) để chống vỡ tiếng
+                    peak_val = float(np.max(np.abs(merged)))
+                    if peak_val > 0.01:
+                        merged = (merged / peak_val * 0.90).astype(np.float32)
+
                     if temp_dir:
                         sample_root = Path(temp_dir)
                     else:
@@ -1072,6 +1091,7 @@ class SpeakerDiarizationCoordinator:
                     )
                     sf.write(str(sample_path), merged, sr)
                     profile.source_audio_path = str(sample_path)
+                    profile.ref_text = selected_ref_text
                     profile.method = "clone"
                     profile.status = "locked"
 

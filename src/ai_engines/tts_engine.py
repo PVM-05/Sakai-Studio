@@ -1028,10 +1028,6 @@ class TTSEngine:
             if not resolved_ref_text:
                 resolved_ref_text = self._transcribe_ref_audio_fallback(ref_audio_path)
 
-            # Nếu vẫn không có ref_text và chưa nạp ASR lớn của OmniVoice, truyền chuỗi phiên âm ngắn để tránh phải tải thêm 3GB Whisper-large-v3-turbo
-            if not resolved_ref_text and self.model._asr_pipe is None and not self.load_asr:
-                resolved_ref_text = "."
-
             self.current_prompt = self.model.create_voice_clone_prompt(
                 ref_audio=ref_audio_path,
                 ref_text=resolved_ref_text if resolved_ref_text else None,
@@ -1176,8 +1172,6 @@ class TTSEngine:
             resolved_text = ref_text
             if not resolved_text and isinstance(audio_source, str) and os.path.exists(audio_source):
                 resolved_text = self._transcribe_ref_audio_fallback(audio_source)
-            if not resolved_text and (self.model is None or getattr(self.model, "_asr_pipe", None) is None) and not self.load_asr:
-                resolved_text = "."
 
             if self.model is None:
                 return None
@@ -1720,13 +1714,7 @@ class TTSEngine:
             "normalize_text": self.normalize_text,
         }
 
-        if target_duration is not None and target_duration > 0.4:
-            safe_d = self._calculate_safe_target_duration(text_clean, float(target_duration))
-            if safe_d is not None and safe_d > 0.4:
-                gen_kwargs["duration"] = float(safe_d)
-            elif self.speed != 1.0:
-                gen_kwargs["speed"] = float(self.speed)
-        elif self.speed != 1.0:
+        if self.speed != 1.0:
             gen_kwargs["speed"] = float(self.speed)
 
         active_mode = override_mode or self.mode
@@ -1796,6 +1784,14 @@ class TTSEngine:
             audio_arr = np.asarray(result, dtype=np.float32)
 
         audio_arr = np.squeeze(audio_arr).astype(np.float32)
+
+        # Nếu cần khớp thời lượng phụ đề và âm thanh sinh ra dài hơn khung cho phép,
+        # co giãn thời lượng an toàn bằng WSOLA để bảo toàn 100% cao độ và âm sắc
+        if target_duration is not None and target_duration > 0.4 and audio_arr.size > 0:
+            cur_dur = len(audio_arr) / float(self.sample_rate)
+            if cur_dur > float(target_duration) * 1.05:
+                needed_speed = cur_dur / float(target_duration)
+                audio_arr = self._safe_time_stretch(audio_arr, needed_speed, sample_rate=self.sample_rate)
 
         if output_path:
             os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
@@ -1902,11 +1898,13 @@ class TTSEngine:
             if end_search <= start_search:
                 break
 
+            ref_norm = float(np.linalg.norm(ref_seg)) + 1e-6
             best_pos = start_search
-            best_corr = -1e9
+            best_corr = -2.0
             for cand in range(start_search, end_search, step_cand):
                 cand_seg = audio_arr[cand : cand + win_size]
-                corr = float(np.dot(ref_seg, cand_seg))
+                cand_norm = float(np.linalg.norm(cand_seg)) + 1e-6
+                corr = float(np.dot(ref_seg, cand_seg)) / (ref_norm * cand_norm)
                 if corr > best_corr:
                     best_corr = corr
                     best_pos = cand
@@ -2275,7 +2273,8 @@ class TTSEngine:
                         active_block_mode = "clone" if ref_cand else "design"
                     elif ref_cand and os.path.exists(ref_cand):
                         prompt_key = character_prompt_key or f"spk_{spk_key}_{ref_cand}"
-                        override_prompt = self._get_or_create_prompt_for_audio(ref_cand, cache_key=prompt_key)
+                        prof_ref_text = prof.get("ref_text", "") if is_dict else getattr(prof, "ref_text", "")
+                        override_prompt = self._get_or_create_prompt_for_audio(ref_cand, cache_key=prompt_key, ref_text=prof_ref_text or None)
                         if override_prompt is not None and character_prompt_key:
                             self._speaker_prompt_cache[character_prompt_key] = override_prompt
                         override_ref = ref_cand
@@ -2368,9 +2367,10 @@ class TTSEngine:
                 if audio_arr.size == 0 or float(np.max(np.abs(audio_arr))) < 1e-5:
                     raise RuntimeError("Âm thanh sinh ra trống hoặc hoàn toàn im lặng.")
 
-                # Khóa giọng nhân vật tự động có kiểm định chất lượng (tránh khóa nhầm câu lỗi/ngắn)
+                # Khóa giọng nhân vật tự động có kiểm định chất lượng (khi chưa có mẫu giọng nhân bản cố định)
                 if (
                     spk_key
+                    and not override_ref
                     and override_prompt is None
                     and f"consistent_{spk_key}" not in self._speaker_prompt_cache
                 ):
