@@ -144,7 +144,7 @@ def verify_media_quality(video_path: str, sub_areas: List[Tuple[int, int, int, i
     if not parsed_sub_areas:
         return default_pass
 
-    # Tính độ nhấp nháy khung hình (temporal flicker score) nếu khả dụng
+    # Tính độ nhấp nháy khung hình theo thời gian nếu khả dụng
     flicker_val = 0.0
     try:
         from src.core.quality import temporal_flicker_score
@@ -365,7 +365,7 @@ class HomeInterface(QWidget):
         if hasattr(self.setting_interface, 'clear_brush_btn'):
             self.setting_interface.clear_brush_btn.clicked.connect(self._handle_clear_brush_clicked)
         
-        # Kết nối sự kiện bật/tắt công tắc Tự động (Tracking)
+        # Kết nối sự kiện bật tắt công tắc bám vết chuyển động tự động
         if getattr(config, 'movingSubtitleTracking', None):
             config.movingSubtitleTracking.valueChanged.connect(self._update_manual_tools_state)
         QtCore.QTimer.singleShot(100, lambda: self._update_manual_tools_state(None))
@@ -402,7 +402,7 @@ class HomeInterface(QWidget):
         
         # Đã chuyển nút Nhận Diện Chuyển Động Logo sang SettingInterface (bên phải)
         
-        # Hàng 2: Xem Trước Mask & Bắt Đầu Xóa (Primary Accent Button)
+        # Hàng 2: Xem trước mặt nạ và nút bắt đầu xóa nổi bật
         self.mask_preview_button = PushButton(tr['Setting']['MaskPreview'], self)
         self.mask_preview_button.setIcon(FluentIcon.VIEW)
         self.mask_preview_button.setToolTip(tr['Setting']['MaskPreviewTooltip'])
@@ -825,7 +825,7 @@ class HomeInterface(QWidget):
         """Khóa/Mở khóa các công cụ vẽ thủ công khi Bật/Tắt chế độ Tự động Tracking"""
         is_auto = getattr(config, 'movingSubtitleTracking', None) and config.movingSubtitleTracking.value
 
-        # 1. Bật/Tắt các nút bấm trong bảng Cài Đặt (SettingInterface)
+        # 1. Bật tắt các nút bấm trong bảng cài đặt
         if hasattr(self, 'setting_interface'):
             if hasattr(self.setting_interface, 'auto_detect_frame_btn'):
                 self.setting_interface.auto_detect_frame_btn.setEnabled(not is_auto)
@@ -854,7 +854,7 @@ class HomeInterface(QWidget):
             else:
                 InfoBar.info(
                     title="Chế độ Thủ công",
-                    content="Đã mở lại bộ công cụ cọ vẽ, khoanh vùng và nút Quét AI 1 frame.",
+                    content="Đã mở lại bộ công cụ cọ vẽ, khoanh vùng và nút quét trí tuệ nhân tạo một khung hình.",
                     position=InfoBarPosition.TOP, parent=self,
                     duration=3000
                 )
@@ -968,7 +968,7 @@ class HomeInterface(QWidget):
                         if clean_text.isdigit() and len(clean_text) <= 3:
                             continue
 
-                        # 3.  BỘ LỌC NGÔN NGỮ NGHIÊM NGẶT (STRICT LANGUAGE FILTER)
+                        # 3.  BỘ LỌC NGÔN NGỮ NGHIÊM NGẶT
                         # Tách riêng từng hệ chữ để lọc chính xác
                         hanzi_chars = re.findall(r'[\u4e00-\u9fff\u3400-\u4dbf]', clean_text)
                         kana_chars = re.findall(r'[\u3040-\u30ff]', clean_text)
@@ -1010,7 +1010,7 @@ class HomeInterface(QWidget):
                         ymin, ymax = int(min(ys)), int(max(ys))
                         
                         # Mở rộng lề rộng hơn (40px ngang, 20px dọc) để bao phủ sạch sẽ 
-                        # toàn bộ khung nền (background pill) của phụ đề trên các video ngắn (TikTok/Shorts).
+                        # toàn bộ khung nền của phụ đề trên các video ngắn.
                         # Bỏ qua bước này nếu người dùng chủ động bật "Tự động ôm khít" (muốn bám sát nét chữ).
                         if not config.autoTighten.value:
                             xmin = max(0, xmin - 40)
@@ -1080,7 +1080,7 @@ class HomeInterface(QWidget):
         if get_current_task_index == -1:
             return
             
-        # Tính năng Tự động ôm khít chữ (Auto Tighten)
+        # Tính năng Tự động ôm khít chữ
         if selections and config.autoTighten.value and not getattr(self, '_is_tightening', False):
             self._is_tightening = True
             try:
@@ -1915,7 +1915,7 @@ class HomeInterface(QWidget):
             )
             return
 
-        # Lấy tọa độ gốc trên video (absolute pixels) từ tọa độ preview
+        # Lấy tọa độ điểm ảnh gốc trên video từ tọa độ xem trước
         video_selections = self.video_display_component.preview_coordinates_to_video_coordinates(
             self.video_display_component.selection_rects
         )
@@ -2000,7 +2000,7 @@ class HomeInterface(QWidget):
             )
             return
 
-        # 1. Lấy tọa độ khoanh vùng (rects) và nét vẽ tự do (strokes)
+        # 1. Lấy tọa độ khoanh vùng hình chữ nhật và nét vẽ tự do
         selections = self.video_display_component.preview_coordinates_to_video_coordinates(
             self.video_display_component.selection_rects
         )
@@ -2120,7 +2120,7 @@ class HomeInterface(QWidget):
                         work_mask = cv2.resize(combined_mask, (new_w, new_h))
                     else:
                         work_mask = cv2.resize(combined_mask, (new_w, new_h))
-                    self.append_log_signal.emit([f"Chuẩn hóa kích thước frame từ {orig_w}×{orig_h} → {new_w}×{new_h} để tương thích mô hình AI"])
+                    self.append_log_signal.emit([f"Chuẩn hóa kích thước khung hình từ {orig_w}×{orig_h} → {new_w}×{new_h} để tương thích mô hình trí tuệ nhân tạo"])
 
                 def _get_temporal_frames():
                     video_src = getattr(self, 'current_video_path', getattr(self, 'video_path', None))
@@ -2161,7 +2161,7 @@ class HomeInterface(QWidget):
                         def load_sttn_det():
                             return STTNDetInpaint(dev, model_config.STTN_DET_MODEL_PATH)
                         sttn_model = ModelCacheManager.get_model(f"sttn_det_{dev}", load_sttn_det)
-                        self.append_log_signal.emit([f"Mô hình STTN_DET sẵn sàng ({_time.time()-_t0:.1f}s). Đang xóa phụ đề trên 5 frame..."])
+                        self.append_log_signal.emit([f"Mô hình STTN_DET sẵn sàng ({_time.time()-_t0:.1f}s). Đang xóa phụ đề trên 5 khung hình..."])
                         frames = _get_temporal_frames()
                         results = sttn_model(frames, work_mask)
                         result = results[2]
@@ -2171,7 +2171,7 @@ class HomeInterface(QWidget):
                         def load_sttn_auto():
                             return STTNInpaint(dev, model_config.STTN_AUTO_MODEL_PATH)
                         sttn_model = ModelCacheManager.get_model(f"sttn_auto_{dev}", load_sttn_auto)
-                        self.append_log_signal.emit([f"Mô hình STTN_AUTO sẵn sàng ({_time.time()-_t0:.1f}s). Đang xóa phụ đề trên 5 frame..."])
+                        self.append_log_signal.emit([f"Mô hình STTN_AUTO sẵn sàng ({_time.time()-_t0:.1f}s). Đang xóa phụ đề trên 5 khung hình..."])
                         frames = _get_temporal_frames()
                         results = sttn_model(work_mask, input_frames=frames)
                         result = results[2]
@@ -2181,7 +2181,7 @@ class HomeInterface(QWidget):
                         def load_propainter():
                             return PropainterInpaint(dev, model_config.PROPAINTER_MODEL_DIR)
                         propainter_model = ModelCacheManager.get_model(f"propainter_{dev}", load_propainter)
-                        self.append_log_signal.emit([f"Mô hình ProPainter sẵn sàng ({_time.time()-_t0:.1f}s). Đang xóa phụ đề trên 5 frame..."])
+                        self.append_log_signal.emit([f"Mô hình ProPainter sẵn sàng ({_time.time()-_t0:.1f}s). Đang xóa phụ đề trên 5 khung hình..."])
                         frames = _get_temporal_frames()
                         results = propainter_model.inpaint(frames, work_mask)
                         result = results[2]
@@ -2264,7 +2264,7 @@ class HomeInterface(QWidget):
                 self.append_output(tr['SubtitleExtractorGUI']['PreviewSuccessLog'])
                 
                 InfoBar.success(
-                    title="Xem trước hoàn tất (5 frame)",
+                    title="Xem trước hoàn tất 5 khung hình",
                     content="Đã hiển thị bản xem trước 5 khung hình thử nghiệm. Để tiến hành xóa toàn bộ video và xuất tệp, vui lòng bấm nút 'Bắt Đầu'.",
                     duration=6000,
                     position=InfoBarPosition.TOP, parent=self

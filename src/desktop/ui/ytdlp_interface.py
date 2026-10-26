@@ -2213,7 +2213,7 @@ class YtdlpInterface(ScrollArea):
 
         InfoBar.success(
             title=tr['Ytdlp']['Title'],
-            content=f"Đã tải xong: {os.path.basename(filename)}\nDownload success!",
+            content=f"Đã tải xuống thành công: {os.path.basename(filename)}",
             duration=5000,
             parent=self
         )

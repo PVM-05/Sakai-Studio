@@ -305,7 +305,7 @@ class MMOSettingInterface(ScrollArea):
         self.expandLayout.addWidget(self.ttsGroup)
 
         # =====================================================================
-        # NHÓM 3: NHÂN BẢN GIỌNG NÓI (VOICE CLONING)
+        # NHÓM 3: THIẾT LẬP NHÂN BẢN GIỌNG NÓI
         # =====================================================================
         self.cloneGroup = SettingCardGroup("Thiết Lập Nhân Bản Giọng Nói", self.scrollWidget)
 
@@ -352,7 +352,7 @@ class MMOSettingInterface(ScrollArea):
         self.expandLayout.addWidget(self.cloneGroup)
 
         # =====================================================================
-        # NHÓM 4: THIẾT KẾ GIỌNG NÓI THEO THUỘC TÍNH (VOICE DESIGN)
+        # NHÓM 4: THIẾT KẾ GIỌNG NÓI THEO THUỘC TÍNH
         # =====================================================================
         self.designGroup = SettingCardGroup("Thiết Kế Giọng Nói Theo Thuộc Tính", self.scrollWidget)
 

@@ -2,7 +2,7 @@
 
 """
 
-Giao diện chuyên biệt Lồng Tiếng Trí Tuệ Nhân Tạo (OmniVoiceInterface).
+Giao diện chuyên biệt Lồng Tiếng Trí Tuệ Nhân Tạo OmniVoice.
 
 Cung cấp toàn bộ tính năng của mã nguồn OmniVoice chạy trực tiếp trên card đồ họa NVIDIA:
 
@@ -1296,7 +1296,7 @@ class OmniVoiceInterface(ScrollArea):
 
         # =====================================================================
 
-        # 3. NỘI DUNG 5 BƯỚC (QStackedWidget)
+        # 3. NỘI DUNG 5 BƯỚC TUẦN TỰ
 
         # =====================================================================
 
@@ -6043,13 +6043,15 @@ class OmniVoiceInterface(ScrollArea):
             InfoBar.success("Đã chọn video nguồn", os.path.basename(filepath), parent=self, duration=2500)
 
     def _update_sub_video_status_label(self):
-
         sub_name = os.path.basename(self.current_subtitle_path) if self.current_subtitle_path else "Chưa chọn"
-
         vid_name = os.path.basename(self.current_video_path) if self.current_video_path else "Chưa chọn"
-
         self.lbl_sub_video_info.setText(f"Phụ đề: {sub_name} ({len(self.subtitle_blocks)} câu) | Video: {vid_name}")
-
+        if hasattr(self, "sub_table"):
+            has_vid = is_valid_media_file(self.current_video_path)
+            for r in range(self.sub_table.rowCount()):
+                cell_w = self.sub_table.cellWidget(r, 5)
+                if cell_w:
+                    cell_w.setEnabled(has_vid)
         self._update_identify_button_state()
 
     def _update_identify_button_state(self):

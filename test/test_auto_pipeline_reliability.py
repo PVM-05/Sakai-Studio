@@ -1468,6 +1468,30 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
         engine = VideoOcrEngine()
         self.assertTrue(hasattr(engine, "_run_whisper_fallback"))
 
+    def test_omnivoice_sub_table_listen_button_unlocks_on_video_load(self):
+        """
+        Xac minh nut Nghe goc tren bang phu de tu dong mo khoa khi nap tep video hop le.
+        """
+        from PySide6.QtWidgets import QApplication
+        from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+        from src.ai_engines.translator import SubtitleBlock
+
+        app = QApplication.instance() or QApplication([])
+        ui = OmniVoiceInterface()
+        ui.subtitle_blocks = [
+            SubtitleBlock(index=1, start_time="00:00:01,000", end_time="00:00:03,000", text="Xin chào"),
+        ]
+        ui._populate_subtitle_table()
+        btn = ui.sub_table.cellWidget(0, 5)
+        self.assertIsNotNone(btn)
+        self.assertFalse(btn.isEnabled())
+
+        dummy_vid = os.path.join(self.temp_dir, "test_unlock_vid.mp4")
+        _create_dummy_video(dummy_vid, num_frames=5)
+        ui.current_video_path = dummy_vid
+        ui._update_sub_video_status_label()
+        self.assertTrue(btn.isEnabled(), "Nut nghe goc phai tu dong mo khoa khi video san sang")
+
 if __name__ == "__main__":
     unittest.main()
 

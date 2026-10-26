@@ -93,7 +93,7 @@ class ToolsInterface(QWidget):
             self.homeInterface.open_downloaded_video(filepath)
 
     def open_srt_in_translator(self, srt_path: str):
-        """Mở file SRT đã trích xuất trong công cụ dịch phụ đề."""
+        """Mở tệp phụ đề SRT đã trích xuất trong công cụ dịch phụ đề."""
         self.switch_to_sub_tab(2)
         if hasattr(self.translationInterface, 'load_subtitle_file'):
             self.translationInterface.load_subtitle_file(srt_path)

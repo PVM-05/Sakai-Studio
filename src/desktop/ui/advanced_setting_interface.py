@@ -123,7 +123,7 @@ class AdvancedSettingInterface(QWidget):
         return count
 
     def setup_ui(self):
-        """Khởi tạo tất cả thẻ Cài đặt (SettingCards) phân nhóm theo 3 sub-tab"""
+        """Khởi tạo tất cả các thẻ cài đặt phân nhóm theo 3 thẻ phụ"""
 
         # ==========================================
         # TAB 1: HỆ THỐNG && GIAO DIỆN
@@ -196,21 +196,21 @@ class AdvancedSettingInterface(QWidget):
         self.export_config_card = PushSettingCard(
             text="Xuất File",
             icon=FluentIcon.SAVE,
-            title="Xuất file cấu hình cài đặt (.json)",
-            content="Lưu toàn bộ tùy chỉnh cấu hình hiện tại ra file JSON để sao lưu hoặc chia sẻ",
+            title="Xuất tệp cấu hình cài đặt JSON",
+            content="Lưu toàn bộ tùy chỉnh cấu hình hiện tại ra tệp JSON để sao lưu hoặc chia sẻ",
             parent=self.system_storage_group
         )
-        self.export_config_card.setToolTip("Xuất các thiết lập hiện tại ra file JSON sao lưu.")
+        self.export_config_card.setToolTip("Xuất các thiết lập hiện tại ra tệp JSON sao lưu.")
         self.export_config_card.clicked.connect(self.export_settings_json)
 
         self.import_config_card = PushSettingCard(
             text="Nhập File",
             icon=FluentIcon.FOLDER,
-            title="Nhập file cấu hình cài đặt (.json)",
-            content="Nạp cấu hình từ file JSON sao lưu để áp dụng nhanh",
+            title="Nhập tệp cấu hình cài đặt JSON",
+            content="Nạp cấu hình từ tệp JSON sao lưu để áp dụng nhanh",
             parent=self.system_storage_group
         )
-        self.import_config_card.setToolTip("Nạp cài đặt từ file JSON sẵn có.")
+        self.import_config_card.setToolTip("Nạp cài đặt từ tệp JSON sẵn có.")
         self.import_config_card.clicked.connect(self.import_settings_json)
 
         self.reset_defaults_card = PushSettingCard(
@@ -317,13 +317,13 @@ class AdvancedSettingInterface(QWidget):
             content="Sử dụng bộ giải mã/mã hóa phần cứng GPU giúp xuất video nhanh gấp 5-10 lần",
             parent=self.step2_group
         )
-        self.gpu_video_encoding.setToolTip("Kích hoạt chip phần cứng chuyên dụng trên Card đồ họa (NVENC/DirectML) để nén/giải nén video trực tiếp.")
+        self.gpu_video_encoding.setToolTip("Kích hoạt chip phần cứng chuyên dụng trên card đồ họa để nén hoặc giải nén video trực tiếp.")
 
         self.enable_tensorrt = SwitchSettingCard(
             configItem=config.enableTensorRT,
             icon=FluentIcon.POWER_BUTTON,
-            title="Tăng tốc AI bằng TensorRT (NVIDIA)",
-            content="Tăng tốc xử lý Xóa phụ đề (LAMA/ProPainter) lên 2-5 lần",
+            title="Tăng tốc trí tuệ nhân tạo bằng TensorRT cho card NVIDIA",
+            content="Tăng tốc xử lý xóa phụ đề với mô hình LaMa và ProPainter lên 2 đến 5 lần",
             parent=self.step2_group
         )
         self.enable_tensorrt.setToolTip("Yêu cầu card đồ họa NVIDIA. Lần chạy đầu tiên sẽ mất 3-10 phút để hệ thống biên dịch mô hình phần cứng.")
@@ -406,7 +406,7 @@ class AdvancedSettingInterface(QWidget):
             configItem=config.temporalSmoothingRadius,
             icon=FluentIcon.MOVIE,
             title="Bán kính làm mịn thời gian",
-            content="Bán kính khung hình lân cận để lọc mượt chống nhấp nháy chuyển động (1-10)",
+            content="Bán kính khung hình lân cận từ 1 đến 10 để lọc mượt chống nhấp nháy chuyển động",
             parent=self.step3_group
         )
         self.temporal_smoothing_radius.setToolTip("Bán kính khung hình lân cận lấy làm tham chiếu để tính toán mượt hóa thời gian.")
@@ -640,7 +640,7 @@ class AdvancedSettingInterface(QWidget):
         self.srtLayout.setSpacing(16)
         self.srtLayout.setContentsMargins(16, 16, 16, 48)
 
-        # Cho phép tất cả các nhãn (SettingCard) tự động xuống dòng (Word Wrap)
+        # Cho phép tất cả các nhãn cài đặt tự động xuống dòng và tự động co giãn chiều cao
         for child in self.findChildren(QtWidgets.QWidget):
             if hasattr(child, 'contentLabel') and hasattr(child, 'titleLabel'):
                 child.contentLabel.setWordWrap(True)

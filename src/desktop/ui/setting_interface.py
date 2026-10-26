@@ -31,7 +31,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
             return label
 
         # ==========================================
-        # Khối 1: Cấu hình Trí tuệ Nhân tạo (AI Config)
+        # Khối 1: Cấu hình Trí tuệ Nhân tạo
         # ==========================================
         ai_card = CardWidget(parent)
         ai_layout = QtWidgets.QVBoxLayout(ai_card)
@@ -92,7 +92,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
         self.addWidget(ai_card)
 
         # ==========================================
-        # Khối 2: Tùy chỉnh Mặt nạ (Mask Settings)
+        # Khối 2: Tùy chỉnh Mặt nạ
         # ==========================================
         mask_card = CardWidget(parent)
         mask_layout = QtWidgets.QVBoxLayout(mask_card)
@@ -177,7 +177,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
         self.addWidget(mask_card)
 
         # ==========================================
-        # Khối 3: Công cụ & Tương tác (Tools)
+        # Khối 3: Công cụ và Tương tác
         # ==========================================
         tools_card = CardWidget(parent)
         tools_layout = QtWidgets.QVBoxLayout(tools_card)

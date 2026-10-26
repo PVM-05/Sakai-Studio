@@ -1495,7 +1495,7 @@ class AutoPipelineInterface(QWidget):
             self.status_label.setText("Hoàn thành luồng tự động!")
             InfoBar.success(
                 "Thành công",
-                f"{clean_msg} ({os.path.basename(output_file)})" if output_file else clean_msg,
+                f"{clean_msg}: {os.path.basename(output_file)}" if output_file else clean_msg,
                 parent=self,
                 duration=4000,
             )
