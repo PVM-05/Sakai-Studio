@@ -191,3 +191,116 @@ def test_audition_queue_empty_graceful():
 
     assert interface._audition_all_active is False
     assert interface._current_audition_speaker is None
+
+
+def test_can_switch_to_step_logic():
+    _ensure_qapp()
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+
+    interface = OmniVoiceInterface()
+    interface.subtitle_blocks = []
+    interface.current_video_path = ""
+    interface.speaker_profiles = {}
+
+    # Bước 0 (Nạp dữ liệu) luôn cho phép
+    assert interface._can_switch_to_step(0) is True
+
+    # Bước 1 (Quản lý nhân vật) bị chặn nếu hoàn toàn không có dữ liệu
+    assert interface._can_switch_to_step(1) is False
+
+    # Khi có video hợp lệ, Bước 1 được mở khóa
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+        tmp_video = f.name
+    try:
+        interface.current_video_path = tmp_video
+        assert interface._can_switch_to_step(1) is True
+    finally:
+        if os.path.exists(tmp_video):
+            os.remove(tmp_video)
+
+    interface.current_video_path = ""
+
+    # Khi có hồ sơ nhân vật, Bước 1 được mở khóa
+    interface.speaker_profiles = {"Người nói 1": {}}
+    assert interface._can_switch_to_step(1) is True
+    interface.speaker_profiles = {}
+
+    # Bước 3 (Phòng thu / Studio) luôn cho phép chuyển sang
+    assert interface._can_switch_to_step(3) is True
+
+    # Bước 2 và Bước 4 bắt buộc phải có phụ đề
+    assert interface._can_switch_to_step(2) is False
+    assert interface._can_switch_to_step(4) is False
+
+    interface.subtitle_blocks = [
+        SubtitleBlock(index=1, start_time=0.0, end_time=1.0, text="A")
+    ]
+    assert interface._can_switch_to_step(1) is True
+    assert interface._can_switch_to_step(2) is True
+    assert interface._can_switch_to_step(4) is True
+
+
+def test_step_buttons_disabled_during_running_task():
+    _ensure_qapp()
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+
+    interface = OmniVoiceInterface()
+    assert len(interface.step_buttons) == 5
+
+    # Khi bắt đầu tác vụ nền: tất cả các nút bước phải bị vô hiệu hóa
+    interface._set_task_running_state(True)
+    for btn in interface.step_buttons:
+        assert btn.isEnabled() is False
+
+    # Khi tác vụ nền kết thúc: tất cả các nút bước phải được kích hoạt lại
+    interface._set_task_running_state(False)
+    for btn in interface.step_buttons:
+        assert btn.isEnabled() is True
+
+
+def test_generate_single_passes_ref_text_to_audio_prompt():
+    engine = TTSEngine(auto_extract_ref=False, mode="clone", load_asr=False)
+    engine.load_model = MagicMock()
+    mock_model = MagicMock()
+    sr = 24000
+    mock_model.generate.return_value = [np.zeros(sr, dtype=np.float32)]
+    engine.model = mock_model
+
+    engine._get_or_create_prompt_for_audio = MagicMock(return_value=MagicMock())
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        tmp_wav = f.name
+
+    try:
+        engine.generate_single(
+            "Câu cần đọc",
+            override_mode="clone",
+            override_ref_audio=tmp_wav,
+            override_ref_text="Lời thoại mẫu chuẩn",
+        )
+        assert engine._get_or_create_prompt_for_audio.called
+        call_kwargs = engine._get_or_create_prompt_for_audio.call_args[1]
+        assert call_kwargs.get("ref_text") == "Lời thoại mẫu chuẩn"
+    finally:
+        if os.path.exists(tmp_wav):
+            os.remove(tmp_wav)
+
+
+def test_no_parentheses_in_key_ui_text():
+    _ensure_qapp()
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+
+    interface = OmniVoiceInterface()
+
+    # Nút thu gọn thiết lập giọng mặc định
+    toggle_text = interface.btn_toggle_default_voice_settings.text()
+    assert "(" not in toggle_text and ")" not in toggle_text
+    assert toggle_text == "Tùy Chọn Giọng Mặc Định Dự Phòng"
+
+    # Mục lựa chọn phần cứng
+    hw_items = [
+        interface.combo_hardware_selector.itemText(i)
+        for i in range(interface.combo_hardware_selector.count())
+    ]
+    for item in hw_items:
+        assert "(" not in item and ")" not in item

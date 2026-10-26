@@ -1695,6 +1695,7 @@ class TTSEngine:
         override_prompt: Optional[VoiceClonePrompt] = None,
         override_ref_audio: Optional[str] = None,
         override_instruct: Optional[str] = None,
+        override_ref_text: Optional[str] = None,
     ) -> np.ndarray:
         """
         Tổng hợp giọng nói cho một câu đơn lẻ bằng OmniVoice trên GPU.
@@ -1733,7 +1734,11 @@ class TTSEngine:
             if override_prompt is not None:
                 gen_kwargs["voice_clone_prompt"] = override_prompt
             elif override_ref_audio and os.path.exists(override_ref_audio):
-                prompt = self._get_or_create_prompt_for_audio(override_ref_audio, cache_key=override_ref_audio)
+                prompt = self._get_or_create_prompt_for_audio(
+                    override_ref_audio,
+                    cache_key=override_ref_audio,
+                    ref_text=override_ref_text,
+                )
                 if prompt is not None:
                     gen_kwargs["voice_clone_prompt"] = prompt
                 else:
@@ -1743,7 +1748,11 @@ class TTSEngine:
         elif override_prompt is not None:
             gen_kwargs["voice_clone_prompt"] = override_prompt
         elif override_ref_audio and os.path.exists(override_ref_audio):
-            prompt = self._get_or_create_prompt_for_audio(override_ref_audio, cache_key=override_ref_audio)
+            prompt = self._get_or_create_prompt_for_audio(
+                override_ref_audio,
+                cache_key=override_ref_audio,
+                ref_text=override_ref_text,
+            )
             if prompt is not None:
                 gen_kwargs["voice_clone_prompt"] = prompt
             elif override_instruct:

@@ -482,7 +482,7 @@ def check_media_and_srt_duration(
 
                 f"Cảnh báo chênh lệch thời lượng: Video dài {vid_dur:.1f} giây, "
 
-                f"phụ đề dài {sub_dur:.1f} giây (chênh lệch {diff:.1f} giây). "
+                f"phụ đề dài {sub_dur:.1f} giây — chênh lệch {diff:.1f} giây. "
 
                 f"Vui lòng kiểm tra lại để đảm bảo phụ đề khớp âm thanh video."
 
@@ -490,7 +490,7 @@ def check_media_and_srt_duration(
 
         else:
 
-            msg = f"Thời lượng video ({vid_dur:.1f}s) và phụ đề ({sub_dur:.1f}s) đồng bộ tốt."
+            msg = f"Thời lượng video {vid_dur:.1f} giây và phụ đề {sub_dur:.1f} giây đồng bộ tốt."
 
     return {
 
@@ -546,6 +546,8 @@ class OmniVoiceTaskWorker(QThread):
 
         override_mode: Optional[str] = None,
 
+        override_ref_text: str = "",
+
         parent=None,
 
     ):
@@ -575,6 +577,8 @@ class OmniVoiceTaskWorker(QThread):
         self.prefer_cuda = prefer_cuda
 
         self.override_mode = override_mode
+
+        self.override_ref_text = override_ref_text
 
         self._engine: Optional[TTSEngine] = None
 
@@ -871,6 +875,8 @@ class OmniVoiceTaskWorker(QThread):
 
                     override_instruct=self.override_instruct if self.override_instruct else None,
 
+                    override_ref_text=self.override_ref_text if self.override_ref_text else None,
+
                 )
 
                 is_valid, wav_dur, _, _ = validate_audio_file(self.output_path)
@@ -887,7 +893,7 @@ class OmniVoiceTaskWorker(QThread):
 
                         self.output_path,
 
-                        f"Đã tạo tệp âm thanh ({wav_dur:.1f}s): {os.path.basename(self.output_path)}",
+                        f"Đã tạo tệp âm thanh {wav_dur:.1f} giây: {os.path.basename(self.output_path)}",
 
                     )
 
@@ -975,7 +981,7 @@ class OmniVoiceTaskWorker(QThread):
 
                 if ok and rep and rep.status == "partial":
 
-                    msg = f"[PARTIAL] Đã xuất video ({rep.message}): {self.output_path}"
+                    msg = f"Đã xuất video một phần — {rep.message}: {self.output_path}"
 
                     self.progressSignal.emit(100, rep.message)
 
@@ -1092,7 +1098,7 @@ class CastingProgressBarWidget(QWidget):
 
         pct = int(round((assigned_count / float(total)) * 100))
         self.lbl_details.setText(
-            f"Tiến độ phân vai: {assigned_count}/{total} câu thoại ({pct}%) · "
+            f"Tiến độ phân vai: {assigned_count}/{total} câu thoại — Đạt {pct}% · "
             f"{locked_count} câu đã khóa · {review_count} câu cần rà soát · {unassigned_count} câu chưa xác định"
         )
         self.bar_canvas.update()
@@ -1208,15 +1214,16 @@ class OmniVoiceInterface(ScrollArea):
 
             handled = False
             if sub_file or vid_file:
-                if hasattr(self, 'workspace_pivot') and hasattr(self, 'workspace_stack'):
-                    self.workspace_pivot.setCurrentItem("sub_dub_page")
-                    self.workspace_stack.setCurrentIndex(1)
                 if sub_file:
                     self._load_subtitle_file_internal(sub_file)
                 if vid_file:
                     self.current_video_path = vid_file
                     if hasattr(self, '_update_sub_video_status_label'):
                         self._update_sub_video_status_label()
+                    if hasattr(self, '_update_subtitle_action_buttons'):
+                        self._update_subtitle_action_buttons()
+                    InfoBar.success("Đã nạp video nguồn", os.path.basename(vid_file), parent=self, duration=2500)
+                self._update_step_navigation_states()
                 handled = True
             elif audio_file:
                 self.current_ref_audio_path = audio_file
@@ -1267,6 +1274,8 @@ class OmniVoiceInterface(ScrollArea):
         title_box = QVBoxLayout()
 
         title_lbl = TitleLabel("Lồng Tiếng Trí Tuệ Nhân Tạo", header_card)
+
+        title_lbl.setWordWrap(True)
 
         desc_lbl = CaptionLabel(
 
@@ -1450,7 +1459,7 @@ class OmniVoiceInterface(ScrollArea):
 
         # Nút chuyển đổi thu gọn thiết lập giọng mặc định (mặc định đóng để giảm rối mắt)
 
-        self.btn_toggle_default_voice_settings = PushButton("Tùy Chọn Giọng Mặc Định (Dự Phòng)", self.page_step_0)
+        self.btn_toggle_default_voice_settings = PushButton("Tùy Chọn Giọng Mặc Định Dự Phòng", self.page_step_0)
 
         self.btn_toggle_default_voice_settings.setIcon(FluentIcon.CHEVRON_RIGHT_MED)
 
@@ -1484,6 +1493,8 @@ class OmniVoiceInterface(ScrollArea):
 
         lbl_mode.setStyleSheet("font-weight: bold;")
 
+        lbl_mode.setWordWrap(True)
+
         self.combo_mode = ComboBox(general_voice_card)
 
         self.combo_mode.addItems([
@@ -1501,6 +1512,8 @@ class OmniVoiceInterface(ScrollArea):
         lbl_lang = BodyLabel("Ngôn ngữ đọc:", general_voice_card)
 
         lbl_lang.setStyleSheet("font-weight: bold;")
+
+        lbl_lang.setWordWrap(True)
 
         self.combo_lang = EditableComboBox(general_voice_card)
 
@@ -1527,6 +1540,8 @@ class OmniVoiceInterface(ScrollArea):
         lbl_vn_cat = BodyLabel("Giọng đọc mẫu tiếng Việt:", general_voice_card)
 
         lbl_vn_cat.setStyleSheet("font-weight: bold;")
+
+        lbl_vn_cat.setWordWrap(True)
 
         self.combo_vn_catalog = ComboBox(general_voice_card)
 
@@ -1580,6 +1595,8 @@ class OmniVoiceInterface(ScrollArea):
 
         clone_title = SubtitleLabel("Thiết Lập Nhân Bản Giọng Nói Từ Mẫu", self.clone_card)
 
+        clone_title.setWordWrap(True)
+
         clone_layout.addWidget(clone_title, 0, 0, 1, 3)
 
         self.btn_pick_ref_audio = PushButton("Chọn Tệp Âm Thanh Mẫu", self.clone_card)
@@ -1630,6 +1647,8 @@ class OmniVoiceInterface(ScrollArea):
 
         lbl_ref_text = BodyLabel("Lời thoại của giọng mẫu:", self.clone_card)
 
+        lbl_ref_text.setWordWrap(True)
+
         clone_layout.addWidget(lbl_ref_text, 4, 0)
 
         self.edit_ref_text = LineEdit(self.clone_card)
@@ -1657,6 +1676,8 @@ class OmniVoiceInterface(ScrollArea):
         design_layout.setSpacing(10)
 
         design_title = SubtitleLabel("Thiết Kế Giọng Nói Theo Thuộc Tính Nhân Vật", self.design_card)
+
+        design_title.setWordWrap(True)
 
         design_layout.addWidget(design_title, 0, 0, 1, 6)
 
@@ -1780,6 +1801,8 @@ class OmniVoiceInterface(ScrollArea):
 
         lbl_multi_mode.setStyleSheet("font-weight: bold;")
 
+        lbl_multi_mode.setWordWrap(True)
+
         self.combo_multi_speaker_mode = ComboBox(diarize_card)
 
         for label_vn, _ in MULTI_SPEAKER_MODE_ITEMS:
@@ -1808,6 +1831,8 @@ class OmniVoiceInterface(ScrollArea):
 
         lbl_count_mode = BodyLabel("Quy tắc phân vai:", diarize_card)
 
+        lbl_count_mode.setWordWrap(True)
+
         self.combo_speaker_count_mode = ComboBox(diarize_card)
 
         self.combo_speaker_count_mode.addItem("Tự động ước lượng theo giới hạn tối đa")
@@ -1816,6 +1841,8 @@ class OmniVoiceInterface(ScrollArea):
 
         self.lbl_max_spk = BodyLabel("Số lượng nhân vật tối đa:", diarize_card)
 
+        self.lbl_max_spk.setWordWrap(True)
+
         self.spin_max_speakers = SpinBox(diarize_card)
 
         self.spin_max_speakers.setRange(1, 12)
@@ -1823,6 +1850,8 @@ class OmniVoiceInterface(ScrollArea):
         self.spin_max_speakers.setValue(4)
 
         lbl_sensitivity = BodyLabel("Độ nhạy phân tách:", diarize_card)
+
+        lbl_sensitivity.setWordWrap(True)
 
         self.combo_clustering_sensitivity = ComboBox(diarize_card)
 
@@ -2055,7 +2084,11 @@ class OmniVoiceInterface(ScrollArea):
 
         self.lbl_char_overview_title = SubtitleLabel("Video đã phân tích âm thanh · Đã nhận diện", self.char_overview_card)
 
+        self.lbl_char_overview_title.setWordWrap(True)
+
         self.lbl_char_count = StrongBodyLabel("Tổng số nhân vật nhận diện: 0 nhân vật", self.char_overview_card)
+
+        self.lbl_char_count.setWordWrap(True)
 
         char_top_row.addWidget(self.lbl_char_overview_title)
 
@@ -2255,6 +2288,8 @@ class OmniVoiceInterface(ScrollArea):
         lbl_tags = BodyLabel("Chèn nhanh thẻ biểu cảm phi ngôn từ vào vị trí con trỏ:", self.studio_page)
 
         lbl_tags.setStyleSheet("font-weight: bold;")
+
+        lbl_tags.setWordWrap(True)
 
         studio_layout.addWidget(lbl_tags)
 
@@ -2546,7 +2581,7 @@ class OmniVoiceInterface(ScrollArea):
 
             "Chế độ vi xử lý trung tâm",
 
-            "Phân đoạn người nói chuyên sâu (chưa tích hợp)",
+            "Phân đoạn người nói chuyên sâu — Chưa kích hoạt",
 
         ])
 
@@ -2845,6 +2880,8 @@ class OmniVoiceInterface(ScrollArea):
         self.progress_bar.setValue(0)
 
         self.lbl_status = BodyLabel("Sẵn sàng tổng hợp giọng nói trên GPU.", bottom_card)
+
+        self.lbl_status.setWordWrap(True)
 
         bottom_layout.addWidget(self.progress_bar, 1)
 
@@ -3286,7 +3323,29 @@ class OmniVoiceInterface(ScrollArea):
 
             return True
 
-        if target_idx in (1, 2, 3, 4):
+        if target_idx == 1:
+
+            # Cho phép chuyển sang Bước 2 nếu có phụ đề, hoặc có video, hoặc đã có nhân vật
+
+            if not self.subtitle_blocks and not self.current_video_path and not self.speaker_profiles:
+
+                InfoBar.warning(
+
+                    title="Chưa có dữ liệu nguồn",
+
+                    content="Vui lòng nạp tệp phụ đề hoặc tệp video ở Bước 1 trước khi quản lý nhân vật.",
+
+                    parent=self,
+
+                    duration=3000,
+
+                )
+
+                return False
+
+            return True
+
+        if target_idx in (2, 4):
 
             if not self.subtitle_blocks:
 
@@ -3304,6 +3363,14 @@ class OmniVoiceInterface(ScrollArea):
 
                 return False
 
+            return True
+
+        if target_idx == 3:
+
+            # Bước 4: Phòng thu và cân chỉnh âm thanh luôn sẵn sàng
+
+            return True
+
         return True
 
     def _update_step_navigation_states(self):
@@ -3312,9 +3379,15 @@ class OmniVoiceInterface(ScrollArea):
 
         has_subs = len(self.subtitle_blocks) > 0
 
+        has_video = bool(self.current_video_path and os.path.exists(self.current_video_path))
+
         has_cast = len(self.speaker_profiles) > 0
 
         for idx, btn in enumerate(self.step_buttons):
+
+            if not self._is_valid_widget(btn):
+
+                continue
 
             if idx == self.current_step_index:
 
@@ -3324,7 +3397,7 @@ class OmniVoiceInterface(ScrollArea):
 
                 is_completed = False
 
-                if idx == 0 and has_subs:
+                if idx == 0 and (has_subs or has_video):
 
                     is_completed = True
 
@@ -3333,6 +3406,14 @@ class OmniVoiceInterface(ScrollArea):
                     is_completed = True
 
                 elif idx == 2 and has_subs:
+
+                    is_completed = True
+
+                elif idx == 3 and (has_subs or getattr(self, "last_generated_audio_path", None)):
+
+                    is_completed = True
+
+                elif idx == 4 and getattr(self, "last_exported_video_path", None):
 
                     is_completed = True
 
@@ -3599,7 +3680,7 @@ class OmniVoiceInterface(ScrollArea):
 
             dur_val = data.get("total_duration") or prof_info.get("total_duration", 0.0)
 
-            dur_str = f" ({dur_val:.1f}s)" if dur_val > 0 else ""
+            dur_str = f" — {dur_val:.1f} giây" if dur_val > 0 else ""
 
             item_cnt = QTableWidgetItem(f"{data['count']} câu{dur_str}")
 
@@ -3622,6 +3703,8 @@ class OmniVoiceInterface(ScrollArea):
             layout_ref.setSpacing(4)
 
             lbl_ref = BodyLabel(ref_name, cell_widget_ref)
+
+            lbl_ref.setWordWrap(True)
 
             lbl_ref.setToolTip(ref_path or "Chưa có tệp âm thanh mẫu")
 
@@ -4849,6 +4932,8 @@ class OmniVoiceInterface(ScrollArea):
 
         voice_ins = (prof.get("voice_instruct") or prof.get("instruct") if is_dict else getattr(prof, "voice_instruct", "")) if prof else ""
 
+        ref_text = (prof.get("ref_text") if is_dict else getattr(prof, "ref_text", "")) if prof else ""
+
         if target_blk:
 
             if getattr(target_blk, "voice_ref_path", ""):
@@ -4858,6 +4943,10 @@ class OmniVoiceInterface(ScrollArea):
             if getattr(target_blk, "voice_instruct", ""):
 
                 voice_ins = target_blk.voice_instruct
+
+            if not ref_text and getattr(target_blk, "text", ""):
+
+                ref_text = getattr(target_blk, "text", "")
 
         if method == "preset":
 
@@ -4979,6 +5068,8 @@ class OmniVoiceInterface(ScrollArea):
             override_ref_audio=ref_audio if method == "clone" else "",
 
             override_instruct=voice_ins if method == "preset" else "",
+
+            override_ref_text=ref_text if method == "clone" else "",
 
         )
 
@@ -5196,11 +5287,11 @@ class OmniVoiceInterface(ScrollArea):
 
         if hasattr(self, "btn_audition_all_speakers"):
 
-            self.btn_audition_all_speakers.setText(f"Dừng ({curr_idx}/{self._audition_all_total})")
+            self.btn_audition_all_speakers.setText(f"Dừng [{curr_idx}/{self._audition_all_total}]")
 
             self.btn_audition_all_speakers.setIcon(FluentIcon.PAUSE)
 
-        InfoBar.info("Nghe thử nhân vật", f"Đang nghe thử giọng của {spk} ({curr_idx}/{self._audition_all_total}).", parent=self, duration=2500)
+        InfoBar.info("Nghe thử nhân vật", f"Đang nghe thử giọng của {spk} — Nhân vật {curr_idx}/{self._audition_all_total}.", parent=self, duration=2500)
 
         card_btn = None
 
@@ -6131,7 +6222,7 @@ class OmniVoiceInterface(ScrollArea):
     def _update_sub_video_status_label(self):
         sub_name = os.path.basename(self.current_subtitle_path) if self.current_subtitle_path else "Chưa chọn"
         vid_name = os.path.basename(self.current_video_path) if self.current_video_path else "Chưa chọn"
-        self.lbl_sub_video_info.setText(f"Phụ đề: {sub_name} ({len(self.subtitle_blocks)} câu) | Video: {vid_name}")
+        self.lbl_sub_video_info.setText(f"Phụ đề: {sub_name} — {len(self.subtitle_blocks)} câu | Video: {vid_name}")
         if hasattr(self, "sub_table"):
             has_vid = is_valid_media_file(self.current_video_path)
             for r in range(self.sub_table.rowCount()):
@@ -6859,7 +6950,7 @@ class OmniVoiceInterface(ScrollArea):
 
             "Đã cập nhật thiết kế giọng nhân vật",
 
-            f"Đã gán '{preset_label}' cho {target_spk} ({updated} câu).",
+            f"Đã gán '{preset_label}' cho {target_spk} — Cập nhật {updated} câu thoại.",
 
             parent=self,
 
@@ -6957,7 +7048,7 @@ class OmniVoiceInterface(ScrollArea):
 
             "Đã gán tệp giọng mẫu cho nhân vật",
 
-            f"{target_spk} sử dụng mẫu: {os.path.basename(filepath)} ({updated} câu).",
+            f"{target_spk} sử dụng mẫu: {os.path.basename(filepath)} — Cập nhật {updated} câu thoại.",
 
             parent=self,
 
@@ -7529,6 +7620,8 @@ class OmniVoiceInterface(ScrollArea):
 
             self._update_subtitle_action_buttons()
 
+            self._update_step_navigation_states()
+
         else:
 
             self.btn_use_vn_voice_as_ref.setEnabled(False)
@@ -7582,6 +7675,8 @@ class OmniVoiceInterface(ScrollArea):
         override_instruct: str = "",
 
         override_mode: Optional[str] = None,
+
+        override_ref_text: str = "",
 
     ):
 
@@ -7673,6 +7768,8 @@ class OmniVoiceInterface(ScrollArea):
 
             override_mode=override_mode,
 
+            override_ref_text=override_ref_text,
+
             parent=self,
 
         )
@@ -7751,7 +7848,7 @@ class OmniVoiceInterface(ScrollArea):
 
                 detail_log = detail if detail else log_msg
 
-                self.log(f"Nhân vật '{target_spk}' gặp sự cố ({detail_log}). Tự động chuyển sang nhân vật kế tiếp...")
+                self.log(f"Nhân vật '{target_spk}' gặp sự cố: {detail_log}. Tự động chuyển sang nhân vật kế tiếp...")
 
                 self._audition_next_in_queue()
 
