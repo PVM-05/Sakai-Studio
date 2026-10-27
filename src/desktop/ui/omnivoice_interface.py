@@ -1457,6 +1457,37 @@ class OmniVoiceInterface(ScrollArea):
 
         p0_layout.addWidget(sub_file_card)
 
+        # Khối chế độ một giọng đọc đồng nhất hoặc phân vai đa nhân vật
+        voice_mode_card = CardWidget(self.page_step_0)
+        voice_mode_layout = QVBoxLayout(voice_mode_card)
+        voice_mode_layout.setContentsMargins(18, 14, 18, 14)
+        voice_mode_layout.setSpacing(10)
+
+        voice_mode_layout.addWidget(SubtitleLabel("Chế Độ Giọng Đọc Phụ Đề", voice_mode_card))
+
+        self.chk_single_unified_voice = CheckBox("Sử dụng một giọng đọc đồng nhất cho toàn bộ tệp phụ đề", voice_mode_card)
+        self.chk_single_unified_voice.setChecked(True)
+        self.chk_single_unified_voice.setStyleSheet("font-weight: bold; font-size: 14px;")
+        voice_mode_layout.addWidget(self.chk_single_unified_voice)
+
+        single_voice_row = QHBoxLayout()
+        single_voice_row.setSpacing(10)
+        lbl_unified = BodyLabel("Giọng đọc tiếng Việt:", voice_mode_card)
+        lbl_unified.setWordWrap(True)
+        self.combo_single_unified_preset = ComboBox(voice_mode_card)
+        self.combo_single_unified_preset.addItems(list(VIETNAMESE_VOICE_CATALOG.keys()))
+        self.combo_single_unified_preset.setMinimumWidth(320)
+
+        self.btn_preview_single_unified = PushButton("Nghe Thử Giọng Này", voice_mode_card)
+        self.btn_preview_single_unified.setIcon(FluentIcon.VOLUME)
+
+        single_voice_row.addWidget(lbl_unified)
+        single_voice_row.addWidget(self.combo_single_unified_preset, 1)
+        single_voice_row.addWidget(self.btn_preview_single_unified)
+        voice_mode_layout.addLayout(single_voice_row)
+
+        p0_layout.addWidget(voice_mode_card)
+
         # Nút chuyển đổi thu gọn thiết lập giọng mặc định (mặc định đóng để giảm rối mắt)
 
         self.btn_toggle_default_voice_settings = PushButton("Tùy Chọn Giọng Mặc Định Dự Phòng", self.page_step_0)
@@ -1508,6 +1539,7 @@ class OmniVoiceInterface(ScrollArea):
         ])
 
         self.combo_mode.setMinimumWidth(260)
+        self.combo_mode.setCurrentIndex(1)
 
         lbl_lang = BodyLabel("Ngôn ngữ đọc:", general_voice_card)
 
@@ -1666,6 +1698,7 @@ class OmniVoiceInterface(ScrollArea):
         clone_layout.addWidget(self.btn_transcribe_ref, 4, 2)
 
         self.voice_source_stack.addWidget(self.clone_card)
+        self.clone_card.setVisible(False)
 
         self.design_card = CardWidget(self.voice_source_stack)
 
@@ -2960,6 +2993,11 @@ class OmniVoiceInterface(ScrollArea):
         ]:
 
             cb.currentIndexChanged.connect(self._rebuild_instruct_string)
+
+        # Tín hiệu chế độ một giọng đọc đồng nhất
+        self.chk_single_unified_voice.stateChanged.connect(self._on_single_unified_voice_changed)
+        self.combo_single_unified_preset.currentTextChanged.connect(self._on_unified_preset_changed)
+        self.btn_preview_single_unified.clicked.connect(self._preview_unified_voice)
 
         # Tín hiệu Phòng thu văn bản
 
@@ -5755,6 +5793,52 @@ class OmniVoiceInterface(ScrollArea):
 
         )
 
+    def _on_single_unified_voice_changed(self, state=None):
+        is_single = self.chk_single_unified_voice.isChecked()
+        self.combo_single_unified_preset.setEnabled(is_single)
+        self.btn_preview_single_unified.setEnabled(is_single)
+        self._update_identify_button_state()
+        if is_single:
+            self._apply_unified_voice_to_all_subtitles()
+
+    def _on_unified_preset_changed(self, preset_name: str):
+        if hasattr(self, "chk_single_unified_voice") and self.chk_single_unified_voice.isChecked():
+            self._apply_unified_voice_to_all_subtitles()
+
+    def _apply_unified_voice_to_all_subtitles(self):
+        if not hasattr(self, "combo_single_unified_preset"):
+            return
+        preset_name = self.combo_single_unified_preset.currentText().strip()
+        if not preset_name or preset_name not in VIETNAMESE_VOICE_CATALOG:
+            return
+        instruct = VIETNAMESE_VOICE_CATALOG[preset_name]["instruct"]
+        for blk in self.subtitle_blocks:
+            blk.voice_instruct = instruct
+            blk.voice_ref_path = ""
+            blk.is_speaker_locked = True
+        if hasattr(self, "sub_table"):
+            self._populate_subtitle_table()
+
+    def _preview_unified_voice(self):
+        preset_name = self.combo_single_unified_preset.currentText().strip()
+        info = VIETNAMESE_VOICE_CATALOG.get(preset_name, {})
+        sample_text = info.get(
+            "sample_vi",
+            "Xin chào các bạn, đây là giọng đọc mẫu tiếng Việt chạy trực tiếp trên card đồ họa.",
+        )
+        instruct_str = info.get("instruct", "male, young adult, moderate pitch")
+        slug = info.get("slug", "unified_sample")
+        out_dir = os.path.join(BASE_DIR, "output", "voice_prompts")
+        os.makedirs(out_dir, exist_ok=True)
+        out_wav = os.path.join(out_dir, f"unified_sample_{slug}.wav")
+        self._launch_worker(
+            "vn_catalog_preview",
+            text=sample_text,
+            output_path=out_wav,
+            override_instruct=instruct_str,
+        )
+
+
     def _preview_speaker_preset_vi(self):
 
         preset_name = self.combo_speaker_voice_preset.currentText().strip()
@@ -6045,6 +6129,9 @@ class OmniVoiceInterface(ScrollArea):
 
             self._populate_subtitle_table()
 
+            if hasattr(self, "chk_single_unified_voice") and self.chk_single_unified_voice.isChecked():
+                self._apply_unified_voice_to_all_subtitles()
+
             self._update_casting_table()
 
         elif self.current_subtitle_path:
@@ -6056,6 +6143,9 @@ class OmniVoiceInterface(ScrollArea):
             self.subtitle_blocks = []
 
             self._populate_subtitle_table()
+
+            if hasattr(self, "chk_single_unified_voice") and self.chk_single_unified_voice.isChecked():
+                self._apply_unified_voice_to_all_subtitles()
 
             self._update_casting_table()
 
@@ -6122,6 +6212,9 @@ class OmniVoiceInterface(ScrollArea):
             )
 
             self._populate_subtitle_table()
+
+            if hasattr(self, "chk_single_unified_voice") and self.chk_single_unified_voice.isChecked():
+                self._apply_unified_voice_to_all_subtitles()
 
             self._update_casting_table()
 
@@ -6232,11 +6325,15 @@ class OmniVoiceInterface(ScrollArea):
         self._update_identify_button_state()
 
     def _update_identify_button_state(self):
-
         """Cập nhật trạng thái nút nhận diện nhân vật và nhãn gợi ý theo nguồn đã nạp."""
-
         if not hasattr(self, "btn_identify_characters"):
+            return
 
+        if hasattr(self, "chk_single_unified_voice") and self.chk_single_unified_voice.isChecked():
+            self.btn_identify_characters.setEnabled(False)
+            self.lbl_detect_source_hint.setText(
+                "Đang chọn chế độ một giọng đọc đồng nhất cho toàn bộ tệp phụ đề. Bạn có thể chuyển thẳng sang Bước 3 hoặc Bước 5."
+            )
             return
 
         has_subs = len(self.subtitle_blocks) > 0
@@ -8097,6 +8194,12 @@ class OmniVoiceInterface(ScrollArea):
             self.btn_next_step.setText("Bước Tiếp Theo")
 
         self.btn_preview_vn_voice.setText("Nghe Thử Tiếng Việt")
+
+        if hasattr(self, "chk_single_unified_voice"):
+            self.chk_single_unified_voice.setText("Sử dụng một giọng đọc đồng nhất cho toàn bộ tệp phụ đề")
+
+        if hasattr(self, "btn_preview_single_unified"):
+            self.btn_preview_single_unified.setText("Nghe Thử Giọng Này")
 
         self.btn_use_vn_voice_as_ref.setText("Chốt Làm Giọng Mẫu Chính")
 

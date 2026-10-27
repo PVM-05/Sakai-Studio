@@ -404,5 +404,26 @@ def test_synthesize_blocks_normalizes_master_peak():
             os.remove(tmp_out)
 
 
+def test_single_unified_voice_mode_ui():
+    _ensure_qapp()
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.tts_engine import VIETNAMESE_VOICE_CATALOG
+    from src.ai_engines.translator import SubtitleBlock
+
+    interface = OmniVoiceInterface()
+    assert hasattr(interface, "chk_single_unified_voice")
+    assert hasattr(interface, "combo_single_unified_preset")
+    assert hasattr(interface, "btn_preview_single_unified")
+
+    # Mặc định bật chế độ một giọng đọc đồng nhất để đơn giản hóa thao tác
+    assert interface.chk_single_unified_voice.isChecked() is True
+    assert interface.combo_single_unified_preset.count() == len(VIETNAMESE_VOICE_CATALOG)
+
+    # Khi bật chế độ 1 giọng, cho phép chuyển thẳng sang Bước 3 (Biên tập phụ đề) nếu có phụ đề
+    interface.subtitle_blocks = [SubtitleBlock(index=1, start_time=0.0, end_time=1.0, text="Chào bạn")]
+    assert interface._can_switch_to_step(2) is True
+
+
+
 
 
