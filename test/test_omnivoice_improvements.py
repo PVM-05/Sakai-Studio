@@ -424,6 +424,38 @@ def test_single_unified_voice_mode_ui():
     assert interface._can_switch_to_step(2) is True
 
 
+def test_casting_table_pure_ai_presets_and_audition():
+    _ensure_qapp()
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+    from src.ai_engines.tts_engine import VIETNAMESE_VOICE_CATALOG
+
+    interface = OmniVoiceInterface()
+    prof = CharacterVoiceProfile(
+        speaker_id="spk_0",
+        display_name="Người nói 1",
+        method="preset",
+        preset_name=list(VIETNAMESE_VOICE_CATALOG.keys())[0],
+    )
+    interface.speaker_profiles = {"Người nói 1": prof}
+    interface._update_casting_table()
+
+    # Bảng phân vai phải có 6 cột chuẩn mực, loại bỏ cột mẫu giọng tệp ngoài
+    assert interface.casting_table.columnCount() == 6
+    header_labels = [interface.casting_table.horizontalHeaderItem(c).text() for c in range(6)]
+    assert "Mẫu Giọng Nguồn" not in header_labels
+    assert "Giọng Đọc Trí Tuệ Nhân Tạo" in header_labels
+    assert header_labels == [
+        "Mã Nhân Vật",
+        "Tên Nhân Vật",
+        "Số Câu Thoại",
+        "Giọng Đọc Trí Tuệ Nhân Tạo",
+        "Trạng Thái",
+        "Thao Tác",
+    ]
+
+
+
 
 
 
