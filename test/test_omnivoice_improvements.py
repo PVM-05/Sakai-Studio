@@ -322,3 +322,87 @@ def test_vietnamese_number_normalization():
     # Giữ nguyên thẻ biểu cảm
     assert normalize_vietnamese_numbers_and_text("Chào bạn [laughter] năm 2025") == "Chào bạn [laughter] năm hai nghìn không trăm hai mươi lăm"
 
+
+def test_synthesize_blocks_never_creates_consistent_prompt_for_design():
+    from src.ai_engines.tts_engine import TTSEngine
+    from src.ai_engines.translator import SubtitleBlock
+    from unittest.mock import MagicMock, patch
+
+    engine = TTSEngine(auto_extract_ref=False, mode="design")
+    engine.load_model = MagicMock()
+    mock_model = MagicMock()
+    sr = 24000
+    mock_model.generate.return_value = [np.ones(sr, dtype=np.float32) * 0.3]
+    engine.model = mock_model
+
+    blocks = [
+        SubtitleBlock(index=1, start_time=0.0, end_time=2.0, text="Câu thứ nhất", speaker="Người nói 1"),
+        SubtitleBlock(index=2, start_time=2.5, end_time=4.5, text="Câu thứ hai", speaker="Người nói 1"),
+    ]
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        tmp_out = f.name
+
+    try:
+        with patch("src.ai_engines.tts_engine.is_audio_quality_acceptable_for_voice_lock", return_value=(True, "OK")):
+            report = engine.synthesize_blocks(blocks, total_duration=5.0, output_path=tmp_out)
+            # Tuyệt đối không sinh khóa consistent_Người nói 1 để ép các câu sau phải clone câu 1
+            assert "consistent_Người nói 1" not in engine._speaker_prompt_cache
+            assert report.status in ("success", "partial")
+    finally:
+        if os.path.exists(tmp_out):
+            os.remove(tmp_out)
+
+
+def test_cache_key_includes_quality_parameters():
+    from src.ai_engines.tts_engine import TTSEngine
+
+    engine = TTSEngine(auto_extract_ref=False, resume_cache_dir=os.path.abspath("tmp_test_cache"))
+    p1 = engine._compute_block_cache_path(0, "Chào bạn", "spk_1", None, "instruct_1", 2.0)
+    assert p1 is not None
+
+    # Khi đổi guidance_scale, đường dẫn cache phải đổi khác hoàn toàn
+    engine.guidance_scale = 3.5
+    p2 = engine._compute_block_cache_path(0, "Chào bạn", "spk_1", None, "instruct_1", 2.0)
+    assert p1 != p2
+
+    # Khi đổi num_step, đường dẫn cache phải đổi khác hoàn toàn
+    engine.num_step = 16
+    p3 = engine._compute_block_cache_path(0, "Chào bạn", "spk_1", None, "instruct_1", 2.0)
+    assert p2 != p3
+
+
+def test_synthesize_blocks_normalizes_master_peak():
+    from src.ai_engines.tts_engine import TTSEngine
+    from src.ai_engines.translator import SubtitleBlock
+    from unittest.mock import MagicMock
+
+    engine = TTSEngine(auto_extract_ref=False, mode="design")
+    engine.load_model = MagicMock()
+    mock_model = MagicMock()
+    sr = 24000
+    # Giả lập âm thanh sinh ra có biên độ cực lớn 1.5 (vượt ngưỡng clipping)
+    mock_model.generate.return_value = [np.ones(sr, dtype=np.float32) * 1.5]
+    engine.model = mock_model
+
+    blocks = [
+        SubtitleBlock(index=1, start_time=0.0, end_time=1.0, text="Kiểm tra âm lượng", speaker="Người nói 1"),
+    ]
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        tmp_out = f.name
+
+    try:
+        report = engine.synthesize_blocks(blocks, total_duration=2.0, output_path=tmp_out)
+        import soundfile as sf
+        data, _ = sf.read(tmp_out)
+        peak = float(np.max(np.abs(data)))
+        # Biên độ đỉnh tối đa không bao giờ được vượt quá 0.891 (-1.0 dBFS)
+        assert peak <= 0.892
+    finally:
+        if os.path.exists(tmp_out):
+            os.remove(tmp_out)
+
+
+
+

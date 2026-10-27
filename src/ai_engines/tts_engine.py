@@ -2107,6 +2107,27 @@ class TTSEngine:
 
         return round(slot_duration, 2)
 
+    @staticmethod
+    def _trim_silence_padding(
+        audio_arr: np.ndarray,
+        threshold_db: float = -45.0,
+        sample_rate: int = 24000,
+    ) -> np.ndarray:
+        """
+        Cắt bớt khoảng lặng vô thanh ở đầu và đuôi đoạn âm thanh (dưới ngưỡng -45 dB)
+        nhưng giữ lại khoảng 12ms đệm mượt để tránh làm cụt âm bật và phụ âm đầu/cuối.
+        """
+        if audio_arr.size == 0:
+            return audio_arr
+        thresh = 10.0 ** (threshold_db / 20.0)
+        active = np.where(np.abs(audio_arr) > thresh)[0]
+        if len(active) == 0:
+            return audio_arr
+        margin = max(1, int(0.012 * sample_rate))
+        start_idx = max(0, active[0] - margin)
+        end_idx = min(len(audio_arr), active[-1] + margin + 1)
+        return audio_arr[start_idx:end_idx]
+
     def _compute_block_cache_path(
         self,
         index: int,
@@ -2126,7 +2147,12 @@ class TTSEngine:
                 mtime_str = str(os.path.getmtime(ref_path))
             except Exception:
                 mtime_str = ""
-        raw_key = f"{index}|{text}|{speaker}|{method_or_mode or ''}|{ref_path or ''}|{mtime_str}|{instruct or ''}|{target_dur or 0.0:.2f}|{self.mode}|{self.speed:.2f}"
+        raw_key = (
+            f"{index}|{text}|{speaker}|{method_or_mode or ''}|{ref_path or ''}|{mtime_str}|"
+            f"{instruct or ''}|{target_dur or 0.0:.2f}|{self.mode}|{self.speed:.2f}|"
+            f"{getattr(self, 'guidance_scale', 2.0):.2f}|{getattr(self, 'num_step', 32)}|"
+            f"{int(getattr(self, 'denoise', True))}|{getattr(self, 't_shift', 0.5):.2f}"
+        )
         digest = hashlib.sha1(raw_key.encode("utf-8", errors="ignore")).hexdigest()[:16]
         return os.path.join(self.resume_cache_dir, f"blk_{index + 1:04d}_{digest}.wav")
 
@@ -2350,12 +2376,7 @@ class TTSEngine:
                     character_prompt_key = f"character_{spk_key}" if spk_key else ""
                     self._speaker_prompt_cache.pop(character_prompt_key, None)
                     override_ref = None
-
-                    # Giữ prompt nhất quán đã tạo từ câu trước của chính nhân vật này (nếu có)
-                    if spk_key and f"consistent_{spk_key}" in self._speaker_prompt_cache:
-                        override_prompt = self._speaker_prompt_cache[f"consistent_{spk_key}"]
-                    else:
-                        override_prompt = None
+                    override_prompt = None
 
                     ins_cand = (
                         (self._speaker_instruct_cache.get(spk_key, "") if spk_key else "")
@@ -2378,10 +2399,6 @@ class TTSEngine:
                         override_prompt = self._speaker_prompt_cache[character_prompt_key]
                         override_ref = ref_cand
                         active_block_mode = "clone"
-                    elif spk_key and f"consistent_{spk_key}" in self._speaker_prompt_cache:
-                        override_prompt = self._speaker_prompt_cache[f"consistent_{spk_key}"]
-                        override_ref = ref_cand
-                        active_block_mode = "clone" if ref_cand else "design"
                     elif ref_cand and os.path.exists(ref_cand):
                         prompt_key = character_prompt_key or f"spk_{spk_key}_{ref_cand}"
                         prof_ref_text = prof.get("ref_text", "") if is_dict else getattr(prof, "ref_text", "")
@@ -2448,7 +2465,7 @@ class TTSEngine:
                 if len(clauses) == 1:
                     audio_arr = self.generate_single(
                         clauses[0],
-                        target_duration=target_dur,
+                        target_duration=None,
                         override_mode=active_block_mode,
                         override_prompt=override_prompt,
                         override_ref_audio=override_ref,
@@ -2459,10 +2476,9 @@ class TTSEngine:
                     clause_waves: List[np.ndarray] = []
                     pause_samples = np.zeros(int(0.06 * self.sample_rate), dtype=np.float32)
                     for c_idx, clause in enumerate(clauses):
-                        c_dur = (target_dur * (len(clause) / total_chars)) if target_dur else None
                         c_wav = self.generate_single(
                             clause,
-                            target_duration=c_dur,
+                            target_duration=None,
                             override_mode=active_block_mode,
                             override_prompt=override_prompt,
                             override_ref_audio=override_ref,
@@ -2478,45 +2494,36 @@ class TTSEngine:
                 if audio_arr.size == 0 or float(np.max(np.abs(audio_arr))) < 1e-5:
                     raise RuntimeError("Âm thanh sinh ra trống hoặc hoàn toàn im lặng.")
 
-                # Khóa giọng nhân vật tự động có kiểm định chất lượng (khi chưa có mẫu giọng nhân bản cố định)
-                if (
-                    spk_key
-                    and not override_ref
-                    and override_prompt is None
-                    and f"consistent_{spk_key}" not in self._speaker_prompt_cache
-                ):
-                    ok_lock, lock_reason = is_audio_quality_acceptable_for_voice_lock(audio_arr, self.sample_rate)
-                    if ok_lock and self.model is not None and hasattr(self.model, "create_voice_clone_prompt"):
-                        try:
-                            wav_t = torch.from_numpy(audio_arr).unsqueeze(0) if torch is not None else audio_arr
-                            locked_prompt = self.model.create_voice_clone_prompt(
-                                ref_audio=(wav_t, self.sample_rate),
-                                ref_text=text_to_speak,
-                                preprocess_prompt=False,
-                            )
-                            self._speaker_prompt_cache[f"consistent_{spk_key}"] = locked_prompt
-                            if spk_key in self.speaker_profiles and not self.speaker_profiles[spk_key].get("ref_audio_path"):
-                                auto_ref_file = os.path.join(self.voice_prompt_cache_dir, f"locked_{spk_key.replace(' ', '_')}.wav")
-                                sf.write(auto_ref_file, audio_arr, self.sample_rate)
-                                self.speaker_profiles[spk_key]["ref_audio_path"] = auto_ref_file
-                                for b_other in blocks:
-                                    if getattr(b_other, "speaker", "") == spk_key and not getattr(b_other, "voice_ref_path", ""):
-                                        b_other.voice_ref_path = auto_ref_file
-                        except Exception as lock_err:
-                            self.log(f"Cảnh báo: Không thể khóa mẫu giọng tự động cho {spk_key} tại câu {i + 1}: {lock_err}")
-                    else:
-                        self.log(f"Chưa khóa mẫu giọng cho {spk_key} ở câu {i + 1} ({lock_reason}), sẽ thử ở câu tiếp theo.")
+                # Tỉa khoảng lặng đệm vô thanh ở đầu/đuôi trước khi kiểm tra thời lượng
+                trimmed_arr = self._trim_silence_padding(audio_arr, threshold_db=-45.0, sample_rate=self.sample_rate)
+                if len(trimmed_arr) > 0:
+                    audio_arr = trimmed_arr
 
                 # Kiểm tra chồng lấn với câu phụ đề kế tiếp và co giãn thời lượng trong ngưỡng an toàn
+                avail_before_next = None
                 if i + 1 < len(blocks):
                     next_start_sec = parse_timestamp_to_seconds(blocks[i + 1].start_time)
                     avail_before_next = next_start_sec - start_sec
+                elif target_dur and self.sync_to_subtitle_duration:
+                    avail_before_next = target_dur
+
+                if avail_before_next is not None and avail_before_next > 0.4:
                     cur_dur_sec = len(audio_arr) / float(self.sample_rate)
-                    if avail_before_next > 0.4 and cur_dur_sec > avail_before_next * 1.03:
+                    if cur_dur_sec > avail_before_next * 1.05:
                         needed_speed = cur_dur_sec / avail_before_next
-                        if needed_speed <= 1.35:
+                        if needed_speed <= 1.15:
                             audio_arr = self._safe_time_stretch(audio_arr, needed_speed, sample_rate=self.sample_rate)
                             report.stretched_count += 1
+                        else:
+                            # Chặn co nén ở mức 1.15x tối đa để giữ nguyên vẹn thanh điệu tiếng Việt và cắt bớt phần đuôi thừa
+                            audio_arr = self._safe_time_stretch(audio_arr, 1.15, sample_rate=self.sample_rate)
+                            report.stretched_count += 1
+                            max_samples = int(avail_before_next * self.sample_rate)
+                            if len(audio_arr) > max_samples:
+                                audio_arr = audio_arr[:max_samples]
+                                fade_len = min(240, len(audio_arr) // 10)
+                                if fade_len > 2:
+                                    audio_arr[-fade_len:] *= np.linspace(1.0, 0.0, fade_len, dtype=np.float32)
 
                 # Lưu vào bộ nhớ đệm khôi phục tác vụ nếu được bật
                 if cache_wav_path:
@@ -2546,6 +2553,11 @@ class TTSEngine:
                     )
                 else:
                     self.log(f"Lỗi khi tổng hợp khối phụ đề {i + 1}: {err_str}")
+
+        # Chuẩn hóa âm lượng đầu ra an toàn (-1.0 dBFS / đỉnh tối đa 0.891) tránh vỡ tiếng khi ghép video
+        max_peak = float(np.max(np.abs(full_audio))) if full_audio.size > 0 else 0.0
+        if max_peak > 0.891:
+            full_audio = full_audio * (0.891 / max_peak)
 
         self.log(f"Đang lưu track lồng tiếng hoàn chỉnh vào: {output_path}")
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
