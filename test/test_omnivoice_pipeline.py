@@ -171,14 +171,11 @@ def test_multi_speaker_consistency_and_quality_checked_locking(tmp_path):
     report = engine.synthesize_blocks(blocks, total_duration=5.0, output_path=out_wav)
 
     assert report.status == "success"
-    assert "consistent_Người nói 1" in engine._speaker_prompt_cache
-    # Câu thứ 2 phải được truyền override_prompt = fake_prompt
-    second_call_kwargs = engine.generate_single.call_args_list[1].kwargs
-    assert second_call_kwargs.get("override_prompt") is fake_prompt
-
-    # Kiểm tra nút/hàm tạo lại mẫu giọng nhân vật
-    engine.reset_speaker_locked_prompt("Người nói 1")
+    # Giữ giọng thiết kế thuần túy qua các câu, không tự tạo prompt nhân bản làm méo tiếng
     assert "consistent_Người nói 1" not in engine._speaker_prompt_cache
+    second_call_kwargs = engine.generate_single.call_args_list[1].kwargs
+    assert "male, young adult" in second_call_kwargs.get("override_instruct")
+    assert second_call_kwargs.get("override_prompt") is None
 
 
 # ==============================================================================
@@ -2543,8 +2540,8 @@ def test_casting_table_has_two_separate_listen_buttons():
     }
     ui._update_casting_table()
 
-    cell_widget = ui.casting_table.cellWidget(0, 6)
-    assert cell_widget is not None, "Ô cột 6 phải có widget chứa các nút nghe"
+    cell_widget = ui.casting_table.cellWidget(0, 5)
+    assert cell_widget is not None, "Ô cột 5 phải có widget chứa các nút nghe"
 
     buttons = cell_widget.findChildren(QPushButton)
     btn_texts = [b.text() for b in buttons]

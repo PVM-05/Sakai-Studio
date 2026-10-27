@@ -3712,12 +3712,12 @@ class OmniVoiceInterface(ScrollArea):
             catalog_list = list(VIETNAMESE_VOICE_CATALOG.keys())
             combo_voice.addItems(catalog_list)
             curr_preset = prof_info.get("preset_name") or prof_info.get("voice_preset") or ""
-            if curr_preset in VIETNAMESE_VOICE_CATALOG:
+            curr_method = prof_info.get("method") or prof_info.get("assigned_strategy") or "clone"
+            if curr_method == "preset" and curr_preset in VIETNAMESE_VOICE_CATALOG:
                 combo_voice.setCurrentText(curr_preset)
             else:
-                default_preset = catalog_list[row % len(catalog_list)]
+                default_preset = curr_preset if curr_preset in VIETNAMESE_VOICE_CATALOG else catalog_list[row % len(catalog_list)]
                 combo_voice.setCurrentText(default_preset)
-                self._on_character_preset_changed(spk_name, default_preset)
 
             combo_voice.currentTextChanged.connect(
                 lambda txt, s=spk_name: self._on_character_preset_changed(s, txt)
@@ -3738,13 +3738,25 @@ class OmniVoiceInterface(ScrollArea):
             item_status.setFlags(item_status.flags() & ~Qt.ItemIsEditable)
             self.casting_table.setItem(row, 4, item_status)
 
-            # Cột 5: Thao Tác (Nút Nghe Thử Giọng)
+            # Cột 5: Thao Tác (Nút Nghe Giọng Gốc và Nghe Thử Giọng Trí Tuệ Nhân Tạo)
             cell_action = QWidget(self.casting_table)
             layout_action = QHBoxLayout(cell_action)
             layout_action.setContentsMargins(2, 1, 2, 1)
             layout_action.setSpacing(4)
 
-            btn_ai = PushButton("Nghe Thử Giọng", cell_action)
+            prof_item = self.speaker_profiles.get(spk_name)
+            has_orig_audio = bool(
+                getattr(prof_item, "source_audio_path", "")
+                or (prof_item.get("source_audio_path", "") if isinstance(prof_item, dict) else "")
+            )
+            btn_orig = PushButton("Nghe Giọng Gốc", cell_action)
+            btn_orig.setIcon(FluentIcon.MUSIC)
+            btn_orig.setToolTip("Phát đoạn âm thanh gốc đã trích xuất từ video cho nhân vật này")
+            btn_orig.setEnabled(has_orig_audio)
+            btn_orig.clicked.connect(lambda checked=False, s=spk_name: self._preview_character_voice(s))
+            layout_action.addWidget(btn_orig)
+
+            btn_ai = PushButton("Nghe Thử Giọng Trí Tuệ Nhân Tạo", cell_action)
             btn_ai.setIcon(FluentIcon.VOLUME)
             btn_ai.setToolTip("Tổng hợp câu thoại đầu tiên bằng giọng trí tuệ nhân tạo đang được gán cho nhân vật này")
             btn_ai.clicked.connect(lambda checked=False, s=spk_name, b=btn_ai: self._audition_character_voice(s, b))
@@ -3762,6 +3774,8 @@ class OmniVoiceInterface(ScrollArea):
         prof = self.speaker_profiles.get(spk_name)
         ins = VIETNAMESE_VOICE_CATALOG[new_preset]["instruct"]
         if isinstance(prof, dict):
+            if prof.get("source_audio_path"):
+                prof["_backup_source_audio"] = prof["source_audio_path"]
             prof["method"] = "preset"
             prof["preset_name"] = new_preset
             prof["voice_preset"] = new_preset
@@ -3771,6 +3785,8 @@ class OmniVoiceInterface(ScrollArea):
             prof["ref_audio_path"] = ""
             prof["status"] = "locked"
         elif hasattr(prof, "method"):
+            if getattr(prof, "source_audio_path", ""):
+                prof._backup_source_audio = prof.source_audio_path
             prof.method = "preset"
             prof.preset_name = new_preset
             prof.voice_instruct = ins
@@ -6806,14 +6822,13 @@ class OmniVoiceInterface(ScrollArea):
                     else:
                         ui_blk.voice_instruct = getattr(w_blk, "voice_instruct", ui_blk.voice_instruct)
                     ui_blk.confidence_level = getattr(w_blk, "confidence_level", getattr(ui_blk, "confidence_level", "high"))
-                    ui_blk.is_speaker_locked = True
+                    ui_blk.is_speaker_locked = getattr(w_blk, "is_speaker_locked", getattr(ui_blk, "is_speaker_locked", False))
         else:
             for blk in self.subtitle_blocks:
                 spk_name = getattr(blk, "speaker", "")
                 if spk_name in normalized:
                     blk.voice_instruct = getattr(normalized[spk_name], "voice_instruct", "")
                     blk.voice_ref_path = ""
-                    blk.is_speaker_locked = True
 
         self._populate_subtitle_table()
 
