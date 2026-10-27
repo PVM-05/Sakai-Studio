@@ -304,3 +304,21 @@ def test_no_parentheses_in_key_ui_text():
     ]
     for item in hw_items:
         assert "(" not in item and ")" not in item
+
+
+def test_vietnamese_number_normalization():
+    from src.ai_engines.tts_engine import normalize_vietnamese_numbers_and_text
+
+    # Số nguyên đơn giản và số năm
+    assert normalize_vietnamese_numbers_and_text("Năm 2024") == "Năm hai nghìn không trăm hai mươi tư"
+    assert normalize_vietnamese_numbers_and_text("Có 15 người") == "Có mười lăm người"
+    assert normalize_vietnamese_numbers_and_text("Số 0") == "Số không"
+    assert normalize_vietnamese_numbers_and_text("Tầng 21") == "Tầng hai mươi mốt"
+
+    # Số thập phân và phần trăm
+    assert normalize_vietnamese_numbers_and_text("Tăng 3.5%") == "Tăng ba phẩy năm phần trăm"
+    assert normalize_vietnamese_numbers_and_text("Đạt 100%") == "Đạt một trăm phần trăm"
+
+    # Giữ nguyên thẻ biểu cảm
+    assert normalize_vietnamese_numbers_and_text("Chào bạn [laughter] năm 2025") == "Chào bạn [laughter] năm hai nghìn không trăm hai mươi lăm"
+

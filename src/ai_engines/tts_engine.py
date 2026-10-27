@@ -189,19 +189,90 @@ def validate_and_normalize_subtitles(
     return issues
 
 
-def preprocess_vietnamese_tts_text(text: str) -> str:
+def _number_to_vietnamese_words(n: int) -> str:
+    """Chuyển đổi số nguyên không âm (0 đến 999.999.999) sang chữ viết tiếng Việt chuẩn xác."""
+    if n == 0:
+        return "không"
+
+    digits = ["không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín"]
+
+    def read_three_digits(num: int, is_highest: bool = False) -> str:
+        hundreds = num // 100
+        tens = (num % 100) // 10
+        units = num % 10
+        res = []
+
+        if hundreds > 0 or not is_highest:
+            res.append(f"{digits[hundreds]} trăm")
+
+        if tens > 1:
+            res.append(f"{digits[tens]} mươi")
+            if units == 1:
+                res.append("mốt")
+            elif units == 4:
+                res.append("tư")
+            elif units == 5:
+                res.append("lăm")
+            elif units > 0:
+                res.append(digits[units])
+        elif tens == 1:
+            res.append("mười")
+            if units == 5:
+                res.append("lăm")
+            elif units > 0:
+                res.append(digits[units])
+        elif tens == 0:
+            if units > 0:
+                if hundreds > 0 or not is_highest:
+                    res.append("lẻ")
+                res.append(digits[units])
+
+        return " ".join(res)
+
+    groups = []
+    scale = ["", "nghìn", "triệu", "tỷ"]
+    g_idx = 0
+    temp = n
+    while temp > 0:
+        part = temp % 1000
+        groups.append((part, g_idx))
+        temp //= 1000
+        g_idx += 1
+
+    words = []
+    for part, idx in reversed(groups):
+        if part == 0:
+            continue
+        is_highest = (idx == groups[-1][1])
+        r = read_three_digits(part, is_highest=is_highest)
+        unit = scale[idx]
+        if unit:
+            words.append(f"{r} {unit}".strip())
+        else:
+            words.append(r)
+
+    return " ".join(words).strip()
+
+
+def normalize_vietnamese_numbers_and_text(text: str) -> str:
     """
-    Chuẩn hóa văn bản tiếng Việt trước khi đưa vào OmniVoice:
-    - Mở rộng các đơn vị đo lường, ký hiệu phần trăm, nhiệt độ, tiền tệ phổ biến theo ngữ cảnh.
-    - Giữ nguyên các thẻ biểu cảm phi ngôn từ ([laughter], [sigh]...).
+    Chuẩn hóa số đếm, số thập phân, phần trăm sang chữ viết tiếng Việt lưu loát.
+    Bảo vệ nguyên vẹn các thẻ biểu cảm phi ngôn từ trong ngoặc vuông.
     """
     if not text or not text.strip():
         return ""
-    s = text.strip()
-    # Mở rộng đơn vị đo phổ biến khi đi kèm số hoặc độc lập
-    replacements = [
-        (r"(?<=\d)\s*%", " phần trăm"),
-        (r"%", " phần trăm "),
+
+    tags = []
+    def save_tag(match):
+        tags.append(match.group(0))
+        return f"__TAG_{len(tags) - 1}__"
+
+    s = re.sub(r"\[[a-zA-Z0-9_\-]+\]", save_tag, text.strip())
+
+    s = re.sub(r"(?<=\d)\s*%", " phần trăm", s)
+    s = re.sub(r"%", " phần trăm ", s)
+
+    units = [
         (r"\bkm/h\b", "ki lô mét trên giờ"),
         (r"\bm/s\b", "mét trên giây"),
         (r"\bkm2\b|\bkm²\b", "ki lô mét vuông"),
@@ -210,10 +281,41 @@ def preprocess_vietnamese_tts_text(text: str) -> str:
         (r"\bVNĐ\b|\bVND\b", "đồng"),
         (r"\bUSD\b", "đô la Mỹ"),
     ]
-    for pattern, repl in replacements:
+    for pattern, repl in units:
         s = re.sub(pattern, repl, s, flags=re.IGNORECASE)
+
+    digits = ["không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín"]
+
+    def repl_decimal(m):
+        integer_part = int(m.group(1))
+        decimal_part = " ".join(digits[int(d)] for d in m.group(2))
+        return f"{_number_to_vietnamese_words(integer_part)} phẩy {decimal_part}"
+
+    s = re.sub(r"\b(\d+)[.,](\d+)\b", repl_decimal, s)
+
+    def repl_integer(m):
+        val = int(m.group(0))
+        if val <= 999_999_999:
+            return _number_to_vietnamese_words(val)
+        return m.group(0)
+
+    s = re.sub(r"\b\d+\b", repl_integer, s)
+
+    for idx, tag in enumerate(tags):
+        s = s.replace(f"__TAG_{idx}__", tag)
+
     s = re.sub(r"\s{2,}", " ", s).strip()
     return s
+
+
+def preprocess_vietnamese_tts_text(text: str) -> str:
+    """
+    Chuẩn hóa văn bản tiếng Việt trước khi đưa vào OmniVoice:
+    - Mở rộng các đơn vị đo lường, ký hiệu phần trăm, nhiệt độ, tiền tệ phổ biến theo ngữ cảnh.
+    - Phiên âm số đếm, số thập phân sang chữ tiếng Việt tự nhiên.
+    - Giữ nguyên các thẻ biểu cảm phi ngôn từ ([laughter], [sigh]...).
+    """
+    return normalize_vietnamese_numbers_and_text(text)
 
 
 def split_long_vietnamese_clauses(text: str, max_chars: int = 220) -> List[str]:
