@@ -650,3 +650,170 @@ def test_synthesize_blocks_single_mode_pure_design_no_anchor_clone():
     finally:
         if os.path.exists(tmp_out):
             os.remove(tmp_out)
+
+
+def test_unified_voice_srt_without_speaker_uses_design_preset():
+    from src.ai_engines.tts_engine import TTSEngine, VIETNAMESE_VOICE_CATALOG
+    from src.ai_engines.translator import SubtitleBlock
+    from unittest.mock import MagicMock
+
+    preset_name = "Nam Thanh Niên Chuẩn - Thuyết Minh Và Tin Tức"
+    instruct = VIETNAMESE_VOICE_CATALOG[preset_name]["instruct"]
+    engine = TTSEngine(
+        auto_extract_ref=False,
+        mode="design",
+        multi_speaker_mode="single",
+        instruct=instruct,
+    )
+    engine.load_model = MagicMock()
+    mock_model = MagicMock()
+    mock_model.generate.return_value = [np.ones(24000, dtype=np.float32) * 0.5]
+    engine.model = mock_model
+
+    # Phụ đề hoàn toàn không có nhãn người nói
+    blocks = [
+        SubtitleBlock(index=1, start_time=0.0, end_time=1.5, text="Câu không có speaker một", speaker="", voice_instruct=instruct),
+        SubtitleBlock(index=2, start_time=2.0, end_time=3.5, text="Câu không có speaker hai", speaker="", voice_instruct=instruct),
+    ]
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        tmp_out = f.name
+
+    try:
+        recorded_calls = []
+        original_gen = engine.generate_single
+
+        def mock_generate_single(*args, **kwargs):
+            recorded_calls.append(kwargs)
+            return original_gen(*args, **kwargs)
+
+        with patch.object(engine, "generate_single", side_effect=mock_generate_single):
+            report = engine.synthesize_blocks(blocks, total_duration=4.0, output_path=tmp_out)
+
+        assert report.status == "success"
+        assert len(recorded_calls) == 2
+        for call_kw in recorded_calls:
+            assert call_kw.get("override_mode") == "design"
+            assert call_kw.get("override_prompt") is None
+            assert call_kw.get("override_ref_audio") is None
+            assert call_kw.get("override_instruct") == instruct
+    finally:
+        if os.path.exists(tmp_out):
+            os.remove(tmp_out)
+
+
+def test_unified_voice_overrides_stale_clone_profiles():
+    from src.ai_engines.tts_engine import TTSEngine, VIETNAMESE_VOICE_CATALOG
+    from src.ai_engines.translator import SubtitleBlock
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+    from unittest.mock import MagicMock
+
+    preset_name = "Nữ Thanh Niên Chuẩn - Thuyết Minh Và Kể Chuyện"
+    instruct = VIETNAMESE_VOICE_CATALOG[preset_name]["instruct"]
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        dummy_sample = f.name
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        tmp_out = f.name
+
+    try:
+        # Hồ sơ nhân vật cũ còn lưu method=clone và tệp âm thanh mẫu cũ
+        engine = TTSEngine(
+            auto_extract_ref=False,
+            mode="design",
+            multi_speaker_mode="single",
+            instruct=instruct,
+        )
+        engine.load_model = MagicMock()
+        mock_model = MagicMock()
+        mock_model.generate.return_value = [np.ones(24000, dtype=np.float32) * 0.5]
+        engine.model = mock_model
+
+        prof = CharacterVoiceProfile(
+            speaker_id="spk_old",
+            display_name="Nhân vật cũ",
+            method="clone",
+            source_audio_path=dummy_sample,
+        )
+        engine.speaker_profiles = {"Nhân vật cũ": prof}
+        engine.current_prompt = MagicMock()  # Giả lập còn sót prompt clone cũ
+
+        blocks = [
+            SubtitleBlock(index=1, start_time=0.0, end_time=1.5, text="Câu của nhân vật cũ", speaker="Nhân vật cũ", voice_instruct=instruct),
+        ]
+
+        recorded_calls = []
+        original_gen = engine.generate_single
+
+        def mock_generate_single(*args, **kwargs):
+            recorded_calls.append(kwargs)
+            return original_gen(*args, **kwargs)
+
+        with patch.object(engine, "generate_single", side_effect=mock_generate_single):
+            report = engine.synthesize_blocks(blocks, total_duration=2.0, output_path=tmp_out)
+
+        assert report.status == "success"
+        assert len(recorded_calls) == 1
+        call_kw = recorded_calls[0]
+        # Tuyệt đối không được sử dụng lại mẫu clone cũ
+        assert call_kw.get("override_mode") == "design"
+        assert call_kw.get("override_prompt") is None
+        assert call_kw.get("override_ref_audio") is None
+        assert call_kw.get("override_instruct") == instruct
+    finally:
+        for p in (dummy_sample, tmp_out):
+            if os.path.exists(p):
+                os.remove(p)
+
+
+def test_unified_voice_switching_presets_invalidates_cache():
+    from src.ai_engines.tts_engine import TTSEngine, VIETNAMESE_VOICE_CATALOG
+
+    with tempfile.TemporaryDirectory() as cache_dir:
+        ins_a = VIETNAMESE_VOICE_CATALOG["Nam Thanh Niên Chuẩn - Thuyết Minh Và Tin Tức"]["instruct"]
+        ins_b = VIETNAMESE_VOICE_CATALOG["Nữ Thanh Niên Chuẩn - Thuyết Minh Và Kể Chuyện"]["instruct"]
+
+        engine_a = TTSEngine(mode="design", multi_speaker_mode="single", instruct=ins_a, resume_cache_dir=cache_dir)
+        engine_b = TTSEngine(mode="design", multi_speaker_mode="single", instruct=ins_b, resume_cache_dir=cache_dir)
+
+        path_a = engine_a._compute_block_cache_path(0, "Nội dung câu nói", "unified", None, ins_a, None, method_or_mode="design")
+        path_b = engine_b._compute_block_cache_path(0, "Nội dung câu nói", "unified", None, ins_b, None, method_or_mode="design")
+
+        # Khóa cache của Preset A và Preset B phải hoàn toàn khác biệt
+        assert path_a != path_b
+
+
+def test_pre_export_check_enforces_unified_voice_sync():
+    _ensure_qapp()
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.translator import SubtitleBlock
+    from src.ai_engines.tts_engine import VIETNAMESE_VOICE_CATALOG
+
+    ui = OmniVoiceInterface()
+    ui.chk_single_unified_voice.setChecked(True)
+    ui.combo_single_unified_preset.setCurrentIndex(1)
+    chosen_preset = ui.combo_single_unified_preset.currentText().strip()
+    expected_instruct = VIETNAMESE_VOICE_CATALOG[chosen_preset]["instruct"]
+
+    # Giả lập phụ đề chưa được gán instruct hoặc còn sót ref_path
+    ui.subtitle_blocks = [
+        SubtitleBlock(index=1, start_time="00:00:01,000", end_time="00:00:03,000", text="Câu thử nghiệm", voice_instruct="", voice_ref_path="old.wav"),
+    ]
+
+    # Hàm kiểm tra chất lượng trước khi xuất phải tự động kích hoạt đồng bộ
+    issues = ui._run_pre_export_quality_check()
+    errors = [i for i in issues if i["severity"] == "error"]
+    assert len(errors) == 0
+    # Phụ đề phải được đồng bộ chính xác theo preset
+    assert ui.subtitle_blocks[0].voice_instruct == expected_instruct
+    assert ui.subtitle_blocks[0].voice_ref_path == ""
+    assert ui.subtitle_blocks[0].speaker == chosen_preset
+
+    # Tham số thu thập phải phản ánh đúng chế độ design và instruct của preset
+    params = ui._collect_engine_params()
+    assert params["multi_speaker_mode"] == "single"
+    assert params["mode"] == "design"
+    assert params["instruct"] == expected_instruct
+    assert params["ref_audio_path"] is None
+    assert params["instruct"] == expected_instruct
+    assert params["ref_audio_path"] is None

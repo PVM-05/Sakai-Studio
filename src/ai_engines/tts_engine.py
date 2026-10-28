@@ -2443,13 +2443,18 @@ class TTSEngine:
 
             # 2. Chế độ Đa nhân vật hoặc dự phòng khi nhái giọng từng câu không đủ chất lượng
             active_block_mode: Optional[str] = None
-            if self.multi_speaker_mode == "single" and not (self.speaker_profiles and spk_key in self.speaker_profiles):
+            if self.multi_speaker_mode == "single" and (self.mode == "design" or not (self.speaker_profiles and len(self.speaker_profiles) > 1)):
                 # Chế độ 1 giọng đọc đồng nhất: Áp dụng một mẫu giọng duy nhất cho mọi câu thoại trong tệp phụ đề
                 spk_label = "Giọng đồng nhất"
                 if self.mode == "design":
                     active_block_mode = "design"
-                    override_instruct = self.instruct or DEFAULT_SPEAKER_PRESETS["Người nói 1"]["instruct"]
+                    override_instruct = (
+                        getattr(blk, "voice_instruct", "")
+                        or self.instruct
+                        or DEFAULT_SPEAKER_PRESETS["Người nói 1"]["instruct"]
+                    )
                     override_prompt = None
+                    override_ref = None
                 elif self.mode == "clone":
                     active_block_mode = "clone"
                     if self.current_prompt is not None:
@@ -2462,7 +2467,12 @@ class TTSEngine:
                         )
                     if override_prompt is None:
                         active_block_mode = "design"
-                        override_instruct = self.instruct or DEFAULT_SPEAKER_PRESETS["Người nói 1"]["instruct"]
+                        override_instruct = (
+                            getattr(blk, "voice_instruct", "")
+                            or self.instruct
+                            or DEFAULT_SPEAKER_PRESETS["Người nói 1"]["instruct"]
+                        )
+                        override_ref = None
             elif override_prompt is None and spk_key:
                 prof = self.speaker_profiles.get(spk_key, {}) if spk_key else {}
                 is_dict = isinstance(prof, dict)
@@ -2540,6 +2550,7 @@ class TTSEngine:
                                 override_instruct = VIETNAMESE_VOICE_CATALOG[preset_name]["instruct"]
                                 active_block_mode = "design"
 
+            method_desc = f"Thiết kế giọng: {override_instruct[:30]}..." if active_block_mode == "design" else "Nhân bản giọng mẫu"
             # Kiểm tra bộ nhớ đệm khôi phục tác vụ (Checkpoint Resume)
             cache_spk = "unified" if self.multi_speaker_mode == "single" else spk_key
             cache_wav_path = self._compute_block_cache_path(
@@ -2555,10 +2566,10 @@ class TTSEngine:
                     full_audio = self._overlay_audio_segment(full_audio, cached_arr, start_sample, self.sample_rate)
                     report.succeeded_count += 1
                     report.resumed_from_cache_count += 1
-                    self.log(f"Khôi phục từ bộ nhớ đệm [{i + 1}/{len(blocks)}] ({spk_label}): {text_to_speak}")
+                    self.log(f"Khôi phục từ bộ nhớ đệm [{i + 1}/{len(blocks)}] ({spk_label} · {method_desc}): {text_to_speak}")
                     continue
 
-            self.log(f"Đang tổng hợp [{i + 1}/{len(blocks)}] ({spk_label}): {text_to_speak}")
+            self.log(f"Đang tổng hợp [{i + 1}/{len(blocks)}] ({spk_label} · {method_desc}): {text_to_speak}")
             try:
                 clauses = split_long_vietnamese_clauses(text_to_speak, max_chars=220)
                 if len(clauses) == 1:

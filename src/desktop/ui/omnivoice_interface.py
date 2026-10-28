@@ -5339,6 +5339,25 @@ class OmniVoiceInterface(ScrollArea):
 
             return issues
 
+        is_single_unified = hasattr(self, "chk_single_unified_voice") and self.chk_single_unified_voice.isChecked()
+        if is_single_unified:
+            preset_name = self.combo_single_unified_preset.currentText().strip() if hasattr(self, "combo_single_unified_preset") else ""
+            if not preset_name or preset_name not in VIETNAMESE_VOICE_CATALOG:
+                issues.append({
+                    "severity": "error",
+                    "index": 0,
+                    "message": "Chưa chọn giọng đọc đồng nhất hợp lệ từ kho mẫu tiếng Việt.",
+                })
+            else:
+                expected_ins = VIETNAMESE_VOICE_CATALOG[preset_name]["instruct"]
+                for blk in self.subtitle_blocks:
+                    spk_name = (getattr(blk, "speaker", "") or "").strip()
+                    if spk_name not in ("Chưa phân vai", "Chưa xác định"):
+                        blk.voice_instruct = expected_ins
+                        blk.voice_ref_path = ""
+                        blk.speaker = preset_name
+                        blk.is_speaker_locked = True
+
         for blk in self.subtitle_blocks:
 
             spk = (getattr(blk, "speaker", "") or "").strip()
@@ -5610,9 +5629,28 @@ class OmniVoiceInterface(ScrollArea):
         if hasattr(self, "chk_single_unified_voice") and self.chk_single_unified_voice.isChecked():
             params["multi_speaker_mode"] = "single"
             params["mode"] = "design"
+            params["ref_audio_path"] = None
+            params["ref_text"] = None
+            params["auto_extract_ref"] = False
             preset_name = self.combo_single_unified_preset.currentText().strip() if hasattr(self, "combo_single_unified_preset") else ""
             if preset_name in VIETNAMESE_VOICE_CATALOG:
                 params["instruct"] = VIETNAMESE_VOICE_CATALOG[preset_name]["instruct"]
+            if params.get("speaker_profiles"):
+                for spk_key, prof in params["speaker_profiles"].items():
+                    if isinstance(prof, dict):
+                        prof["method"] = "preset"
+                        prof["preset_name"] = preset_name
+                        prof["voice_instruct"] = params.get("instruct", "")
+                        prof["instruct"] = params.get("instruct", "")
+                        prof["source_audio_path"] = ""
+                        prof["ref_audio_path"] = ""
+                        prof["status"] = "locked"
+                    elif hasattr(prof, "method"):
+                        prof.method = "preset"
+                        prof.preset_name = preset_name
+                        prof.voice_instruct = params.get("instruct", "")
+                        prof.source_audio_path = ""
+                        prof.status = "locked"
 
         return params
 
@@ -5791,8 +5829,26 @@ class OmniVoiceInterface(ScrollArea):
             blk.voice_ref_path = ""
             blk.speaker = preset_name
             blk.is_speaker_locked = True
+        if self.speaker_profiles:
+            for spk_key, prof in self.speaker_profiles.items():
+                if isinstance(prof, dict):
+                    prof["method"] = "preset"
+                    prof["preset_name"] = preset_name
+                    prof["voice_instruct"] = instruct
+                    prof["instruct"] = instruct
+                    prof["source_audio_path"] = ""
+                    prof["ref_audio_path"] = ""
+                    prof["status"] = "locked"
+                elif hasattr(prof, "method"):
+                    prof.method = "preset"
+                    prof.preset_name = preset_name
+                    prof.voice_instruct = instruct
+                    prof.source_audio_path = ""
+                    prof.status = "locked"
         if hasattr(self, "sub_table"):
             self._populate_subtitle_table()
+        if hasattr(self, "casting_table"):
+            self._update_casting_table()
 
     def _preview_unified_voice(self):
         preset_name = self.combo_single_unified_preset.currentText().strip()
