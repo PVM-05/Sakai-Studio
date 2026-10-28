@@ -466,7 +466,15 @@ def test_single_unified_voice_consistency_across_blocks():
     from src.ai_engines.translator import SubtitleBlock
     from unittest.mock import MagicMock
 
-    engine = TTSEngine(auto_extract_ref=False, mode="design", multi_speaker_mode="single")
+    preset_name = "Nam Thanh Niên Chuẩn - Thuyết Minh Và Tin Tức"
+    expected_instruct = VIETNAMESE_VOICE_CATALOG[preset_name]["instruct"]
+
+    engine = TTSEngine(
+        auto_extract_ref=False,
+        mode="design",
+        multi_speaker_mode="single",
+        instruct=expected_instruct,
+    )
     engine.load_model = MagicMock()
     mock_model = MagicMock()
     sr = 24000
@@ -474,10 +482,10 @@ def test_single_unified_voice_consistency_across_blocks():
     mock_model.create_voice_clone_prompt.return_value = MagicMock()
     engine.model = mock_model
 
-    # Tạo 2 khối phụ đề với 2 nhãn người nói khác nhau
+    # Tạo 2 khối phụ đề với nhãn người nói khác nhau
     blocks = [
-        SubtitleBlock(index=1, start_time=0.0, end_time=1.5, text="Câu thoại thứ nhất", speaker="Người nói 1"),
-        SubtitleBlock(index=2, start_time=2.0, end_time=3.5, text="Câu thoại thứ hai", speaker="Người nói 2"),
+        SubtitleBlock(index=1, start_time=0.0, end_time=1.5, text="Câu thoại thứ nhất", speaker="Người nói 1", voice_instruct=expected_instruct),
+        SubtitleBlock(index=2, start_time=2.0, end_time=3.5, text="Câu thoại thứ hai", speaker="Người nói 2", voice_instruct=expected_instruct),
     ]
 
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
@@ -496,12 +504,20 @@ def test_single_unified_voice_consistency_across_blocks():
 
         assert report.status == "success"
         assert len(recorded_calls) == 2
-        # Cả 2 câu phải dùng chung đặc tính giọng (cùng prompt hoặc cùng instruct)
-        first_call = recorded_calls[0]
-        second_call = recorded_calls[1]
-        assert first_call.get("override_instruct") == second_call.get("override_instruct")
-        assert first_call.get("override_prompt") == second_call.get("override_prompt")
-        assert first_call.get("override_mode") == second_call.get("override_mode")
+        for call_kw in recorded_calls:
+            # Xác nhận rõ rệt chế độ design và đúng instruct của preset đã chọn
+            assert call_kw.get("override_mode") == "design"
+            assert call_kw.get("override_prompt") is None
+            assert call_kw.get("override_ref_audio") is None
+            assert call_kw.get("override_instruct") == expected_instruct
+
+        # Kiểm tra trực tiếp tham số truyền vào model.generate()
+        assert mock_model.generate.call_count == 2
+        for call_item in mock_model.generate.call_args_list:
+            gen_kwargs = call_item.kwargs
+            assert gen_kwargs.get("instruct") == expected_instruct
+            assert "voice_clone_prompt" not in gen_kwargs or gen_kwargs["voice_clone_prompt"] is None
+            assert "ref_audio" not in gen_kwargs or gen_kwargs["ref_audio"] is None
     finally:
         if os.path.exists(tmp_out):
             os.remove(tmp_out)
@@ -783,11 +799,12 @@ def test_unified_voice_switching_presets_invalidates_cache():
         assert path_a != path_b
 
 
-def test_pre_export_check_enforces_unified_voice_sync():
+def test_pre_export_check_is_read_only_and_unified_voice_syncs_profiles():
     _ensure_qapp()
     from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
     from src.ai_engines.translator import SubtitleBlock
     from src.ai_engines.tts_engine import VIETNAMESE_VOICE_CATALOG
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
 
     ui = OmniVoiceInterface()
     ui.chk_single_unified_voice.setChecked(True)
@@ -797,23 +814,134 @@ def test_pre_export_check_enforces_unified_voice_sync():
 
     # Giả lập phụ đề chưa được gán instruct hoặc còn sót ref_path
     ui.subtitle_blocks = [
-        SubtitleBlock(index=1, start_time="00:00:01,000", end_time="00:00:03,000", text="Câu thử nghiệm", voice_instruct="", voice_ref_path="old.wav"),
+        SubtitleBlock(index=1, start_time="00:00:01,000", end_time="00:00:03,000", text="Câu thử nghiệm", speaker="Chưa phân vai", voice_instruct="", voice_ref_path="old.wav"),
     ]
 
-    # Hàm kiểm tra chất lượng trước khi xuất phải tự động kích hoạt đồng bộ
+    # Giả lập hồ sơ nhân vật dạng đối tượng và dạng từ điển
+    obj_prof = CharacterVoiceProfile(
+        speaker_id="spk_obj",
+        display_name="Nhân vật đối tượng",
+        method="clone",
+        source_audio_path="old_obj.wav",
+        custom_audio_path="custom_obj.wav",
+        voice_clone_prompt_path="prompt_obj.pt",
+        ref_text="Mẫu cũ",
+        status="review_needed",
+    )
+    dict_prof = {
+        "speaker_id": "spk_dict",
+        "display_name": "Nhân vật từ điển",
+        "method": "clone",
+        "source_audio_path": "old_dict.wav",
+        "ref_audio_path": "old_dict.wav",
+        "custom_audio_path": "custom_dict.wav",
+        "voice_clone_prompt_path": "prompt_dict.pt",
+        "ref_text": "Mẫu cũ",
+        "status": "review_needed",
+    }
+    ui.speaker_profiles = {"spk_obj": obj_prof, "spk_dict": dict_prof}
+
+    # 1. Hàm kiểm tra chất lượng trước khi xuất phải hoàn toàn ĐỌC, KHÔNG làm thay đổi dữ liệu
     issues = ui._run_pre_export_quality_check()
     errors = [i for i in issues if i["severity"] == "error"]
     assert len(errors) == 0
-    # Phụ đề phải được đồng bộ chính xác theo preset
+    # Phụ đề chưa bị thay đổi qua bước kiểm tra
+    assert ui.subtitle_blocks[0].voice_instruct == ""
+    assert ui.subtitle_blocks[0].voice_ref_path == "old.wav"
+    assert ui.subtitle_blocks[0].speaker == "Chưa phân vai"
+
+    # 2. Bước áp dụng chủ đích phải đồng bộ toàn diện cả phụ đề và mọi kiểu hồ sơ nhân vật
+    ui._apply_unified_voice_to_all_subtitles()
     assert ui.subtitle_blocks[0].voice_instruct == expected_instruct
     assert ui.subtitle_blocks[0].voice_ref_path == ""
     assert ui.subtitle_blocks[0].speaker == chosen_preset
+    assert ui.subtitle_blocks[0].is_speaker_locked is True
 
-    # Tham số thu thập phải phản ánh đúng chế độ design và instruct của preset
+    # Kiểm tra đồng bộ hồ sơ nhân vật dạng đối tượng
+    assert obj_prof.method == "preset"
+    assert obj_prof.preset_name == chosen_preset
+    assert obj_prof.voice_instruct == expected_instruct
+    assert obj_prof.source_audio_path == ""
+    assert getattr(obj_prof, "custom_audio_path", "") == ""
+    assert getattr(obj_prof, "voice_clone_prompt_path", "") == ""
+    assert getattr(obj_prof, "ref_text", "") == ""
+    assert obj_prof.status == "locked"
+
+    # Kiểm tra đồng bộ hồ sơ nhân vật dạng từ điển
+    assert dict_prof["method"] == "preset"
+    assert dict_prof["preset_name"] == chosen_preset
+    assert dict_prof["voice_instruct"] == expected_instruct
+    assert dict_prof["instruct"] == expected_instruct
+    assert dict_prof["source_audio_path"] == ""
+    assert dict_prof["ref_audio_path"] == ""
+    assert dict_prof["custom_audio_path"] == ""
+    assert dict_prof["voice_clone_prompt_path"] == ""
+    assert dict_prof["ref_text"] == ""
+    assert dict_prof["status"] == "locked"
+
+    # 3. Tham số thu thập phải phản ánh đúng chế độ design, instruct và đồng bộ profile
     params = ui._collect_engine_params()
     assert params["multi_speaker_mode"] == "single"
     assert params["mode"] == "design"
     assert params["instruct"] == expected_instruct
     assert params["ref_audio_path"] is None
-    assert params["instruct"] == expected_instruct
-    assert params["ref_audio_path"] is None
+
+
+def test_synthesize_blocks_model_generate_exact_kwargs_and_translated_text():
+    from src.ai_engines.tts_engine import TTSEngine, VIETNAMESE_VOICE_CATALOG
+    from src.ai_engines.translator import SubtitleBlock
+    from unittest.mock import MagicMock
+
+    preset_name = "Nam Thanh Niên Chuẩn - Thuyết Minh Và Tin Tức"
+    expected_instruct = VIETNAMESE_VOICE_CATALOG[preset_name]["instruct"]
+
+    engine = TTSEngine(
+        auto_extract_ref=False,
+        mode="design",
+        multi_speaker_mode="single",
+        instruct=expected_instruct,
+        normalize_text=False,
+    )
+    engine.load_model = MagicMock()
+    mock_model = MagicMock()
+    sr = 24000
+    mock_model.generate.return_value = [np.ones(sr, dtype=np.float32) * 0.5]
+    engine.model = mock_model
+
+    # Khối 1: Có cả translated_text và text -> phải ưu tiên tuyệt đối translated_text
+    # Khối 2: translated_text để trống -> dùng text gốc
+    # Khối 3: translated_text chỉ toàn khoảng trắng -> lùi về text gốc
+    blocks = [
+        SubtitleBlock(index=1, start_time=0.0, end_time=1.5, text="Original text one", translated_text="Lời dịch tiếng Việt một", speaker="Nhân vật A"),
+        SubtitleBlock(index=2, start_time=2.0, end_time=3.5, text="Lời thoại gốc không có bản dịch", translated_text="", speaker=""),
+        SubtitleBlock(index=3, start_time=4.0, end_time=5.5, text="Lời thoại với bản dịch khoảng trắng", translated_text="   ", speaker="Nhân vật B"),
+    ]
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        tmp_out = f.name
+
+    try:
+        report = engine.synthesize_blocks(blocks, total_duration=6.0, output_path=tmp_out)
+        assert report.status == "success"
+
+        # Kiểm tra 3 lượt gọi đến model.generate()
+        assert mock_model.generate.call_count == 3
+        calls = mock_model.generate.call_args_list
+
+        # Lượt 1: Phải đọc translated_text "Lời dịch tiếng Việt một"
+        assert calls[0].kwargs.get("text") == "Lời dịch tiếng Việt một"
+        assert calls[0].kwargs.get("instruct") == expected_instruct
+        assert "voice_clone_prompt" not in calls[0].kwargs or calls[0].kwargs["voice_clone_prompt"] is None
+
+        # Lượt 2: Phải đọc text gốc "Lời thoại gốc không có bản dịch"
+        assert calls[1].kwargs.get("text") == "Lời thoại gốc không có bản dịch"
+        assert calls[1].kwargs.get("instruct") == expected_instruct
+        assert "voice_clone_prompt" not in calls[1].kwargs or calls[1].kwargs["voice_clone_prompt"] is None
+
+        # Lượt 3: Phải lùi về text gốc "Lời thoại với bản dịch khoảng trắng"
+        assert calls[2].kwargs.get("text") == "Lời thoại với bản dịch khoảng trắng"
+        assert calls[2].kwargs.get("instruct") == expected_instruct
+        assert "voice_clone_prompt" not in calls[2].kwargs or calls[2].kwargs["voice_clone_prompt"] is None
+    finally:
+        if os.path.exists(tmp_out):
+            os.remove(tmp_out)

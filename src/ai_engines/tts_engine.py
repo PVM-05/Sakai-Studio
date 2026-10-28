@@ -2393,8 +2393,10 @@ class TTSEngine:
                 self.last_report = report
                 return report
 
-            raw_text = (blk.translated_text if blk.translated_text else blk.text) or ""
-            if not raw_text.strip():
+            trans_text = (getattr(blk, "translated_text", "") or "").strip()
+            orig_text = (getattr(blk, "text", "") or "").strip()
+            raw_text = trans_text if trans_text else orig_text
+            if not raw_text:
                 report.skipped_empty_count += 1
                 continue
 

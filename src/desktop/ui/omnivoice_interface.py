@@ -5348,15 +5348,6 @@ class OmniVoiceInterface(ScrollArea):
                     "index": 0,
                     "message": "Chưa chọn giọng đọc đồng nhất hợp lệ từ kho mẫu tiếng Việt.",
                 })
-            else:
-                expected_ins = VIETNAMESE_VOICE_CATALOG[preset_name]["instruct"]
-                for blk in self.subtitle_blocks:
-                    spk_name = (getattr(blk, "speaker", "") or "").strip()
-                    if spk_name not in ("Chưa phân vai", "Chưa xác định"):
-                        blk.voice_instruct = expected_ins
-                        blk.voice_ref_path = ""
-                        blk.speaker = preset_name
-                        blk.is_speaker_locked = True
 
         for blk in self.subtitle_blocks:
 
@@ -5644,12 +5635,25 @@ class OmniVoiceInterface(ScrollArea):
                         prof["instruct"] = params.get("instruct", "")
                         prof["source_audio_path"] = ""
                         prof["ref_audio_path"] = ""
+                        prof["custom_audio_path"] = ""
+                        prof["voice_clone_prompt_path"] = ""
+                        prof["ref_text"] = ""
                         prof["status"] = "locked"
                     elif hasattr(prof, "method"):
                         prof.method = "preset"
                         prof.preset_name = preset_name
                         prof.voice_instruct = params.get("instruct", "")
+                        if hasattr(prof, "instruct"):
+                            prof.instruct = params.get("instruct", "")
                         prof.source_audio_path = ""
+                        if hasattr(prof, "ref_audio_path"):
+                            prof.ref_audio_path = ""
+                        if hasattr(prof, "custom_audio_path"):
+                            prof.custom_audio_path = ""
+                        if hasattr(prof, "voice_clone_prompt_path"):
+                            prof.voice_clone_prompt_path = ""
+                        if hasattr(prof, "ref_text"):
+                            prof.ref_text = ""
                         prof.status = "locked"
 
         return params
@@ -5838,12 +5842,25 @@ class OmniVoiceInterface(ScrollArea):
                     prof["instruct"] = instruct
                     prof["source_audio_path"] = ""
                     prof["ref_audio_path"] = ""
+                    prof["custom_audio_path"] = ""
+                    prof["voice_clone_prompt_path"] = ""
+                    prof["ref_text"] = ""
                     prof["status"] = "locked"
                 elif hasattr(prof, "method"):
                     prof.method = "preset"
                     prof.preset_name = preset_name
                     prof.voice_instruct = instruct
+                    if hasattr(prof, "instruct"):
+                        prof.instruct = instruct
                     prof.source_audio_path = ""
+                    if hasattr(prof, "ref_audio_path"):
+                        prof.ref_audio_path = ""
+                    if hasattr(prof, "custom_audio_path"):
+                        prof.custom_audio_path = ""
+                    if hasattr(prof, "voice_clone_prompt_path"):
+                        prof.voice_clone_prompt_path = ""
+                    if hasattr(prof, "ref_text"):
+                        prof.ref_text = ""
                     prof.status = "locked"
         if hasattr(self, "sub_table"):
             self._populate_subtitle_table()
@@ -7493,6 +7510,9 @@ class OmniVoiceInterface(ScrollArea):
 
             return
 
+        if hasattr(self, "chk_single_unified_voice") and self.chk_single_unified_voice.isChecked():
+            self._apply_unified_voice_to_all_subtitles()
+
         issues = self._run_pre_export_quality_check()
 
         if any(item.get("severity") == "error" for item in issues):
@@ -7550,6 +7570,9 @@ class OmniVoiceInterface(ScrollArea):
             InfoBar.warning("Thiếu dữ liệu", "Cần có danh sách phụ đề và video nguồn để xuất video lồng tiếng.", parent=self, duration=3500)
 
             return
+
+        if hasattr(self, "chk_single_unified_voice") and self.chk_single_unified_voice.isChecked():
+            self._apply_unified_voice_to_all_subtitles()
 
         issues = self._run_pre_export_quality_check()
 

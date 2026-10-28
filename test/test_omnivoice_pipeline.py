@@ -2793,8 +2793,13 @@ def test_download_speaker_embedding_model_uses_existing_or_downloads(tmp_path, m
         out_f.write_bytes(b"downloaded onnx content" * 100)
         return str(out_f)
 
-    import huggingface_hub
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", mock_hf_download)
+    import sys
+    from types import ModuleType
+    mock_hf_mod = sys.modules.get("huggingface_hub")
+    if mock_hf_mod is None:
+        mock_hf_mod = ModuleType("huggingface_hub")
+        monkeypatch.setitem(sys.modules, "huggingface_hub", mock_hf_mod)
+    monkeypatch.setattr(mock_hf_mod, "hf_hub_download", mock_hf_download, raising=False)
 
     res2 = download_speaker_embedding_model(target_dir=empty_dir)
     assert len(called_hf) == 1
