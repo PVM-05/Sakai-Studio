@@ -840,6 +840,8 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
 
         app = QApplication.instance() or QApplication([])
         ui = OmniVoiceInterface()
+        if hasattr(ui, "chk_single_unified_voice"):
+            ui.chk_single_unified_voice.setChecked(False)
 
         # Trạng thái ban đầu: chưa có tệp nào
         ui._update_identify_button_state()
@@ -875,6 +877,8 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
 
         app = QApplication.instance() or QApplication([])
         ui = OmniVoiceInterface()
+        if hasattr(ui, "chk_single_unified_voice"):
+            ui.chk_single_unified_voice.setChecked(False)
 
         valid_vid = os.path.join(self.temp_dir, 'standalone.mp4')
         with open(valid_vid, 'wb') as f:

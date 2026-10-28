@@ -4899,6 +4899,16 @@ class OmniVoiceInterface(ScrollArea):
                     break
 
         if not first_line:
+            has_multiple_speakers = len(getattr(self, "speaker_profiles", {})) > 1
+            if not has_multiple_speakers and hasattr(self, "subtitle_blocks") and self.subtitle_blocks:
+                for blk in self.subtitle_blocks:
+                    txt = (blk.translated_text if blk.translated_text else blk.text or "").strip()
+                    if txt:
+                        first_line = txt
+                        target_blk = blk
+                        break
+
+        if not first_line:
 
             first_line = f"Xin chào, đây là giọng nói thử nghiệm của {spk_name}."
 
@@ -5035,7 +5045,9 @@ class OmniVoiceInterface(ScrollArea):
 
         safe_spk = re.sub(r'[^\w\-_\.]', '_', spk_name)
 
-        out_wav = os.path.join(out_dir, f"audition_{safe_spk}.wav")
+        import hashlib
+        line_hash = hashlib.md5(first_line.encode("utf-8")).hexdigest()[:8]
+        out_wav = os.path.join(out_dir, f"audition_{safe_spk}_{line_hash}.wav")
 
         self._launch_worker(
 
@@ -5527,7 +5539,7 @@ class OmniVoiceInterface(ScrollArea):
 
         mode = idx_to_mode.get(self.combo_mode.currentIndex(), "clone")
 
-        return {
+        params = {
 
             "mode": mode,
 
@@ -5594,6 +5606,15 @@ class OmniVoiceInterface(ScrollArea):
             "resume_cache_dir": os.path.join(BASE_DIR, "output", "omnivoice_studio", "resume_cache"),
 
         }
+
+        if hasattr(self, "chk_single_unified_voice") and self.chk_single_unified_voice.isChecked():
+            params["multi_speaker_mode"] = "single"
+            params["mode"] = "design"
+            preset_name = self.combo_single_unified_preset.currentText().strip() if hasattr(self, "combo_single_unified_preset") else ""
+            if preset_name in VIETNAMESE_VOICE_CATALOG:
+                params["instruct"] = VIETNAMESE_VOICE_CATALOG[preset_name]["instruct"]
+
+        return params
 
     def _on_speaker_count_mode_changed(self):
 
@@ -5667,12 +5688,21 @@ class OmniVoiceInterface(ScrollArea):
 
         info = VIETNAMESE_VOICE_CATALOG.get(preset_name, {})
 
-        sample_text = self.edit_vn_sample_text.text().strip() or info.get(
+        first_sub_text = ""
+        if hasattr(self, "subtitle_blocks") and self.subtitle_blocks:
+            for blk in self.subtitle_blocks:
+                txt = (blk.translated_text if blk.translated_text else blk.text or "").strip()
+                if txt:
+                    first_sub_text = txt
+                    break
 
-            "sample_vi",
-
-            "Xin chào các bạn, đây là giọng đọc mẫu tiếng Việt chạy trực tiếp trên card đồ họa.",
-
+        sample_text = (
+            self.edit_vn_sample_text.text().strip()
+            or first_sub_text
+            or info.get(
+                "sample_vi",
+                "Xin chào các bạn, đây là giọng đọc mẫu tiếng Việt chạy trực tiếp trên card đồ họa.",
+            )
         )
 
         instruct_str = info.get("instruct", "male, young adult, moderate pitch")
@@ -5683,7 +5713,9 @@ class OmniVoiceInterface(ScrollArea):
 
         os.makedirs(out_dir, exist_ok=True)
 
-        out_wav = os.path.join(out_dir, f"vn_sample_{slug}.wav")
+        import hashlib
+        text_hash = hashlib.md5(sample_text.encode("utf-8")).hexdigest()[:8]
+        out_wav = os.path.join(out_dir, f"vn_sample_{slug}_{text_hash}.wav")
 
         self.edit_instruct_preview.setText(instruct_str)
 
@@ -5757,6 +5789,7 @@ class OmniVoiceInterface(ScrollArea):
         for blk in self.subtitle_blocks:
             blk.voice_instruct = instruct
             blk.voice_ref_path = ""
+            blk.speaker = preset_name
             blk.is_speaker_locked = True
         if hasattr(self, "sub_table"):
             self._populate_subtitle_table()
@@ -5764,7 +5797,14 @@ class OmniVoiceInterface(ScrollArea):
     def _preview_unified_voice(self):
         preset_name = self.combo_single_unified_preset.currentText().strip()
         info = VIETNAMESE_VOICE_CATALOG.get(preset_name, {})
-        sample_text = info.get(
+        first_sub_text = ""
+        if hasattr(self, "subtitle_blocks") and self.subtitle_blocks:
+            for blk in self.subtitle_blocks:
+                t = (blk.translated_text if blk.translated_text else blk.text or "").strip()
+                if t:
+                    first_sub_text = t
+                    break
+        sample_text = first_sub_text or info.get(
             "sample_vi",
             "Xin chào các bạn, đây là giọng đọc mẫu tiếng Việt chạy trực tiếp trên card đồ họa.",
         )
@@ -5772,7 +5812,9 @@ class OmniVoiceInterface(ScrollArea):
         slug = info.get("slug", "unified_sample")
         out_dir = os.path.join(BASE_DIR, "output", "voice_prompts")
         os.makedirs(out_dir, exist_ok=True)
-        out_wav = os.path.join(out_dir, f"unified_sample_{slug}.wav")
+        import hashlib
+        text_hash = hashlib.md5(sample_text.encode("utf-8")).hexdigest()[:8]
+        out_wav = os.path.join(out_dir, f"unified_preview_{slug}_{text_hash}.wav")
         self._launch_worker(
             "vn_catalog_preview",
             text=sample_text,
@@ -5787,11 +5829,28 @@ class OmniVoiceInterface(ScrollArea):
 
         info = VIETNAMESE_VOICE_CATALOG.get(preset_name, {})
 
-        sample_text = info.get(
+        target_spk = self.combo_target_speaker.currentText().strip() if hasattr(self, "combo_target_speaker") else ""
+        first_sub_text = ""
+        if hasattr(self, "subtitle_blocks") and self.subtitle_blocks:
+            for blk in self.subtitle_blocks:
+                spk = (getattr(blk, "speaker", "") or "").strip()
+                if spk == target_spk:
+                    txt = (blk.translated_text if blk.translated_text else blk.text or "").strip()
+                    if txt:
+                        first_sub_text = txt
+                        break
+            if not first_sub_text:
+                for blk in self.subtitle_blocks:
+                    txt = (blk.translated_text if blk.translated_text else blk.text or "").strip()
+                    if txt:
+                        first_sub_text = txt
+                        break
+
+        sample_text = first_sub_text or info.get(
 
             "sample_vi",
 
-            f"Xin chào, đây là giọng thử nghiệm tiếng Việt của {self.combo_target_speaker.currentText()}.",
+            f"Xin chào, đây là giọng thử nghiệm tiếng Việt của {target_spk}." if target_spk else "Xin chào các bạn, đây là giọng đọc mẫu tiếng Việt chạy trực tiếp trên card đồ họa.",
 
         )
 
@@ -5803,7 +5862,9 @@ class OmniVoiceInterface(ScrollArea):
 
         os.makedirs(out_dir, exist_ok=True)
 
-        out_wav = os.path.join(out_dir, f"vn_speaker_{slug}.wav")
+        import hashlib
+        text_hash = hashlib.md5(sample_text.encode("utf-8")).hexdigest()[:8]
+        out_wav = os.path.join(out_dir, f"vn_speaker_{slug}_{text_hash}.wav")
 
         self._launch_worker(
 
@@ -7785,6 +7846,9 @@ class OmniVoiceInterface(ScrollArea):
         self.lbl_status.setText("Đang thực thi trên GPU NVIDIA...")
 
         self._set_task_running_state(True)
+
+        if hasattr(self, "chk_single_unified_voice") and self.chk_single_unified_voice.isChecked():
+            self._apply_unified_voice_to_all_subtitles()
 
         isolated_blocks = copy.deepcopy(subtitle_blocks) if subtitle_blocks is not None else None
 

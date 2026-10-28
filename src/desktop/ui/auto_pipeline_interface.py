@@ -650,7 +650,7 @@ class AutoPipelineWorker(QThread):
                         tts_temp_audio,
                         ducked_video_path,
                         duck_vol,
-                        mode=tts_engine.ducking_mode,
+                        ducking_mode=tts_engine.ducking_mode,
                     )
                     if not mix_ok or not os.path.exists(ducked_video_path) or os.path.getsize(ducked_video_path) <= 0:
                         raise RuntimeError("Hòa trộn âm thanh lồng tiếng vào video thất bại.")

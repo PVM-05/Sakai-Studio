@@ -92,6 +92,34 @@ def normalize_url(url):
     return url
 
 
+def resolve_playlist_entry_url(entry, parent_url=""):
+    """Trích xuất và tạo đường dẫn hợp lệ cho từng mục video trong danh sách phát."""
+    if not isinstance(entry, dict):
+        return ""
+    video_url = entry.get('url') or entry.get('webpage_url')
+    video_id = entry.get('id')
+    parent_lower = (parent_url or '').lower()
+    
+    if not video_url:
+        if video_id:
+            if 'bilibili.com' in parent_lower:
+                video_url = f"https://www.bilibili.com/video/{video_id}"
+            else:
+                video_url = f"https://www.youtube.com/watch?v={video_id}"
+    elif isinstance(video_url, str):
+        if not video_url.startswith(('http://', 'https://')):
+            if 'bilibili.com' in parent_lower or (video_url.startswith('BV') or video_url.startswith('av')):
+                video_url = f"https://www.bilibili.com/video/{video_url}"
+            else:
+                video_url = f"https://www.youtube.com/watch?v={video_url}"
+        elif ('youtube.com' in video_url or 'youtu.be' in video_url) and ('&list=' in video_url or '?list=' in video_url):
+            parsed_v = urllib.parse.urlparse(video_url)
+            q_v = urllib.parse.parse_qs(parsed_v.query)
+            if 'v' in q_v:
+                video_url = f"https://www.youtube.com/watch?v={q_v['v'][0]}"
+    return video_url or ""
+
+
 def translate_ytdlp_error(err):
     """Translate raw technical yt-dlp tracebacks into user-friendly Vietnamese guidance."""
     err_str = str(err)
@@ -106,12 +134,14 @@ def translate_ytdlp_error(err):
         return "Định dạng video đã chọn hiện không khả dụng với tài khoản này. Vui lòng nhấn Phân tích lại để cập nhật danh sách độ phân giải, hoặc chọn chế độ Không dùng cookies nếu tài khoản Bilibili chưa đăng ký gói thành viên."
     elif 'premium member' in err_lower or ('bilibili' in err_lower and ('premium' in err_lower or 'member' in err_lower or 'vip' in err_lower)):
         return "Bilibili yêu cầu tài khoản thành viên đối với chất lượng này. Vui lòng chọn chất lượng khác hoặc cung cấp tệp cookies.txt của tài khoản thành viên."
+    elif 'not a bot' in err_lower or "confirm you're not a bot" in err_lower or "confirm you’re not a bot" in err_lower or ('bot' in err_lower and 'sign in' in err_lower):
+        return "YouTube yêu cầu xác minh bảo mật chống rô-bốt tự động. Vui lòng chọn tệp cookies.txt của tài khoản YouTube đã đăng nhập hoặc chọn trình duyệt trong mục cài đặt để tiếp tục tải."
+    elif 'could not copy chrome cookie database' in err_lower or 'database is locked' in err_lower or 'app-bound encryption' in err_lower or 'failed to decrypt with dpapi' in err_lower:
+        return "Lỗi đọc dữ liệu xác thực trình duyệt: Trình duyệt đang mở hoặc được bảo vệ bởi cơ chế mã hóa. Vui lòng đóng hoàn toàn trình duyệt rồi thử lại, hoặc sử dụng tệp cookies.txt."
     elif '403' in err_lower or 'forbidden' in err_lower or 'caller does not have permission' in err_lower:
         return "Bị trang web từ chối truy cập do lỗi quyền hạn mã 403. Vui lòng sử dụng tệp cookies.txt để xác thực tài khoản."
     elif 'fresh cookies' in err_lower or ('douyin' in err_lower and 'cookies' in err_lower):
         return "Nguồn video yêu cầu xác thực bảo mật. Vui lòng chọn tệp cookies.txt của bạn để tiếp tục."
-    elif 'could not copy chrome cookie database' in err_lower or 'database is locked' in err_lower or 'app-bound encryption' in err_lower:
-        return "Lỗi trích xuất Cookies: Trình duyệt đang mở hoặc do cơ chế bảo mật của trình duyệt. Vui lòng đóng hoàn toàn trình duyệt rồi thử lại, hoặc xuất thủ công tệp cookies.txt."
     elif 'private' in err_lower or 'sign in' in err_lower or 'age' in err_lower or 'login' in err_lower:
         return "Video riêng tư hoặc bị giới hạn độ tuổi. Vui lòng chọn tệp cookies.txt của bạn để tiếp tục."
     elif '404' in err_lower or 'not found' in err_lower:
@@ -131,7 +161,7 @@ def translate_ytdlp_error(err):
         last_line = lines[-1] if lines else err_str
         if len(last_line) > 120:
             last_line = last_line[:120] + "..."
-        return f"Lỗi phân tích/tải video: {last_line}"
+        return f"Lỗi phân tích hoặc tải video: {last_line}"
 
 
 class HistoryActionWidget(QtWidgets.QWidget):
@@ -284,9 +314,6 @@ class YtdlpAnalysisWorker(QThread):
                     'node': {},
                     'quickjs': {}
                 },
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36'
-                },
                 'extractor_args': {
                     'tiktok': ['api_hostname=api16-normal-c-useast1a.tiktokv.com']
                 }
@@ -417,13 +444,11 @@ class YtdlpWorker(QThread):
             'http_chunk_size': 10485760,  # 10MB chunks to bypass YouTube throttling
             'retries': 10,
             'fragment_retries': 10,
+            'sleep_interval_requests': 1,
             'js_runtimes': {
                 'deno': {},
                 'node': {},
                 'quickjs': {}
-            },
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36'
             },
             'extractor_args': {
                 'tiktok': ['api_hostname=api16-normal-c-useast1a.tiktokv.com']
@@ -1574,22 +1599,21 @@ class YtdlpInterface(ScrollArea):
         if self.is_playlist:
             # We will expand each checked video from the playlist table into a queue task!
             added_count = 0
+            checked_count = 0
+            existing_urls = {
+                item['url'] for item in self.download_queue 
+                if item.get('status') in [tr['Ytdlp']['StatusQueuePending'], tr['Ytdlp']['StatusQueueDownloading']]
+            }
+            parent_url = self.url_input.text().strip()
             for row in range(self.playlist_table.rowCount()):
                 chk_item = self.playlist_table.item(row, 0)
                 if chk_item and chk_item.checkState() == QtCore.Qt.Checked:
-                    entry = self.playlist_entries[row]
+                    checked_count += 1
+                    entry = self.playlist_entries[row] if row < len(self.playlist_entries) else {}
                     video_title = entry.get('title') or f"Video #{row + 1}"
-                    video_url = entry.get('url')
-                    video_id = entry.get('id')
-                    if video_id:
-                        video_url = f"https://www.youtube.com/watch?v={video_id}"
-                    elif video_url and ('&list=' in video_url or '?list=' in video_url):
-                        parsed_v = urllib.parse.urlparse(video_url)
-                        q_v = urllib.parse.parse_qs(parsed_v.query)
-                        if 'v' in q_v:
-                            video_url = f"https://www.youtube.com/watch?v={q_v['v'][0]}"
+                    video_url = resolve_playlist_entry_url(entry, parent_url=parent_url)
                             
-                    if not video_url:
+                    if not video_url or video_url in existing_urls:
                         continue
                         
                     # Determine format based on format_combo selection
@@ -1627,20 +1651,28 @@ class YtdlpInterface(ScrollArea):
                         'thumbnail_bytes': None
                     }
                     self.download_queue.append(queue_item)
+                    existing_urls.add(video_url)
                     added_count += 1
             
             if added_count > 0:
                 self.update_queue_table()
                 InfoBar.success(
                     title=tr['Ytdlp']['Title'],
-                    content=f"Đã thêm {added_count} video vào hàng đợi!",
+                    content=f"Đã thêm {added_count} video vào hàng đợi.",
+                    duration=3000,
+                    parent=self
+                )
+            elif checked_count > 0:
+                InfoBar.info(
+                    title=tr['Ytdlp']['Title'],
+                    content="Tất cả các video đã chọn đều đang có sẵn trong hàng đợi.",
                     duration=3000,
                     parent=self
                 )
             else:
                 InfoBar.warning(
                     title=tr['Ytdlp']['Title'],
-                    content="Vui lòng chọn ít nhất 1 video trong danh sách!",
+                    content="Vui lòng chọn ít nhất một video trong danh sách.",
                     duration=3000,
                     parent=self
                 )
@@ -1791,6 +1823,10 @@ class YtdlpInterface(ScrollArea):
         if self.is_worker_running():
             return
             
+        self.download_btn.setEnabled(False)
+        self.add_queue_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+        self.start_queue_btn.setEnabled(False)
         self.process_next_queue_item()
 
     def process_next_queue_item(self):
@@ -1805,6 +1841,8 @@ class YtdlpInterface(ScrollArea):
             self.current_queue_index = -1
             self.status_label.setText(tr['Ytdlp']['StatusSuccess'])
             self.progress_bar.setValue(100)
+            self.reset_ui_state()
+            self.start_queue_btn.setEnabled(True)
             return
             
         self.current_queue_index = next_idx
@@ -1897,8 +1935,10 @@ class YtdlpInterface(ScrollArea):
             self.download_queue[self.current_queue_index]['status'] = tr['Ytdlp']['StatusQueueFailed']
             self.update_queue_table()
         
-        self.reset_ui_state()
-        self.start_queue_btn.setEnabled(True)
+        self.download_btn.setEnabled(False)
+        self.add_queue_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+        self.start_queue_btn.setEnabled(False)
         # Proceed to next item automatically
         QtCore.QTimer.singleShot(1500, self.process_next_queue_item)
 
@@ -1914,8 +1954,10 @@ class YtdlpInterface(ScrollArea):
             # Save to history list
             self.add_to_history(filename, item['title'], item['format_desc'], item['thumbnail_bytes'])
             
-        self.reset_ui_state()
-        self.start_queue_btn.setEnabled(True)
+        self.download_btn.setEnabled(False)
+        self.add_queue_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+        self.start_queue_btn.setEnabled(False)
         # Proceed to next item in the queue!
         QtCore.QTimer.singleShot(1000, self.process_next_queue_item)
 
@@ -2018,6 +2060,9 @@ class YtdlpInterface(ScrollArea):
 
     # ==================== SINGLE DOWNLOAD LOGIC ====================
     def start_download(self):
+        if self.is_worker_running():
+            return
+
         if self.is_playlist:
             # If playlist, redirect to queue download
             self.add_to_queue()
@@ -2130,7 +2175,7 @@ class YtdlpInterface(ScrollArea):
         if self.is_worker_running():
             self.worker.cancel()
             self.cancel_btn.setEnabled(False)
-            self.log_console.appendPlainText("\nCancelling download...")
+            self.log_console.appendPlainText("\nĐang hủy quá trình tải...")
 
     @Slot(float)
     def on_progress(self, val):

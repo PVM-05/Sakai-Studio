@@ -1176,6 +1176,15 @@ class OmniVoice(PreTrainedModel):
         est = self.duration_estimator.estimate_duration(
             text, ref_text, num_ref_audio_tokens
         )
+        cleaned_text = (text or "").strip()
+        words = len(cleaned_text.split())
+        if words > 0:
+            pause_tokens = (
+                (cleaned_text.count(",") + cleaned_text.count(";") + cleaned_text.count("…")) * 6
+                + (cleaned_text.count(".") + cleaned_text.count("?") + cleaned_text.count("!")) * 10
+            )
+            min_safe_tokens = int(words * 8.5) + pause_tokens + 15
+            est = max(float(est), float(min_safe_tokens))
         if speed > 0 and speed != 1.0:
             est = est / speed
         return max(1, int(est))

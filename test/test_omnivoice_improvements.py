@@ -459,3 +459,194 @@ def test_casting_table_pure_ai_presets_and_audition():
 
 
 
+
+
+def test_single_unified_voice_consistency_across_blocks():
+    from src.ai_engines.tts_engine import TTSEngine, VIETNAMESE_VOICE_CATALOG
+    from src.ai_engines.translator import SubtitleBlock
+    from unittest.mock import MagicMock
+
+    engine = TTSEngine(auto_extract_ref=False, mode="design", multi_speaker_mode="single")
+    engine.load_model = MagicMock()
+    mock_model = MagicMock()
+    sr = 24000
+    mock_model.generate.return_value = [np.ones(sr, dtype=np.float32) * 0.5]
+    mock_model.create_voice_clone_prompt.return_value = MagicMock()
+    engine.model = mock_model
+
+    # Tạo 2 khối phụ đề với 2 nhãn người nói khác nhau
+    blocks = [
+        SubtitleBlock(index=1, start_time=0.0, end_time=1.5, text="Câu thoại thứ nhất", speaker="Người nói 1"),
+        SubtitleBlock(index=2, start_time=2.0, end_time=3.5, text="Câu thoại thứ hai", speaker="Người nói 2"),
+    ]
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        tmp_out = f.name
+
+    try:
+        recorded_calls = []
+        original_gen = engine.generate_single
+
+        def mock_generate_single(*args, **kwargs):
+            recorded_calls.append(kwargs)
+            return original_gen(*args, **kwargs)
+
+        with patch.object(engine, "generate_single", side_effect=mock_generate_single):
+            report = engine.synthesize_blocks(blocks, total_duration=4.0, output_path=tmp_out)
+
+        assert report.status == "success"
+        assert len(recorded_calls) == 2
+        # Cả 2 câu phải dùng chung đặc tính giọng (cùng prompt hoặc cùng instruct)
+        first_call = recorded_calls[0]
+        second_call = recorded_calls[1]
+        assert first_call.get("override_instruct") == second_call.get("override_instruct")
+        assert first_call.get("override_prompt") == second_call.get("override_prompt")
+        assert first_call.get("override_mode") == second_call.get("override_mode")
+    finally:
+        if os.path.exists(tmp_out):
+            os.remove(tmp_out)
+
+
+def test_no_destructive_audio_truncation_when_duration_exceeds_slot():
+    from src.ai_engines.tts_engine import TTSEngine
+    from src.ai_engines.translator import SubtitleBlock
+    from unittest.mock import MagicMock
+    import soundfile as sf
+
+    engine = TTSEngine(auto_extract_ref=False, mode="design", multi_speaker_mode="single")
+    engine.load_model = MagicMock()
+    mock_model = MagicMock()
+    sr = 24000
+    # Giả lập sinh ra âm thanh 2.0s nhưng khoảng cách đến câu tiếp chỉ là 0.8s
+    mock_model.generate.return_value = [np.ones(int(2.0 * sr), dtype=np.float32) * 0.4]
+    mock_model.create_voice_clone_prompt.return_value = MagicMock()
+    engine.model = mock_model
+
+    blocks = [
+        SubtitleBlock(index=1, start_time=0.0, end_time=0.8, text="Câu nói dài", speaker="Người nói 1"),
+        SubtitleBlock(index=2, start_time=1.0, end_time=1.8, text="Câu tiếp theo", speaker="Người nói 1"),
+    ]
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        tmp_out = f.name
+
+    try:
+        report = engine.synthesize_blocks(blocks, total_duration=3.0, output_path=tmp_out)
+        assert report.status == "success"
+        assert report.stretched_count >= 1
+        data, file_sr = sf.read(tmp_out)
+        # Tổng độ dài file phải chứa đầy đủ cả 2 câu thoại mà không bị cắt cụt về 0.8s
+        assert len(data) >= int(2.0 * file_sr)
+    finally:
+        if os.path.exists(tmp_out):
+            os.remove(tmp_out)
+
+
+def test_vietnamese_duration_estimation_safe_floor():
+    from src.ai_engines.omnivoice.models.omnivoice import OmniVoice
+    # Kiểm tra phương thức _estimate_target_tokens có floor an toàn cho tiếng Việt
+    mock_model = OmniVoice.__new__(OmniVoice)
+    mock_estimator = MagicMock()
+    mock_estimator.estimate_duration.return_value = 50.0
+    mock_model.duration_estimator = mock_estimator
+
+    sample_vietnamese = "Đây là một câu kiểm tra thời lượng tiếng Việt tương đối dài để bảo đảm hệ thống không bao giờ bị cắt cụt các từ cuối cùng."
+    tokens = mock_model._estimate_target_tokens(sample_vietnamese, None, None, speed=1.0)
+    words = len(sample_vietnamese.split())
+    assert tokens >= int(words * 8.5)
+
+
+def test_preview_unified_voice_uses_first_srt_line_when_loaded():
+    _ensure_qapp()
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.translator import SubtitleBlock
+
+    ui = OmniVoiceInterface()
+    ui.subtitle_blocks = [
+        SubtitleBlock(index=1, start_time="00:00:01,000", end_time="00:00:03,000", text="Câu phụ đề thực tế số 1 từ tệp phim"),
+        SubtitleBlock(index=2, start_time="00:00:04,000", end_time="00:00:06,000", text="Câu phụ đề thứ hai"),
+    ]
+
+    captured_args = {}
+    def mock_launch_worker(task_type, **kwargs):
+        captured_args["task_type"] = task_type
+        captured_args.update(kwargs)
+
+    ui._launch_worker = mock_launch_worker
+    ui._preview_unified_voice()
+
+    assert captured_args.get("task_type") == "vn_catalog_preview"
+    # Phải đọc câu phụ đề đầu tiên trong tệp, không được đọc câu mẫu catalog cứng
+    assert captured_args.get("text") == "Câu phụ đề thực tế số 1 từ tệp phim"
+
+
+def test_audition_character_voice_uses_subtitle_line_when_no_exact_speaker_match():
+    _ensure_qapp()
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.translator import SubtitleBlock
+
+    ui = OmniVoiceInterface()
+    ui.subtitle_blocks = [
+        SubtitleBlock(index=1, start_time="00:00:01,000", end_time="00:00:03,000", text="Lời thoại trong phim của nhân vật"),
+    ]
+    ui.speaker_profiles = {
+        "Nam - Miền Bắc Truyền Cảm": {
+            "method": "preset",
+            "preset_name": "Nam - Miền Bắc Truyền Cảm",
+            "voice_instruct": "male, northern vietnamese, emotional",
+        }
+    }
+
+    captured_args = {}
+    def mock_launch_worker(task_type, **kwargs):
+        captured_args["task_type"] = task_type
+        captured_args.update(kwargs)
+
+    ui._launch_worker = mock_launch_worker
+    ui._audition_character_voice("Nam - Miền Bắc Truyền Cảm")
+
+    assert captured_args.get("task_type") == "character_audition"
+    # Phải đọc lời thoại thực tế trong tệp phụ đề, không được dùng câu Xin chào thử nghiệm
+    assert captured_args.get("text") == "Lời thoại trong phim của nhân vật"
+
+
+def test_synthesize_blocks_single_mode_pure_design_no_anchor_clone():
+    from src.ai_engines.tts_engine import TTSEngine
+    from src.ai_engines.translator import SubtitleBlock
+    from unittest.mock import MagicMock
+
+    engine = TTSEngine(auto_extract_ref=False, mode="design", multi_speaker_mode="single", instruct="male, young adult")
+    engine.load_model = MagicMock()
+    mock_model = MagicMock()
+    mock_model.generate.return_value = [np.ones(24000, dtype=np.float32) * 0.5]
+    engine.model = mock_model
+
+    blocks = [
+        SubtitleBlock(index=1, start_time=0.0, end_time=1.5, text="Câu phụ đề một"),
+        SubtitleBlock(index=2, start_time=2.0, end_time=3.5, text="Câu phụ đề hai"),
+    ]
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        tmp_out = f.name
+
+    try:
+        recorded_calls = []
+        original_gen = engine.generate_single
+
+        def mock_generate_single(*args, **kwargs):
+            recorded_calls.append(kwargs)
+            return original_gen(*args, **kwargs)
+
+        with patch.object(engine, "generate_single", side_effect=mock_generate_single):
+            report = engine.synthesize_blocks(blocks, total_duration=4.0, output_path=tmp_out)
+
+        assert report.status == "success"
+        assert len(recorded_calls) == 2
+        for call_kw in recorded_calls:
+            # Ở chế độ thiết kế giọng đơn nhất, phải chạy thuần túy mode design và KHÔNG dùng prompt clone mỏ neo
+            assert call_kw.get("override_mode") == "design"
+            assert call_kw.get("override_prompt") is None
+            assert call_kw.get("override_instruct") == "male, young adult"
+    finally:
+        if os.path.exists(tmp_out):
+            os.remove(tmp_out)
