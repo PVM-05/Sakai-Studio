@@ -164,35 +164,42 @@ def verify_media_quality(video_path: str, sub_areas: List[Tuple[int, int, int, i
     except Exception:
         pass
 
-    # Khởi tạo bộ nhận diện phụ đề SubtitleDetect
+    # Khởi tạo lười bộ nhận diện phụ đề SubtitleDetect khi kiểm tra nhanh chưa phát hiện
     detector = None
-    try:
-        from src.core.tools.subtitle_detect import SubtitleDetect
-        detector = SubtitleDetect(video_path, parsed_sub_areas)
-    except Exception:
-        detector = None
+    detector_initialized = False
 
     text_detected_count = 0
     for idx, frame in sampled_frames:
         frame_has_text = False
-        if detector is not None:
-            try:
-                boxes = detector.detect_subtitle(frame)
-                if boxes and len(boxes) > 0:
+        # 1. Ưu tiên kiểm tra nhanh bằng thuật toán mật độ cạnh và đường viền (residual_text_score)
+        try:
+            from src.core.quality import residual_text_score
+            for (y1, y2, x1, x2) in parsed_sub_areas:
+                crop = frame[y1:y2, x1:x2]
+                r_score = residual_text_score(crop)
+                if r_score is not None and r_score > 0.25:
                     frame_has_text = True
-            except Exception:
-                pass
+                    break
+        except Exception:
+            pass
+
+        # 2. Nếu kiểm tra nhanh chưa phát hiện thì mới dùng bộ nhận diện chữ OCR
         if not frame_has_text:
-            try:
-                from src.core.quality import residual_text_score
-                for (y1, y2, x1, x2) in parsed_sub_areas:
-                    crop = frame[y1:y2, x1:x2]
-                    r_score = residual_text_score(crop)
-                    if r_score is not None and r_score > 0.25:
+            if not detector_initialized:
+                detector_initialized = True
+                try:
+                    from src.core.tools.subtitle_detect import SubtitleDetect
+                    detector = SubtitleDetect(video_path, parsed_sub_areas)
+                except Exception:
+                    detector = None
+            if detector is not None:
+                try:
+                    boxes = detector.detect_subtitle(frame)
+                    if boxes and len(boxes) > 0:
                         frame_has_text = True
-                        break
-            except Exception:
-                pass
+                except Exception:
+                    pass
+
         if frame_has_text:
             text_detected_count += 1
 

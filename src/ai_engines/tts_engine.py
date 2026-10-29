@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Mô-đun tổng hợp giọng nói (TTS) tích hợp trực tiếp mã nguồn OmniVoice chạy trên GPU NVIDIA.
+Mô-đun tổng hợp giọng nói tích hợp trực tiếp mã nguồn OmniVoice chạy trên GPU NVIDIA.
 Hỗ trợ đầy đủ tất cả tính năng của mã nguồn gốc OmniVoice:
-1. Nhân bản giọng nói (Voice Cloning): Từ tệp âm thanh mẫu, tự động trích xuất từ video nguồn, hoặc tệp mẫu .pt đã lưu.
-2. Thiết kế giọng nói (Voice Design): Điều khiển giới tính, độ tuổi, cao độ, phong cách thì thầm, khẩu âm và phương ngữ qua thuộc tính.
-3. Giọng nói tự động (Auto Voice): Tự động sinh giọng đọc tự nhiên không cần mẫu.
+1. Nhân bản giọng nói: Từ tệp âm thanh mẫu, tự động trích xuất từ video nguồn, hoặc tệp mẫu .pt đã lưu.
+2. Thiết kế giọng nói: Điều khiển giới tính, độ tuổi, cao độ, phong cách thì thầm, khẩu âm và phương ngữ qua thuộc tính.
+3. Giọng nói tự động: Tự động sinh giọng đọc tự nhiên không cần mẫu.
 4. Hỗ trợ hơn 600 ngôn ngữ, chuẩn hóa chữ số, biểu cảm phi ngôn từ ([laughter], [sigh]...), khớp thời lượng phụ đề,
    cấu hình giải mã khuếch tán (num_step, guidance_scale, denoise...) và tăng tốc FlashInfer / CUDA Graph.
 """
@@ -1846,16 +1846,16 @@ class TTSEngine:
 
                 if any(w in tag_key for w in female_markers):
                     assigned_instruct = "female, young adult, moderate pitch"
-                    assigned_desc = f"Giọng Nữ ({tag_name})"
+                    assigned_desc = f"Giọng Nữ - {tag_name}" if tag_name else "Giọng Nữ"
                 elif any(w in tag_key for w in male_markers):
                     assigned_instruct = "male, young adult, moderate pitch"
-                    assigned_desc = f"Giọng Nam ({tag_name})"
+                    assigned_desc = f"Giọng Nam - {tag_name}" if tag_name else "Giọng Nam"
                 elif any(w in tag_key for w in child_markers):
                     assigned_instruct = "child, high pitch"
-                    assigned_desc = f"Giọng Trẻ Em ({tag_name})"
+                    assigned_desc = f"Giọng Trẻ Em - {tag_name}" if tag_name else "Giọng Trẻ Em"
                 elif any(w in tag_key for w in elder_markers):
                     assigned_instruct = "male, elderly, very low pitch"
-                    assigned_desc = f"Giọng Cao Tuổi ({tag_name})"
+                    assigned_desc = f"Giọng Cao Tuổi - {tag_name}" if tag_name else "Giọng Cao Tuổi"
 
             if not assigned_spk:
                 # Phân tích dấu gạch đầu dòng hội thoại hoặc đại từ xưng hô trong câu

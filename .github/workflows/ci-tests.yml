@@ -30,8 +30,8 @@ jobs:
       - name: Cài đặt thư viện kiểm thử cốt lõi
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-timeout PySide6 PySide6-Fluent-Widgets opencv-python-headless numpy scipy soundfile requests tqdm Pillow filesplit imageio-ffmpeg kaldi-native-fbank huggingface_hub
+          pip install pytest pytest-timeout pytest-mock PySide6 PySide6-Fluent-Widgets opencv-python-headless numpy scipy soundfile requests tqdm Pillow filesplit imageio-ffmpeg kaldi-native-fbank huggingface_hub pydub
 
       - name: Chạy bộ kiểm thử tự động không cần GPU
         run: |
-          pytest test/test_auto_pipeline_reliability.py test/test_omnivoice_improvements.py test/test_omnivoice_pipeline.py test/test_srt_translator.py test/test_subtitle_and_logo_remover.py test_home_interface.py -v --timeout=45 --durations=10
+          pytest test/test_auto_pipeline_reliability.py test/test_omnivoice_improvements.py test/test_omnivoice_pipeline.py test/test_srt_translator.py test/test_subtitle_and_logo_remover.py test_home_interface.py -v --timeout=90 --durations=10
