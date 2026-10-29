@@ -2108,6 +2108,8 @@ def test_export_shows_warning_confirmation_dialog(monkeypatch):
 
     app = QApplication.instance() or QApplication([])
     ui = OmniVoiceInterface()
+    if hasattr(ui, "chk_single_unified_voice"):
+        ui.chk_single_unified_voice.setChecked(False)
     ui.subtitle_blocks = [
         SubtitleBlock(1, "00:00:01,000", "00:00:03,000", "Câu một", speaker="Chưa phân vai")
     ]
