@@ -2371,7 +2371,8 @@ class TTSEngine:
 
         # Nạp mô hình TTS sau khi hoàn tất nhận diện và giải phóng phiên ONNX.
         self.load_model()
-        self._prepare_and_lock_character_prompts(blocks)
+        if not (self.multi_speaker_mode == "single" and self.mode == "design"):
+            self._prepare_and_lock_character_prompts(blocks)
 
         if self.mode == "clone" and self.current_prompt is None and self.multi_speaker_mode == "single":
             if not self.auto_extract_ref and self.ref_audio_path and os.path.exists(self.ref_audio_path):

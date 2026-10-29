@@ -945,3 +945,182 @@ def test_synthesize_blocks_model_generate_exact_kwargs_and_translated_text():
     finally:
         if os.path.exists(tmp_out):
             os.remove(tmp_out)
+
+
+def test_synthesize_blocks_nameless_and_none_speaker_exact_preset_kwargs():
+    """Kiểm tra khối phụ đề không có tên người nói (speaker=None hoặc speaker='') nhận đúng hướng dẫn preset vào model.generate."""
+    from src.ai_engines.tts_engine import TTSEngine, VIETNAMESE_VOICE_CATALOG
+    from src.ai_engines.translator import SubtitleBlock
+    from unittest.mock import MagicMock
+
+    preset_name = "Nữ Thanh Niên Chuẩn - Thuyết Minh Và Kể Chuyện"
+    expected_instruct = VIETNAMESE_VOICE_CATALOG[preset_name]["instruct"]
+
+    engine = TTSEngine(
+        auto_extract_ref=False,
+        mode="design",
+        multi_speaker_mode="single",
+        instruct=expected_instruct,
+        normalize_text=False,
+    )
+    engine.load_model = MagicMock()
+    mock_model = MagicMock()
+    mock_model.generate.return_value = [np.ones(24000, dtype=np.float32) * 0.3]
+    engine.model = mock_model
+
+    blocks = [
+        SubtitleBlock(index=1, start_time=0.0, end_time=2.0, text="Câu một không gán người nói", speaker=None),
+        SubtitleBlock(index=2, start_time=2.5, end_time=4.5, text="Câu hai có chuỗi người nói rỗng", speaker=""),
+    ]
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        tmp_out = f.name
+
+    try:
+        report = engine.synthesize_blocks(blocks, total_duration=5.0, output_path=tmp_out)
+        assert report.status == "success"
+        assert mock_model.generate.call_count == 2
+
+        for call in mock_model.generate.call_args_list:
+            assert call.kwargs.get("instruct") == expected_instruct
+            assert call.kwargs.get("voice_clone_prompt") is None
+    finally:
+        if os.path.exists(tmp_out):
+            os.remove(tmp_out)
+
+
+def test_synthesize_blocks_ignores_old_clone_profiles_in_single_unified_mode():
+    """Kiểm tra chế độ một giọng đồng nhất hoàn toàn phớt lờ các hồ sơ clone cũ và không gọi tạo prompt từ tệp mẫu cũ."""
+    from src.ai_engines.tts_engine import TTSEngine, VIETNAMESE_VOICE_CATALOG
+    from src.ai_engines.translator import SubtitleBlock
+    from unittest.mock import MagicMock
+
+    preset_name = "Nam Thanh Niên Chuẩn - Thuyết Minh Và Tin Tức"
+    expected_instruct = VIETNAMESE_VOICE_CATALOG[preset_name]["instruct"]
+
+    engine = TTSEngine(
+        auto_extract_ref=False,
+        mode="design",
+        multi_speaker_mode="single",
+        instruct=expected_instruct,
+        normalize_text=False,
+    )
+    engine.load_model = MagicMock()
+    mock_model = MagicMock()
+    mock_model.generate.return_value = [np.ones(24000, dtype=np.float32) * 0.4]
+    engine.model = mock_model
+    engine._get_or_create_prompt_for_audio = MagicMock()
+
+    # Cung cấp hồ sơ clone cũ trong speaker_profiles
+    engine.speaker_profiles = {
+        "Nhân vật A": {
+            "method": "clone",
+            "source_audio_path": "old_sample_a.wav",
+            "ref_audio_path": "old_sample_a.wav",
+            "voice_clone_prompt_path": "old_prompt_a.pt",
+        }
+    }
+
+    blocks = [
+        SubtitleBlock(
+            index=1,
+            start_time=0.0,
+            end_time=2.0,
+            text="Lời thoại nhân vật cũ",
+            speaker="Nhân vật A",
+            voice_ref_path="old_sample_a.wav",
+        )
+    ]
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        tmp_out = f.name
+
+    try:
+        report = engine.synthesize_blocks(blocks, total_duration=3.0, output_path=tmp_out)
+        assert report.status == "success"
+
+        # Kiểm tra _get_or_create_prompt_for_audio TUYỆT ĐỐI không được gọi đến tệp mẫu cũ
+        assert engine._get_or_create_prompt_for_audio.call_count == 0
+
+        # Kiểm tra model.generate nhận đúng instruct của preset và prompt là None
+        assert mock_model.generate.call_count == 1
+        call_kwargs = mock_model.generate.call_args.kwargs
+        assert call_kwargs.get("instruct") == expected_instruct
+        assert call_kwargs.get("voice_clone_prompt") is None
+    finally:
+        if os.path.exists(tmp_out):
+            os.remove(tmp_out)
+
+
+def test_synthesize_blocks_cache_invalidation_when_switching_presets():
+    """Kiểm tra khi chuyển từ Preset A sang Preset B trong cùng thư mục cache, pipeline không dùng lại âm thanh của Preset A."""
+    from src.ai_engines.tts_engine import TTSEngine, VIETNAMESE_VOICE_CATALOG
+    from src.ai_engines.translator import SubtitleBlock
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as cache_dir:
+        preset_a = "Nam Thanh Niên Chuẩn - Thuyết Minh Và Tin Tức"
+        preset_b = "Nữ Thanh Niên Chuẩn - Thuyết Minh Và Kể Chuyện"
+        ins_a = VIETNAMESE_VOICE_CATALOG[preset_a]["instruct"]
+        ins_b = VIETNAMESE_VOICE_CATALOG[preset_b]["instruct"]
+
+        blocks = [
+            SubtitleBlock(index=1, start_time=0.0, end_time=2.0, text="Câu kiểm tra bộ nhớ đệm", speaker="Người nói 1")
+        ]
+
+        # 1. Chạy với Preset A
+        engine_a = TTSEngine(
+            auto_extract_ref=False,
+            mode="design",
+            multi_speaker_mode="single",
+            instruct=ins_a,
+            resume_cache_dir=cache_dir,
+            normalize_text=False,
+        )
+        engine_a.load_model = MagicMock()
+        mock_model_a = MagicMock()
+        mock_model_a.generate.return_value = [np.ones(24000, dtype=np.float32) * 0.1]
+        engine_a.model = mock_model_a
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            out_a = f.name
+
+        try:
+            rep_a = engine_a.synthesize_blocks(blocks, total_duration=3.0, output_path=out_a)
+            assert rep_a.status == "success"
+            assert mock_model_a.generate.call_count == 1
+        finally:
+            if os.path.exists(out_a):
+                os.remove(out_a)
+
+        # 2. Chạy với Preset B trên cùng thư mục cache -> Phải tạo mới âm thanh (cache miss), không được nhận cache của A
+        engine_b = TTSEngine(
+            auto_extract_ref=False,
+            mode="design",
+            multi_speaker_mode="single",
+            instruct=ins_b,
+            resume_cache_dir=cache_dir,
+            normalize_text=False,
+        )
+        engine_b.load_model = MagicMock()
+        mock_model_b = MagicMock()
+        mock_model_b.generate.return_value = [np.ones(24000, dtype=np.float32) * 0.8]
+        engine_b.model = mock_model_b
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            out_b = f.name
+
+        try:
+            rep_b = engine_b.synthesize_blocks(blocks, total_duration=3.0, output_path=out_b)
+            assert rep_b.status == "success"
+            # mock_model_b PHẢI được gọi vì khóa cache khác biệt hoàn toàn giữa Preset A và B
+            assert mock_model_b.generate.call_count == 1
+
+            # 3. Chạy lại lần nữa với Preset B -> Phải trúng cache (cache hit), không cần gọi generate lại
+            mock_model_b.reset_mock()
+            rep_b2 = engine_b.synthesize_blocks(blocks, total_duration=3.0, output_path=out_b)
+            assert rep_b2.status == "success"
+            assert mock_model_b.generate.call_count == 0
+        finally:
+            if os.path.exists(out_b):
+                os.remove(out_b)
