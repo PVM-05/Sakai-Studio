@@ -5319,7 +5319,7 @@ class OmniVoiceInterface(ScrollArea):
 
         self._reset_audition_button()
 
-    def _run_pre_export_quality_check(self) -> List[Dict[str, Any]]:
+    def _run_pre_export_quality_check(self, check_audio_path: Optional[str] = None) -> List[Dict[str, Any]]:
 
         """Kiểm tra chất lượng trước khi xuất âm thanh hoặc video lồng tiếng."""
 
@@ -5398,6 +5398,48 @@ class OmniVoiceInterface(ScrollArea):
                     "message": f"Câu {blk.index}: Thời lượng quá ngắn so với độ dài câu thoại, có nguy cơ đọc tràn mốc thời gian.",
 
                 })
+
+        # Kiểm tra chất lượng tệp âm thanh thực tế nếu đã có đường dẫn âm thanh
+        target_audio = (
+            check_audio_path
+            or getattr(self, "current_dubbed_audio_path", None)
+            or getattr(self, "last_exported_audio_path", None)
+        )
+        if target_audio and str(target_audio).strip():
+            audio_path_str = str(target_audio).strip()
+            if not os.path.exists(audio_path_str):
+                issues.append({
+                    "severity": "error",
+                    "index": 0,
+                    "message": f"Tệp âm thanh lồng tiếng không tồn tại trên hệ thống: {os.path.basename(audio_path_str)}",
+                })
+            else:
+                from src.ai_engines.tts_engine import validate_audio_file
+                ok_wav, dur_wav, rms_wav, peak_wav = validate_audio_file(audio_path_str)
+                if dur_wav <= 0.05:
+                    issues.append({
+                        "severity": "error",
+                        "index": 0,
+                        "message": "Tệp âm thanh lồng tiếng bị hỏng hoặc thời lượng quá ngắn dưới 0.05 giây.",
+                    })
+                elif rms_wav < 1e-4:
+                    issues.append({
+                        "severity": "error",
+                        "index": 0,
+                        "message": "Tệp âm thanh lồng tiếng hoàn toàn im lặng (năng lượng tín hiệu bằng 0).",
+                    })
+                elif not ok_wav:
+                    issues.append({
+                        "severity": "error",
+                        "index": 0,
+                        "message": "Tệp âm thanh lồng tiếng không đạt tiêu chuẩn kỹ thuật.",
+                    })
+                elif peak_wav > 0.999:
+                    issues.append({
+                        "severity": "warning",
+                        "index": 0,
+                        "message": f"Biên độ đỉnh âm thanh đạt ngưỡng cực đại ({peak_wav:.2f}), có nguy cơ méo tiếng hoặc vỡ âm.",
+                    })
 
         return issues
 

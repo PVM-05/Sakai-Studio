@@ -1124,3 +1124,139 @@ def test_synthesize_blocks_cache_invalidation_when_switching_presets():
         finally:
             if os.path.exists(out_b):
                 os.remove(out_b)
+
+
+def test_normalize_vietnamese_numbers_and_text_special_cases():
+    """Kiểm tra hàm chuẩn hóa số xử lý đúng số bắt đầu bằng 0, phiên bản, ngày tháng và mã định danh."""
+    from src.ai_engines.tts_engine import normalize_vietnamese_numbers_and_text
+
+    # 1. Số bắt đầu bằng số 0 (Mã số / Số điện thoại) phải đọc từng chữ số
+    assert normalize_vietnamese_numbers_and_text("0123") == "không một hai ba"
+    assert normalize_vietnamese_numbers_and_text("0912345678") == "không chín một hai ba bốn năm sáu bảy tám"
+
+    # 2. Phiên bản có dấu chấm
+    assert "v một chấm hai chấm ba" in normalize_vietnamese_numbers_and_text("Phiên bản v1.2.3")
+
+    # 3. Ngày tháng
+    res_date = normalize_vietnamese_numbers_and_text("Ngày 29/10/2026")
+    assert "hai mươi chín" in res_date and "mười" in res_date and "hai nghìn không trăm hai mươi sáu" in res_date
+
+    # 4. Giờ phút
+    assert "mười bốn giờ ba mươi phút" in normalize_vietnamese_numbers_and_text("Họp lúc 14h30")
+
+    # 5. Phân cách hàng nghìn
+    assert "năm mươi nghìn đồng" in normalize_vietnamese_numbers_and_text("50.000 VNĐ")
+
+    # 6. Số nguyên và số thập phân thông thường
+    assert normalize_vietnamese_numbers_and_text("100") == "một trăm"
+    assert "một phẩy năm" in normalize_vietnamese_numbers_and_text("1.5")
+
+
+def test_generate_single_in_design_mode_never_receives_clone_prompt_even_if_passed():
+    """Kiểm tra chế độ design tuyệt đối không nhận prompt nhân bản kể cả khi tham số override_prompt được truyền vào."""
+    from src.ai_engines.tts_engine import TTSEngine, VIETNAMESE_VOICE_CATALOG
+    from unittest.mock import MagicMock
+
+    preset_name = "Nam Thanh Niên Chuẩn - Thuyết Minh Và Tin Tức"
+    expected_instruct = VIETNAMESE_VOICE_CATALOG[preset_name]["instruct"]
+
+    engine = TTSEngine(auto_extract_ref=False, mode="design", instruct=expected_instruct)
+    engine.load_model = MagicMock()
+    mock_model = MagicMock()
+    mock_model.generate.return_value = [np.ones(24000, dtype=np.float32) * 0.2]
+    engine.model = mock_model
+
+    fake_prompt = MagicMock()
+    # Truyền override_prompt giả mạo vào generate_single khi mode là design
+    engine.generate_single("Chào bạn", override_mode="design", override_prompt=fake_prompt)
+
+    assert mock_model.generate.call_count == 1
+    call_kwargs = mock_model.generate.call_args.kwargs
+    assert call_kwargs.get("instruct") == expected_instruct
+    assert "voice_clone_prompt" not in call_kwargs or call_kwargs["voice_clone_prompt"] is None
+
+
+def test_pre_export_quality_check_validates_real_audio_file():
+    """Kiểm tra hàm kiểm định trước khi xuất phát hiện đúng tệp âm thanh lỗi, im lặng hoặc clipping."""
+    _ensure_qapp()
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.translator import SubtitleBlock
+    import soundfile as sf
+
+    ui = OmniVoiceInterface()
+    ui.subtitle_blocks = [
+        SubtitleBlock(index=1, start_time="00:00:01,000", end_time="00:00:03,000", text="Câu chuẩn", speaker="Người nói 1")
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        # 1. Tệp âm thanh không tồn tại
+        missing_path = os.path.join(tmp_dir, "non_existent.wav")
+        issues_missing = ui._run_pre_export_quality_check(check_audio_path=missing_path)
+        assert any("không tồn tại" in i["message"] for i in issues_missing)
+
+        # 2. Tệp âm thanh hoàn toàn im lặng (RMS = 0)
+        silent_path = os.path.join(tmp_dir, "silent.wav")
+        sf.write(silent_path, np.zeros(24000, dtype=np.float32), 24000)
+        issues_silent = ui._run_pre_export_quality_check(check_audio_path=silent_path)
+        assert any("im lặng" in i["message"] for i in issues_silent)
+
+        # 3. Tệp âm thanh đạt ngưỡng cực đại (Clipping / peak = 1.0)
+        clip_path = os.path.join(tmp_dir, "clipping.wav")
+        sf.write(clip_path, np.ones(24000, dtype=np.float32), 24000)
+        issues_clip = ui._run_pre_export_quality_check(check_audio_path=clip_path)
+        assert any("ngưỡng cực đại" in i["message"] for i in issues_clip)
+
+        # 4. Tệp âm thanh hợp lệ (biên độ an toàn 0.5)
+        valid_path = os.path.join(tmp_dir, "valid.wav")
+        sf.write(valid_path, np.ones(24000, dtype=np.float32) * 0.5, 24000)
+        issues_valid = ui._run_pre_export_quality_check(check_audio_path=valid_path)
+        audio_issues = [i for i in issues_valid if "Tệp âm thanh" in i["message"] or "ngưỡng cực đại" in i["message"]]
+        assert len(audio_issues) == 0
+
+
+def test_synthesize_blocks_reports_overflow_and_respects_strict_sync_strategy():
+    """Kiểm tra hệ thống báo cáo chính xác danh sách câu tràn mốc thời lượng và hỗ trợ chế độ strict_sync."""
+    from src.ai_engines.tts_engine import TTSEngine
+    from src.ai_engines.translator import SubtitleBlock
+    from unittest.mock import MagicMock
+
+    sr = 24000
+    # Tạo đoạn âm thanh giả lập dài 3 giây
+    fake_long_audio = np.ones(int(3.0 * sr), dtype=np.float32) * 0.4
+
+    # Phụ đề có mốc thời gian chỉ khả dụng 1.0 giây (từ 0.0s đến 1.0s, câu tiếp theo bắt đầu lúc 1.0s)
+    blocks = [
+        SubtitleBlock(index=1, start_time=0.0, end_time=1.0, text="Câu dài bị tràn thời gian", speaker=""),
+        SubtitleBlock(index=2, start_time=1.0, end_time=2.5, text="Câu kế tiếp", speaker=""),
+    ]
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        tmp_out = f.name
+
+    try:
+        # 1. Chế độ mặc định preserve_speech: co giãn 1.25x và báo cáo câu tràn vào report.overflow_lines
+        engine_preserve = TTSEngine(auto_extract_ref=False, mode="design", overflow_strategy="preserve_speech")
+        engine_preserve.load_model = MagicMock()
+        mock_m1 = MagicMock()
+        mock_m1.generate.return_value = [fake_long_audio]
+        engine_preserve.model = mock_m1
+
+        rep_p = engine_preserve.synthesize_blocks(blocks, total_duration=3.0, output_path=tmp_out)
+        assert rep_p.status == "success"
+        assert len(rep_p.overflow_lines) >= 1
+        assert rep_p.overflow_lines[0]["line"] == 1
+        assert rep_p.overflow_lines[0]["overflow_sec"] > 0
+
+        # 2. Chế độ strict_sync: co giãn tối đa và cắt khớp mốc thời gian không đè câu tiếp theo
+        engine_strict = TTSEngine(auto_extract_ref=False, mode="design", overflow_strategy="strict_sync")
+        engine_strict.load_model = MagicMock()
+        mock_m2 = MagicMock()
+        mock_m2.generate.return_value = [fake_long_audio]
+        engine_strict.model = mock_m2
+
+        rep_s = engine_strict.synthesize_blocks(blocks, total_duration=3.0, output_path=tmp_out)
+        assert rep_s.status == "success"
+        assert len(rep_s.overflow_lines) >= 1
+    finally:
+        if os.path.exists(tmp_out):
+            os.remove(tmp_out)

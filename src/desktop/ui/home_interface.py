@@ -1122,7 +1122,10 @@ class HomeInterface(QWidget):
         get_current_task_index = self.task_list_component.get_current_task_index()
         if get_current_task_index == -1:
             return
-            
+
+        strokes = list(getattr(self.video_display_component, 'freehand_strokes', []))
+        self.task_list_component.update_task_option(get_current_task_index, TaskOptions.FREEHAND_STROKES, strokes)
+
         # Tính năng Tự động ôm khít chữ
         if selections and config.autoTighten.value and not getattr(self, '_is_tightening', False):
             self._is_tightening = True
@@ -1133,10 +1136,8 @@ class HomeInterface(QWidget):
                 return
             finally:
                 self._is_tightening = False
-                
+
         self.task_list_component.update_task_option(get_current_task_index, TaskOptions.SUB_AREAS, selections)
-        strokes = list(getattr(self.video_display_component, 'freehand_strokes', []))
-        self.task_list_component.update_task_option(get_current_task_index, TaskOptions.FREEHAND_STROKES, strokes)
 
 
     def _on_freehand_strokes_changed(self, strokes):

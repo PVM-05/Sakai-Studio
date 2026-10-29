@@ -68,6 +68,7 @@ class DubbingReport:
     resumed_from_cache_count: int = 0
     failed_lines: List[int] = field(default_factory=list)
     truncated_lines: List[int] = field(default_factory=list)
+    overflow_lines: List[Dict[str, Any]] = field(default_factory=list)
     timestamp_issues: List[Dict[str, Any]] = field(default_factory=list)
     audio_duration_sec: float = 0.0
     rms_energy: float = 0.0
@@ -257,11 +258,15 @@ def _number_to_vietnamese_words(n: int) -> str:
 def normalize_vietnamese_numbers_and_text(text: str) -> str:
     """
     Chuẩn hóa số đếm, số thập phân, phần trăm sang chữ viết tiếng Việt lưu loát.
+    Hỗ trợ quy tắc riêng cho số điện thoại/mã bắt đầu bằng 0, định dạng phiên bản và ngày tháng.
     Bảo vệ nguyên vẹn các thẻ biểu cảm phi ngôn từ trong ngoặc vuông.
     """
     if not text or not text.strip():
         return ""
 
+    digits = ["không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín"]
+
+    # 1. Bảo vệ các thẻ biểu cảm trong ngoặc vuông
     tags = []
     def save_tag(match):
         tags.append(match.group(0))
@@ -269,6 +274,48 @@ def normalize_vietnamese_numbers_and_text(text: str) -> str:
 
     s = re.sub(r"\[[a-zA-Z0-9_\-]+\]", save_tag, text.strip())
 
+    # 2. Xử lý định dạng ngày tháng: 29/10/2026 hoặc 29-10-2026
+    def repl_date(m):
+        day = int(m.group(1))
+        month = int(m.group(2))
+        year = int(m.group(3))
+        if 1 <= day <= 31 and 1 <= month <= 12 and 1900 <= year <= 2100:
+            day_str = _number_to_vietnamese_words(day)
+            month_str = _number_to_vietnamese_words(month)
+            year_str = _number_to_vietnamese_words(year)
+            return f"ngày {day_str} tháng {month_str} năm {year_str}"
+        return m.group(0)
+
+    s = re.sub(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b", repl_date, s)
+
+    # 3. Xử lý định dạng giờ: 14h30 hoặc 14h
+    def repl_hour_h(m):
+        h = int(m.group(1))
+        m_val = int(m.group(2)) if m.group(2) else None
+        h_str = _number_to_vietnamese_words(h)
+        if m_val is not None:
+            m_str = _number_to_vietnamese_words(m_val)
+            return f"{h_str} giờ {m_str} phút"
+        return f"{h_str} giờ"
+
+    s = re.sub(r"\b(\d{1,2})h(\d{1,2})\b", repl_hour_h, s, flags=re.IGNORECASE)
+    s = re.sub(r"\b(\d{1,2})h\b", repl_hour_h, s, flags=re.IGNORECASE)
+
+    # 4. Xử lý chuỗi phiên bản có nhiều dấu chấm (ví dụ: v1.2.3, 1.0.4)
+    def repl_version(m):
+        raw = m.group(0)
+        prefix = "v " if raw.lower().startswith("v") else ""
+        nums = re.findall(r"\d+", raw)
+        word_parts = [digits[int(d)] if (len(d) > 1 and d.startswith("0")) else _number_to_vietnamese_words(int(d)) for d in nums]
+        return prefix + " chấm ".join(word_parts)
+
+    s = re.sub(r"\b[vV]?\d+(\.\d+){2,}\b", repl_version, s)
+    s = re.sub(r"\b[vV]\d+\.\d+\b", repl_version, s)
+
+    # 5. Phân tách hàng nghìn có dấu chấm: 10.000, 1.000.000
+    s = re.sub(r"\b\d{1,3}(\.\d{3})+\b", lambda m: m.group(0).replace(".", ""), s)
+
+    # 6. Phần trăm và đơn vị đo lường
     s = re.sub(r"(?<=\d)\s*%", " phần trăm", s)
     s = re.sub(r"%", " phần trăm ", s)
 
@@ -284,8 +331,7 @@ def normalize_vietnamese_numbers_and_text(text: str) -> str:
     for pattern, repl in units:
         s = re.sub(pattern, repl, s, flags=re.IGNORECASE)
 
-    digits = ["không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín"]
-
+    # 7. Số thập phân: 1,5 hoặc 1.5
     def repl_decimal(m):
         integer_part = int(m.group(1))
         decimal_part = " ".join(digits[int(d)] for d in m.group(2))
@@ -293,11 +339,16 @@ def normalize_vietnamese_numbers_and_text(text: str) -> str:
 
     s = re.sub(r"\b(\d+)[.,](\d+)\b", repl_decimal, s)
 
+    # 8. Số nguyên và chuỗi số đặc biệt (bắt đầu bằng 0 hoặc mã dài)
     def repl_integer(m):
-        val = int(m.group(0))
+        raw = m.group(0)
+        # Chuỗi số bắt đầu bằng chữ số 0 (ví dụ: 0123, 0987...): đọc từng chữ số để giữ trọn ý nghĩa số điện thoại/mã số
+        if len(raw) > 1 and raw.startswith("0"):
+            return " ".join(digits[int(d)] for d in raw)
+        val = int(raw)
         if val <= 999_999_999:
             return _number_to_vietnamese_words(val)
-        return m.group(0)
+        return " ".join(digits[int(d)] for d in raw)
 
     s = re.sub(r"\b\d+\b", repl_integer, s)
 
@@ -820,6 +871,7 @@ class TTSEngine:
         exact_speakers: Optional[int] = None,
         clustering_sensitivity: str = "standard",
         enable_ai_vocal_separation: bool = True,
+        overflow_strategy: str = "preserve_speech",
         **kwargs,
     ):
         self.model: Optional[OmniVoice] = None
@@ -872,6 +924,7 @@ class TTSEngine:
         self.speaker_count_mode = str(speaker_count_mode or "auto")
         self.exact_speakers = exact_speakers
         self.clustering_sensitivity = str(clustering_sensitivity or "standard")
+        self.overflow_strategy = "strict_sync" if str(overflow_strategy).strip() == "strict_sync" else "preserve_speech"
         self._cancel_requested: bool = False
         self.last_report: Optional[DubbingReport] = None
 
@@ -1897,10 +1950,8 @@ class TTSEngine:
         active_mode = override_mode or self.mode
 
         if active_mode == "design":
-            # Chế độ thiết kế giọng nói: Tuyệt đối không dùng mẫu âm thanh nhân bản
-            if override_prompt is not None:
-                gen_kwargs["voice_clone_prompt"] = override_prompt
-            elif override_instruct:
+            # Chế độ thiết kế giọng nói: Tuyệt đối chỉ sử dụng instruct, không bao giờ dùng prompt âm thanh nhân bản
+            if override_instruct:
                 gen_kwargs["instruct"] = override_instruct
             elif self.instruct:
                 gen_kwargs["instruct"] = self.instruct
@@ -2452,8 +2503,8 @@ class TTSEngine:
                 if self.mode == "design":
                     active_block_mode = "design"
                     override_instruct = (
-                        getattr(blk, "voice_instruct", "")
-                        or self.instruct
+                        self.instruct
+                        or getattr(blk, "voice_instruct", "")
                         or DEFAULT_SPEAKER_PRESETS["Người nói 1"]["instruct"]
                     )
                     override_prompt = None
@@ -2471,8 +2522,8 @@ class TTSEngine:
                     if override_prompt is None:
                         active_block_mode = "design"
                         override_instruct = (
-                            getattr(blk, "voice_instruct", "")
-                            or self.instruct
+                            self.instruct
+                            or getattr(blk, "voice_instruct", "")
                             or DEFAULT_SPEAKER_PRESETS["Người nói 1"]["instruct"]
                         )
                         override_ref = None
@@ -2624,15 +2675,39 @@ class TTSEngine:
                     cur_dur_sec = len(audio_arr) / float(self.sample_rate)
                     if cur_dur_sec > avail_before_next * 1.05:
                         needed_speed = cur_dur_sec / avail_before_next
-                        if needed_speed <= 1.25:
+                        max_stretch = 1.35 if self.overflow_strategy == "strict_sync" else 1.25
+                        if needed_speed <= max_stretch:
                             audio_arr = self._safe_time_stretch(audio_arr, needed_speed, sample_rate=self.sample_rate)
                             report.stretched_count += 1
                         else:
-                            # Co giãn thời lượng tối đa 1.25x bằng WSOLA giữ nguyên cao độ và ngữ điệu tự nhiên
-                            audio_arr = self._safe_time_stretch(audio_arr, 1.25, sample_rate=self.sample_rate)
+                            # Co giãn thời lượng an toàn bằng WSOLA giữ nguyên cao độ và ngữ điệu tự nhiên
+                            audio_arr = self._safe_time_stretch(audio_arr, max_stretch, sample_rate=self.sample_rate)
                             report.stretched_count += 1
-                            # Tuyệt đối không cắt cụt đuôi âm thanh, để đoạn âm thanh kết thúc trọn vẹn câu thoại;
-                            # phần chồng lấn (nếu có) sẽ được _overlay_audio_segment tự động hòa trộn mượt mà.
+                            stretched_dur = len(audio_arr) / float(self.sample_rate)
+                            overflow_sec = max(0.0, stretched_dur - avail_before_next)
+                            if overflow_sec > 0.05:
+                                overflow_info = {
+                                    "line": i + 1,
+                                    "available_sec": round(avail_before_next, 2),
+                                    "original_dur_sec": round(cur_dur_sec, 2),
+                                    "stretched_dur_sec": round(stretched_dur, 2),
+                                    "overflow_sec": round(overflow_sec, 2),
+                                    "text": text_to_speak,
+                                }
+                                report.overflow_lines.append(overflow_info)
+                                self.log(
+                                    f"Câu {i + 1}: Đoạn đọc vượt mốc thời gian {round(overflow_sec, 2)} giây "
+                                    f"(khả dụng: {round(avail_before_next, 2)}s, sau co giãn: {round(stretched_dur, 2)}s)."
+                                )
+                                if self.overflow_strategy == "strict_sync":
+                                    # Chế độ ưu tiên khớp timeline: cắt nhẹ phần dư và làm mờ đuôi âm mượt mà
+                                    target_max_samples = int(avail_before_next * self.sample_rate)
+                                    fade_len = int(min(0.08 * self.sample_rate, target_max_samples * 0.1))
+                                    if len(audio_arr) > target_max_samples:
+                                        audio_arr = audio_arr[:target_max_samples]
+                                        if fade_len > 0:
+                                            fade_curve = np.linspace(1.0, 0.0, fade_len, dtype=np.float32)
+                                            audio_arr[-fade_len:] *= fade_curve
 
                 # Lưu vào bộ nhớ đệm khôi phục tác vụ nếu được bật
                 if cache_wav_path:
