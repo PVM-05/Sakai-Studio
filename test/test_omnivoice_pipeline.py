@@ -858,9 +858,12 @@ def test_character_reference_sample_selection_prefers_high_confidence_single_tak
     b1 = SubtitleBlock(index=1, start_time="00:00:00,500", end_time="00:00:03,500", text="Câu dài rõ ràng")
     b2 = SubtitleBlock(index=2, start_time="00:00:04,000", end_time="00:00:05,000", text="Câu ngắn")
 
-    coordinator = SpeakerDiarizationCoordinator(allow_mock=True)
+    coordinator = SpeakerDiarizationCoordinator(allow_mock=True, prefer_cuda=False)
 
-    with patch("src.ai_engines.speaker_diarization.cosine_cluster_embeddings") as mock_cluster:
+    from src.ai_engines.speaker_embedding_onnx import MockSpeakerSession
+    with patch("src.ai_engines.speaker_diarization.create_speaker_session", return_value=(MockSpeakerSession(192), "MockExecutionProvider")), \
+         patch("src.ai_engines.speaker_diarization.batch_extract_speaker_embeddings", return_value=np.zeros((2, 192), dtype=np.float32)), \
+         patch("src.ai_engines.speaker_diarization.cosine_cluster_embeddings") as mock_cluster:
         mock_cluster.return_value = (
             np.array([0, 0]),
             [ConfidenceLevel.HIGH.value, ConfidenceLevel.REVIEW_NEEDED.value],

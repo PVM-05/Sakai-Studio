@@ -162,6 +162,9 @@ def create_speaker_session(
     allow_mock chỉ dành cho test và phải được bật tường minh.
     """
     resolved_path = ""
+    if allow_mock and not model_path:
+        return MockSpeakerSession(192), "MockExecutionProvider"
+
     try:
         resolved_path = resolve_speaker_model_path(model_path)
     except FileNotFoundError:
