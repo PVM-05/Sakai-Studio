@@ -599,7 +599,7 @@ class GUISubtitleRemover:
         del sub_detector
         gc.collect()
 
-        # 2. Truyền trực tiếp danh sách toạ độ (sub_list) cho STTNAutoInpaint
+        # 2. Truyền trực tiếp danh sách toạ độ vùng phụ đề cho STTNAutoInpaint
         # để tự động sinh mask nét chữ/mask động theo từng frame khi đọc video
         sttn_video_inpaint = STTNAutoInpaint(self.hardware_accelerator.device, self.model_config.STTN_AUTO_MODEL_PATH, self.video_path)
         tbar.reset(total=int(self.frame_count))  # Đặt lại bộ đếm thời gian để không bị sai lệch tốc độ (s/frame)

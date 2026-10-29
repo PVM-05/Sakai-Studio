@@ -186,7 +186,7 @@ class TaskListComponent(QWidget):
         # 获取文件名
         file_name = os.path.basename(video_path)
         
-        # Tự động kế thừa tùy chọn vùng chọn phụ đề (SUB_AREAS) và phân đoạn A/B (AB_SECTIONS) từ nhiệm vụ hiện tại hoặc trước đó
+        # Tự động kế thừa tùy chọn vùng chọn phụ đề và phân đoạn A-B từ nhiệm vụ hiện tại hoặc trước đó
         default_options = {}
         if self.tasks:
             current_idx = self.get_current_task_index()

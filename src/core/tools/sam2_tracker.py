@@ -116,7 +116,7 @@ class SAM2VideoTracker:
                 obj_id = idx + 1
                 box = np.array([x, y, x + w, y + h], dtype=np.float32)
                 
-                # Trích xuất các điểm đặc trưng của chữ (Shi-Tomasi corners) để ép SAM 2 bám vào chữ thay vì nền
+                # Trích xuất các điểm đặc trưng góc nét chữ để ép SAM 2 bám vào chữ thay vì nền
                 import cv2
                 frame_path = os.path.join(temp_frame_dir, f"{prompt_frame_idx:05d}.jpg")
                 frame_img = cv2.imread(frame_path, cv2.IMREAD_GRAYSCALE)
@@ -173,7 +173,7 @@ class SAM2VideoTracker:
                 packed_mask = np.packbits(binary_mask)
                 mask_shape = binary_mask.shape
                 
-                # Tính bounding box để giữ tương thích với hệ thống cũ (downstream tuple unpacking)
+                # Tính khung chữ để giữ tương thích với hệ thống xử lý phía sau
                 # cv2.boundingRect trả về (x, y, w, h)
                 x, y, w, h = cv2.boundingRect(combined_mask)
                 xmin, ymin = x, y

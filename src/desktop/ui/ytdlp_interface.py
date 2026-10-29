@@ -100,16 +100,19 @@ def resolve_playlist_entry_url(entry, parent_url=""):
     video_id = entry.get('id')
     parent_lower = (parent_url or '').lower()
     
+    page = entry.get('page') or entry.get('page_num') or entry.get('p')
+    page_query = f"?p={page}" if page else ""
+
     if not video_url:
         if video_id:
             if 'bilibili.com' in parent_lower:
-                video_url = f"https://www.bilibili.com/video/{video_id}"
+                video_url = f"https://www.bilibili.com/video/{video_id}{page_query}"
             else:
                 video_url = f"https://www.youtube.com/watch?v={video_id}"
     elif isinstance(video_url, str):
         if not video_url.startswith(('http://', 'https://')):
             if 'bilibili.com' in parent_lower or (video_url.startswith('BV') or video_url.startswith('av')):
-                video_url = f"https://www.bilibili.com/video/{video_url}"
+                video_url = f"https://www.bilibili.com/video/{video_url}{page_query}"
             else:
                 video_url = f"https://www.youtube.com/watch?v={video_url}"
         elif ('youtube.com' in video_url or 'youtu.be' in video_url) and ('&list=' in video_url or '?list=' in video_url):
@@ -117,6 +120,12 @@ def resolve_playlist_entry_url(entry, parent_url=""):
             q_v = urllib.parse.parse_qs(parsed_v.query)
             if 'v' in q_v:
                 video_url = f"https://www.youtube.com/watch?v={q_v['v'][0]}"
+            elif parsed_v.path and parsed_v.path.strip('/'):
+                clean_id = parsed_v.path.strip('/')
+                video_url = f"https://www.youtube.com/watch?v={clean_id}"
+        elif 'bilibili.com' in video_url and page and '?p=' not in video_url and '&p=' not in video_url:
+            delimiter = '&' if '?' in video_url else '?'
+            video_url = f"{video_url}{delimiter}p={page}"
     return video_url or ""
 
 
@@ -307,6 +316,7 @@ class YtdlpAnalysisWorker(QThread):
             ydl_opts = {
                 'noplaylist': False,
                 'extract_flat': 'in_playlist',
+                'ignoreerrors': True,
                 'allow_unverified_js': True,
                 'remote_components': ['ejs:github'],
                 'js_runtimes': {
@@ -315,7 +325,8 @@ class YtdlpAnalysisWorker(QThread):
                     'quickjs': {}
                 },
                 'extractor_args': {
-                    'tiktok': ['api_hostname=api16-normal-c-useast1a.tiktokv.com']
+                    'tiktok': ['api_hostname=api16-normal-c-useast1a.tiktokv.com'],
+                    'youtube': ['player_client=web,android']
                 }
             }
             if self.browser_cookies and self.browser_cookies not in ["Không dùng", "Tệp cookies.txt"]:
@@ -438,6 +449,7 @@ class YtdlpWorker(QThread):
             'logger': YtdlpLogger(self.log_sig),
             'noprogress': True,
             'noplaylist': True,
+            'ignoreerrors': True,
             'allow_unverified_js': True,
             'remote_components': ['ejs:github'],
             'concurrent_fragment_downloads': self.concurrent_fragments,
@@ -451,7 +463,8 @@ class YtdlpWorker(QThread):
                 'quickjs': {}
             },
             'extractor_args': {
-                'tiktok': ['api_hostname=api16-normal-c-useast1a.tiktokv.com']
+                'tiktok': ['api_hostname=api16-normal-c-useast1a.tiktokv.com'],
+                'youtube': ['player_client=web,android']
             }
         }
 
@@ -468,7 +481,7 @@ class YtdlpWorker(QThread):
 
         if self.selected_format_id:
             if self.selected_format_type == 'Video Only':
-                ydl_opts['format'] = f"{self.selected_format_id}+bestaudio/{self.selected_format_id}/bestvideo+bestaudio/best"
+                ydl_opts['format'] = f"{self.selected_format_id}+bestaudio/{self.selected_format_id}/bestvideo[format_note!*='高码率'][format_note!*='VIP']+bestaudio/bestvideo+bestaudio/best"
                 ydl_opts['merge_output_format'] = self.preferred_container
             elif self.selected_format_type == 'Audio Only':
                 ydl_opts['format'] = f"{self.selected_format_id}/bestaudio/best"
@@ -478,7 +491,7 @@ class YtdlpWorker(QThread):
                     'preferredquality': audio_quality,
                 }]
             else:
-                ydl_opts['format'] = f"{self.selected_format_id}+bestaudio/{self.selected_format_id}/bestvideo+bestaudio/best"
+                ydl_opts['format'] = f"{self.selected_format_id}+bestaudio/{self.selected_format_id}/bestvideo[format_note!*='高码率'][format_note!*='VIP']+bestaudio/bestvideo+bestaudio/best"
         else:
             if self.format_opt == 'audio_only':
                 ydl_opts['format'] = 'bestaudio/best'
@@ -1365,7 +1378,8 @@ class YtdlpInterface(ScrollArea):
         self.is_playlist = is_playlist_type
         
         if is_playlist_type:
-            entries = info.get('entries', [])
+            raw_entries = info.get('entries', [])
+            entries = [e for e in raw_entries if isinstance(e, dict)]
             self.playlist_entries = entries
             self.meta_duration.setText(f"Danh sách phát: {len(entries)} video")
             
@@ -1635,6 +1649,7 @@ class YtdlpInterface(ScrollArea):
                     queue_item = {
                         'url': video_url,
                         'title': video_title,
+                        'custom_filename': video_title,
                         'format_opt': format_opt,
                         'selected_format_id': selected_format_id,
                         'selected_format_type': selected_format_type,
@@ -2077,6 +2092,12 @@ class YtdlpInterface(ScrollArea):
                 duration=3000,
                 parent=self
             )
+            return
+
+        raw_url_lower = url.lower()
+        if ('playlist?list=' in raw_url_lower or '&list=' in raw_url_lower) and not self.is_playlist:
+            self.log_console.appendPlainText("\nPhát hiện liên kết danh sách phát. Đang tự động chuyển sang phân tích danh sách...")
+            self.start_analysis()
             return
 
         save_dir = self.save_dir_input.text().strip()

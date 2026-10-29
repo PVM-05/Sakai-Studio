@@ -567,12 +567,12 @@ class HomeInterface(QWidget):
         self._pending_seek_value = value
         self.current_frame_no = max(0, value - 1)
 
-        # Cập nhật ngay giao diện đồng hồ thời gian & Đồng bộ GPU Hardware Video Player (1ms YouTube-style Hardware Seek)
+        # Cập nhật ngay giao diện đồng hồ thời gian và đồng bộ trình phát video phần cứng GPU
         if hasattr(self, 'video_display_component'):
             self.video_display_component.update_time_display()
             self.video_display_component.sync_audio_position(value)
 
-        #  KIỂM TRA RAM FRAME CACHE HỖ TRỢ TUA TỨC THÌ (0ms Latency Hit)
+        # KIỂM TRA BỘ NHỚ ĐỆM KHUNG HÌNH HỖ TRỢ TUA TỨC THÌ KHÔNG ĐỘ TRỄ
         exact_hit = False
         if hasattr(self, '_frame_cache') and self._frame_cache:
             with self._cache_lock:
@@ -1291,7 +1291,7 @@ class HomeInterface(QWidget):
             running_process = self.running_process
             if running_process:
                 ProcessManager.instance().terminate_by_process(running_process)
-            # Chỉ dọn dẹp tệp tạm đang xử lý dở (_current_temp_output_path), tuyệt đối không xóa output_path hợp lệ đã có từ trước
+            # Chỉ dọn dẹp tệp tạm đang xử lý dở tại đường dẫn tạm thời, tuyệt đối không xóa tệp đích hợp lệ đã có từ trước
             temp_out = getattr(self, '_current_temp_output_path', None)
             if temp_out and os.path.exists(temp_out):
                 try:

@@ -803,15 +803,20 @@ class AdvancedSettingInterface(QWidget):
             self.pivot.setCurrentItem(routes[matching_tab_index])
 
     def update_gpu_info(self):
-        """Cập nhật động thông tin GPU & VRAM trực quan"""
-        import torch
+        """Cập nhật động thông tin GPU và VRAM trực quan"""
+        try:
+            import torch
+            has_torch = True
+        except (ImportError, Exception):
+            torch = None
+            has_torch = False
         
         is_auto = config.autoHardwareTuning.value
         
         if is_auto:
-            if not torch.cuda.is_available():
+            if not has_torch or not torch.cuda.is_available():
                 max_load_pp, max_load_sttn = 15, 20
-                performance_tier = "Tự động - CPU Only"
+                performance_tier = "Tự động - CPU"
             else:
                 try:
                     device_idx = torch.cuda.current_device()
@@ -836,17 +841,17 @@ class AdvancedSettingInterface(QWidget):
             max_load_sttn = config.sttnMaxLoadNum.value
             performance_tier = "Thủ công"
 
-        gpu_title = "Card màn hình: CPU Only"
-        if torch.cuda.is_available():
+        gpu_title = "Bộ xử lý: CPU"
+        if has_torch and torch.cuda.is_available():
             try:
                 device_idx = torch.cuda.current_device()
                 gpu_name = torch.cuda.get_device_name(device_idx)
                 total_vram = torch.cuda.get_device_properties(device_idx).total_memory / (1024 ** 3)
                 gpu_title = f"GPU: {gpu_name} ({total_vram:.1f} GB VRAM)"
             except Exception:
-                gpu_title = "GPU CUDA Detected"
+                gpu_title = "Bộ xử lý đồ họa GPU đã sẵn sàng"
 
-        gpu_content = f"Chế độ: {performance_tier} | Cấu hình frame tối đa: ProPainter ({max_load_pp} frames), STTN ({max_load_sttn} frames)."
+        gpu_content = f"Chế độ: {performance_tier} | Cấu hình khung hình tối đa: ProPainter ({max_load_pp} khung hình), STTN ({max_load_sttn} khung hình)."
         if hasattr(self, 'gpu_info_card'):
             self.gpu_info_card.setTitle(gpu_title)
             self.gpu_info_card.setContent(gpu_content)

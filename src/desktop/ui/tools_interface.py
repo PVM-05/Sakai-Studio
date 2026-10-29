@@ -62,7 +62,7 @@ class ToolsInterface(QWidget):
         self._add_sub_tab(self.translationInterface.objectName(), "Dịch Phụ Đề", 2, icon=FluentIcon.LANGUAGE)
         self._add_sub_tab(self.homeInterface.objectName(), "Xóa Phụ Đề Video", 3, icon=FluentIcon.ERASE_TOOL)
 
-        # Đặt tab mặc định là Trích Xuất Phụ Đề (index 1) hoặc Tải Video (index 0)
+        # Đặt tab mặc định là Trích Xuất Phụ Đề ở vị trí 1 hoặc Tải Video ở vị trí 0
         self.pivot.setCurrentItem(self.ytdlpInterface.objectName())
         self.stacked_widget.setCurrentIndex(0)
 

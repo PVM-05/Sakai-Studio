@@ -1263,3 +1263,96 @@ def test_synthesize_blocks_reports_overflow_and_respects_strict_sync_strategy():
     finally:
         if os.path.exists(tmp_out):
             os.remove(tmp_out)
+
+
+def test_vietnamese_phone_number_digit_by_digit():
+    from src.ai_engines.tts_engine import normalize_vietnamese_numbers_and_text
+    # Kiểm tra số điện thoại có dấu chấm hoặc gạch ngang được đọc từng chữ số
+    res1 = normalize_vietnamese_numbers_and_text("Liên hệ số 0987.123.456 để được tư vấn.")
+    assert "không chín tám bảy một hai ba bốn năm sáu" in res1
+
+    res2 = normalize_vietnamese_numbers_and_text("Hotline: 091-234-5678")
+    assert "không chín một hai ba bốn năm sáu bảy tám" in res2
+
+
+def test_preprocess_vietnamese_adds_sentence_closing_punctuation():
+    from src.ai_engines.tts_engine import preprocess_vietnamese_tts_text
+    # Đảm bảo câu không có dấu kết thúc được tự động bổ sung dấu chấm để hạ giọng trọn vẹn
+    res = preprocess_vietnamese_tts_text("Hôm nay trời rất đẹp")
+    assert res.endswith(".")
+    # Câu đã có dấu câu không bị nhân đôi
+    res_excl = preprocess_vietnamese_tts_text("Tuyệt vời quá!")
+    assert res_excl.endswith("!")
+    assert not res_excl.endswith("!.")
+
+
+def test_trim_silence_padding_preserves_60ms_boundary():
+    from src.ai_engines.tts_engine import TTSEngine
+    sr = 24000
+    # Tạo đoạn âm thanh: 1 giây im lặng, 1 giây âm thanh, 1 giây im lặng
+    silence_1s = np.zeros(sr, dtype=np.float32)
+    signal_1s = np.ones(sr, dtype=np.float32) * 0.5
+    raw_audio = np.concatenate([silence_1s, signal_1s, silence_1s])
+
+    trimmed = TTSEngine._trim_silence_padding(raw_audio, threshold_db=-45.0, sample_rate=sr)
+    # 60ms = 1440 samples mỗi đầu -> tổng độ dài khoảng sr + 2 * 1440 = 26880
+    expected_margin = int(0.060 * sr)
+    assert len(trimmed) >= sr + expected_margin
+
+
+def test_generate_single_sets_deterministic_seed_for_preset():
+    from src.ai_engines.tts_engine import TTSEngine, VIETNAMESE_VOICE_CATALOG
+    from unittest.mock import MagicMock
+    import zlib
+
+    engine = TTSEngine(auto_extract_ref=False, mode="design")
+    engine.load_model = MagicMock()
+    mock_model = MagicMock()
+    mock_model.generate.return_value = [np.ones(24000, dtype=np.float32) * 0.2]
+    engine.model = mock_model
+
+    instruct = VIETNAMESE_VOICE_CATALOG["Nữ Trẻ Năng Động - Video Ngắn Và Giải Trí"]["instruct"]
+    expected_seed = (zlib.crc32(instruct.encode("utf-8")) % 100000) + 42
+
+    mock_torch = MagicMock()
+    with patch("src.ai_engines.tts_engine.torch", mock_torch):
+        engine.generate_single("Câu kiểm tra hạt ngẫu nhiên", override_mode="design", override_instruct=instruct)
+        mock_torch.manual_seed.assert_called_with(expected_seed)
+
+
+def test_resolve_playlist_entry_url_youtube_and_bilibili():
+    from src.desktop.ui.ytdlp_interface import resolve_playlist_entry_url
+
+    # 1. YouTube dạng youtu.be có query danh sách phát
+    entry_yt = {"url": "https://youtu.be/dQw4w9WgXcQ?list=PL1234567890"}
+    res_yt = resolve_playlist_entry_url(entry_yt)
+    assert res_yt == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+    # 2. Bilibili tuyển tập tập 3
+    entry_bili = {"id": "BV1py4y1c71k", "page": 3}
+    res_bili = resolve_playlist_entry_url(entry_bili, parent_url="https://www.bilibili.com/video/BV1py4y1c71k")
+    assert res_bili == "https://www.bilibili.com/video/BV1py4y1c71k?p=3"
+
+
+def test_on_analysis_success_handles_none_entries_gracefully():
+    _ensure_qapp()
+    from src.desktop.ui.ytdlp_interface import YtdlpInterface
+
+    ytdlp = YtdlpInterface()
+    # Danh sách phát chứa video bình thường và video bị xóa (None)
+    mock_info = {
+        "_type": "playlist",
+        "title": "Danh sách tuyển tập thử nghiệm",
+        "uploader": "Kênh mẫu",
+        "entries": [
+            {"id": "v1", "title": "Video 1", "duration": 120},
+            None,
+            {"id": "v2", "title": "Video 2", "duration": 180},
+        ]
+    }
+    # Gọi trực tiếp slot phân tích thành công
+    ytdlp.on_analysis_success(mock_info)
+    assert ytdlp.is_playlist is True
+    assert len(ytdlp.playlist_entries) == 2
+    assert ytdlp.playlist_table.rowCount() == 2
+

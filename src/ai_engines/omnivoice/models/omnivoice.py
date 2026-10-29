@@ -1183,7 +1183,8 @@ class OmniVoice(PreTrainedModel):
                 (cleaned_text.count(",") + cleaned_text.count(";") + cleaned_text.count("…")) * 6
                 + (cleaned_text.count(".") + cleaned_text.count("?") + cleaned_text.count("!")) * 10
             )
-            min_safe_tokens = int(words * 8.5) + pause_tokens + 15
+            # Tăng sàn an toàn lên 10.5 tokens/từ kèm 25 token đệm đuôi để mô hình không bao giờ bị cắt cụt từ cuối câu
+            min_safe_tokens = int(words * 10.5) + pause_tokens + 25
             est = max(float(est), float(min_safe_tokens))
         if speed > 0 and speed != 1.0:
             est = est / speed

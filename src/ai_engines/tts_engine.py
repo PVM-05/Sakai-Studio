@@ -20,6 +20,7 @@ import shutil
 import logging
 import subprocess
 import hashlib
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Any, Dict, Union, Tuple
@@ -301,21 +302,28 @@ def normalize_vietnamese_numbers_and_text(text: str) -> str:
     s = re.sub(r"\b(\d{1,2})h(\d{1,2})\b", repl_hour_h, s, flags=re.IGNORECASE)
     s = re.sub(r"\b(\d{1,2})h\b", repl_hour_h, s, flags=re.IGNORECASE)
 
-    # 4. Xử lý chuỗi phiên bản có nhiều dấu chấm (ví dụ: v1.2.3, 1.0.4)
+    # 4. Số điện thoại và chuỗi mã liên lạc có dấu gạch ngang hoặc dấu chấm (ví dụ: 0987.123.456, 098-123-4567)
+    def repl_phone(m):
+        digits_only = re.sub(r"\D", "", m.group(0))
+        return " ".join(digits[int(d)] for d in digits_only)
+
+    s = re.sub(r"\b0\d{2,3}[-.\s]\d{3,4}[-.\s]\d{3,4}\b", repl_phone, s)
+
+    # 5. Xử lý chuỗi phiên bản có nhiều dấu chấm (ví dụ: v1.2.3, 1.0.4)
     def repl_version(m):
         raw = m.group(0)
         prefix = "v " if raw.lower().startswith("v") else ""
         nums = re.findall(r"\d+", raw)
-        word_parts = [digits[int(d)] if (len(d) > 1 and d.startswith("0")) else _number_to_vietnamese_words(int(d)) for d in nums]
+        word_parts = [" ".join(digits[int(char)] for char in d) if (len(d) > 1 and d.startswith("0")) else _number_to_vietnamese_words(int(d)) for d in nums]
         return prefix + " chấm ".join(word_parts)
 
     s = re.sub(r"\b[vV]?\d+(\.\d+){2,}\b", repl_version, s)
     s = re.sub(r"\b[vV]\d+\.\d+\b", repl_version, s)
 
-    # 5. Phân tách hàng nghìn có dấu chấm: 10.000, 1.000.000
+    # 6. Phân tách hàng nghìn có dấu chấm: 10.000, 1.000.000
     s = re.sub(r"\b\d{1,3}(\.\d{3})+\b", lambda m: m.group(0).replace(".", ""), s)
 
-    # 6. Phần trăm và đơn vị đo lường
+    # 7. Phần trăm và đơn vị đo lường
     s = re.sub(r"(?<=\d)\s*%", " phần trăm", s)
     s = re.sub(r"%", " phần trăm ", s)
 
@@ -331,7 +339,7 @@ def normalize_vietnamese_numbers_and_text(text: str) -> str:
     for pattern, repl in units:
         s = re.sub(pattern, repl, s, flags=re.IGNORECASE)
 
-    # 7. Số thập phân: 1,5 hoặc 1.5
+    # 8. Số thập phân: 1,5 hoặc 1.5
     def repl_decimal(m):
         integer_part = int(m.group(1))
         decimal_part = " ".join(digits[int(d)] for d in m.group(2))
@@ -339,7 +347,7 @@ def normalize_vietnamese_numbers_and_text(text: str) -> str:
 
     s = re.sub(r"\b(\d+)[.,](\d+)\b", repl_decimal, s)
 
-    # 8. Số nguyên và chuỗi số đặc biệt (bắt đầu bằng 0 hoặc mã dài)
+    # 9. Số nguyên và chuỗi số đặc biệt (bắt đầu bằng 0 hoặc mã dài)
     def repl_integer(m):
         raw = m.group(0)
         # Chuỗi số bắt đầu bằng chữ số 0 (ví dụ: 0123, 0987...): đọc từng chữ số để giữ trọn ý nghĩa số điện thoại/mã số
@@ -363,10 +371,16 @@ def preprocess_vietnamese_tts_text(text: str) -> str:
     """
     Chuẩn hóa văn bản tiếng Việt trước khi đưa vào OmniVoice:
     - Mở rộng các đơn vị đo lường, ký hiệu phần trăm, nhiệt độ, tiền tệ phổ biến theo ngữ cảnh.
-    - Phiên âm số đếm, số thập phân sang chữ tiếng Việt tự nhiên.
-    - Giữ nguyên các thẻ biểu cảm phi ngôn từ ([laughter], [sigh]...).
+    - Phiên âm số đếm, số thập phân, số điện thoại sang chữ tiếng Việt tự nhiên.
+    - Bổ sung dấu ngắt câu cuối nếu thiếu để hạ giọng trọn vẹn và không bị cụt câu.
+    - Giữ nguyên các thẻ biểu cảm phi ngôn từ trong ngoặc vuông.
     """
-    return normalize_vietnamese_numbers_and_text(text)
+    normalized = normalize_vietnamese_numbers_and_text(text)
+    if not normalized:
+        return ""
+    if normalized[-1] not in ".!?;:…":
+        normalized += "."
+    return normalized
 
 
 def split_long_vietnamese_clauses(text: str, max_chars: int = 220) -> List[str]:
@@ -1422,7 +1436,7 @@ class TTSEngine:
         """
         Trích xuất vector đặc trưng âm học của người nói từ đoạn sóng âm:
         - Cao độ cơ bản F0 (Hz) và độ biến thiên F0 qua tự tương quan
-        - Trọng tâm phổ (Spectral Centroid) và 8 dải năng lượng formant âm sắc
+        - Trọng tâm phổ tần số và 8 dải năng lượng hình thái âm sắc
         """
         if len(seg) < int(0.25 * sr):
             return None
@@ -1935,6 +1949,15 @@ class TTSEngine:
         if not text_clean:
             return np.zeros(0, dtype=np.float32)
 
+        # Cố định hạt ngẫu nhiên theo chỉ thị thiết kế giọng để bảo đảm âm sắc, cao độ và giọng đọc
+        # của cùng một nhân vật luôn nhất quán tuyệt đối giữa các câu, không bị đổi giọng mỗi câu
+        if torch is not None:
+            active_instruct = (override_instruct or self.instruct or "").strip()
+            target_seed = (zlib.crc32(active_instruct.encode("utf-8")) % 100000) + 42 if active_instruct else 42
+            torch.manual_seed(target_seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(target_seed)
+
         gen_config = self.build_generation_config()
 
         gen_kwargs: Dict[str, Any] = {
@@ -2244,7 +2267,7 @@ class TTSEngine:
     ) -> np.ndarray:
         """
         Cắt bớt khoảng lặng vô thanh ở đầu và đuôi đoạn âm thanh (dưới ngưỡng -45 dB)
-        nhưng giữ lại khoảng 12ms đệm mượt để tránh làm cụt âm bật và phụ âm đầu/cuối.
+        nhưng giữ lại khoảng 60ms đệm mượt để tránh làm cụt âm bật và phụ âm đầu hoặc cuối.
         """
         if audio_arr.size == 0:
             return audio_arr
@@ -2252,7 +2275,7 @@ class TTSEngine:
         active = np.where(np.abs(audio_arr) > thresh)[0]
         if len(active) == 0:
             return audio_arr
-        margin = max(1, int(0.012 * sample_rate))
+        margin = max(1, int(0.060 * sample_rate))
         start_idx = max(0, active[0] - margin)
         end_idx = min(len(audio_arr), active[-1] + margin + 1)
         return audio_arr[start_idx:end_idx]
@@ -2605,7 +2628,7 @@ class TTSEngine:
                                 active_block_mode = "design"
 
             method_desc = f"Thiết kế giọng: {override_instruct[:30]}..." if active_block_mode == "design" else "Nhân bản giọng mẫu"
-            # Kiểm tra bộ nhớ đệm khôi phục tác vụ (Checkpoint Resume)
+            # Kiểm tra bộ nhớ đệm khôi phục tác vụ từ điểm lưu trước
             cache_spk = "unified" if self.multi_speaker_mode == "single" else spk_key
             cache_wav_path = self._compute_block_cache_path(
                 i, text_to_speak, cache_spk, override_ref, override_instruct, target_dur, method_or_mode=active_block_mode

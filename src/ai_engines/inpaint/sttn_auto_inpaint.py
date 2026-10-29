@@ -363,7 +363,7 @@ class STTNAutoInpaint:
                 frames_hr = []  # 高分辨率帧列表
                 frames = {}  # 帧字典，用于存储裁剪后的图像
                 comps = {}  # 组合字典，用于存储修复后的图像
-                frame_indices = []  # Lưu lại chỉ số frame thực tế (1-indexed) cho mỗi frame đọc được
+                frame_indices = []  # Lưu lại chỉ số frame thực tế bắt đầu từ 1 cho mỗi frame đọc được
                 
                 # 初始化帧字典
                 for k in range(len(inpaint_area)):

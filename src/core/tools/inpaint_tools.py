@@ -814,7 +814,7 @@ def apply_temporal_smoothing(original_frames: List[np.ndarray], inpainted_frames
 
 def apply_temporal_mask_padding(masks: List[np.ndarray], pad_frames: int) -> List[np.ndarray]:
     """
-    Áp dụng bù trừ khung hình mờ (Fade padding) bằng cách mở rộng mặt nạ 
+    Áp dụng bù trừ vùng mờ dần bằng cách mở rộng mặt nạ 
     theo trục thời gian (lùi về trước và kéo về sau) N frames.
     Đặc biệt hữu ích để xử lý các phụ đề có hiệu ứng fade-in / fade-out mà OCR thường bỏ sót.
     """

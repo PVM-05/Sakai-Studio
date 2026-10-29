@@ -560,7 +560,7 @@ class VideoDisplayComponent(QWidget):
         pass
 
     def _on_video_frame_changed(self, frame):
-        """Bắt frame từ QMediaPlayer siêu mượt, phần cứng giải mã (Hardware Accelerated) để chống lag"""
+        """Bắt khung hình từ trình phát siêu mượt, phần cứng giải mã tăng tốc để chống lag"""
         if not frame.isValid():
             return
         image = frame.toImage()
