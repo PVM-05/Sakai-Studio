@@ -2011,7 +2011,8 @@ class OmniVoiceInterface(ScrollArea):
 
         self._init_more_actions_menu()
 
-        self.btn_reset_all_voices = PushButton("Đặt Lại Toàn Bộ Giọng", casting_card)
+        self.btn_reset_all_voices = PushButton("Đặt Lại Về Giọng Gốc", casting_card)
+        self.btn_reset_all_voices.setToolTip("Khôi phục toàn bộ nhân vật về mẫu giọng gốc trích xuất từ video")
 
         self.btn_reset_all_voices.setIcon(FluentIcon.DELETE)
 
@@ -3707,13 +3708,25 @@ class OmniVoiceInterface(ScrollArea):
 
             self.casting_table.setItem(row, 2, item_cnt)
 
-            # Cột 3: Giọng Đọc Trí Tuệ Nhân Tạo (ComboBox 22 giọng tiếng Việt)
+            # Cột 3: Giọng Đọc (Cho phép chọn Giọng gốc từ video hoặc 22 giọng AI tiếng Việt)
             combo_voice = ComboBox(self.casting_table)
             catalog_list = list(VIETNAMESE_VOICE_CATALOG.keys())
-            combo_voice.addItems(catalog_list)
+            orig_audio_cand = (
+                getattr(prof_info, "source_audio_path", "")
+                or getattr(prof_info, "_backup_source_audio", "")
+                or (prof_info.get("source_audio_path", "") if isinstance(prof_info, dict) else "")
+                or (prof_info.get("_backup_source_audio", "") if isinstance(prof_info, dict) else "")
+                or getattr(prof_info, "ref_audio_path", "")
+                or (prof_info.get("ref_audio_path", "") if isinstance(prof_info, dict) else "")
+            )
+            has_orig_sample = bool(orig_audio_cand and os.path.exists(orig_audio_cand))
+            voice_options = ["Giọng gốc từ video"] + catalog_list if has_orig_sample else catalog_list
+            combo_voice.addItems(voice_options)
             curr_preset = prof_info.get("preset_name") or prof_info.get("voice_preset") or ""
             curr_method = prof_info.get("method") or prof_info.get("assigned_strategy") or "clone"
-            if curr_method == "preset" and curr_preset in VIETNAMESE_VOICE_CATALOG:
+            if curr_method == "clone" and has_orig_sample:
+                combo_voice.setCurrentText("Giọng gốc từ video")
+            elif curr_method == "preset" and curr_preset in VIETNAMESE_VOICE_CATALOG:
                 combo_voice.setCurrentText(curr_preset)
             else:
                 default_preset = curr_preset if curr_preset in VIETNAMESE_VOICE_CATALOG else catalog_list[row % len(catalog_list)]
@@ -3747,7 +3760,9 @@ class OmniVoiceInterface(ScrollArea):
             prof_item = self.speaker_profiles.get(spk_name)
             has_orig_audio = bool(
                 getattr(prof_item, "source_audio_path", "")
+                or getattr(prof_item, "_backup_source_audio", "")
                 or (prof_item.get("source_audio_path", "") if isinstance(prof_item, dict) else "")
+                or (prof_item.get("_backup_source_audio", "") if isinstance(prof_item, dict) else "")
             )
             btn_orig = PushButton("Nghe Giọng Gốc", cell_action)
             btn_orig.setIcon(FluentIcon.MUSIC)
@@ -3768,10 +3783,44 @@ class OmniVoiceInterface(ScrollArea):
         self.casting_table.blockSignals(False)
 
     def _on_character_preset_changed(self, spk_name: str, new_preset: str):
-        """Đồng bộ khi người dùng đổi giọng đọc trí tuệ nhân tạo trên Bảng phân vai."""
-        if not new_preset or new_preset not in VIETNAMESE_VOICE_CATALOG:
+        """Đồng bộ khi người dùng đổi giọng đọc trên Bảng phân vai."""
+        if not new_preset:
             return
         prof = self.speaker_profiles.get(spk_name)
+        if new_preset == "Giọng gốc từ video":
+            orig_audio = ""
+            if isinstance(prof, dict):
+                orig_audio = prof.get("source_audio_path") or prof.get("_backup_source_audio") or prof.get("ref_audio_path") or ""
+                prof["method"] = "clone"
+                prof["source_audio_path"] = orig_audio
+                prof["ref_audio_path"] = orig_audio
+                prof["preset_name"] = ""
+                prof["voice_preset"] = ""
+                prof["voice_instruct"] = ""
+                prof["status"] = "locked"
+            elif hasattr(prof, "method"):
+                orig_audio = getattr(prof, "source_audio_path", "") or getattr(prof, "_backup_source_audio", "") or getattr(prof, "ref_audio_path", "") or ""
+                prof.method = "clone"
+                prof.source_audio_path = orig_audio
+                prof.preset_name = ""
+                prof.voice_instruct = ""
+                prof.status = "locked"
+            for blk in self.subtitle_blocks:
+                if getattr(blk, "speaker", "") == spk_name:
+                    blk.voice_ref_path = orig_audio
+                    blk.voice_instruct = ""
+                    blk.is_speaker_locked = True
+            self._populate_subtitle_table()
+            InfoBar.success(
+                "Đã chọn giọng gốc",
+                f"Nhân vật {spk_name} được khôi phục về mẫu giọng gốc từ video.",
+                parent=self,
+                duration=2500,
+            )
+            return
+
+        if new_preset not in VIETNAMESE_VOICE_CATALOG:
+            return
         ins = VIETNAMESE_VOICE_CATALOG[new_preset]["instruct"]
         if isinstance(prof, dict):
             if prof.get("source_audio_path"):
@@ -3792,6 +3841,18 @@ class OmniVoiceInterface(ScrollArea):
             prof.voice_instruct = ins
             prof.source_audio_path = ""
             prof.status = "locked"
+        for blk in self.subtitle_blocks:
+            if getattr(blk, "speaker", "") == spk_name:
+                blk.voice_instruct = ins
+                blk.voice_ref_path = ""
+                blk.is_speaker_locked = True
+        self._populate_subtitle_table()
+        InfoBar.success(
+            "Đã cập nhật giọng đọc",
+            f"Đã gán '{new_preset}' cho {spk_name}.",
+            parent=self,
+            duration=2500,
+        )
 
         for blk in self.subtitle_blocks:
             if getattr(blk, "speaker", "") == spk_name:
@@ -5140,62 +5201,55 @@ class OmniVoiceInterface(ScrollArea):
         self.btn_more_actions.setMenu(menu)
 
     def _handle_reset_all_voices_with_confirmation(self, confirmed: Optional[bool] = None) -> bool:
-
-        """Đặt lại toàn bộ phân vai và giọng nhân vật có xác nhận an toàn."""
-
+        """Đặt lại toàn bộ phân vai và giọng nhân vật về giọng gốc có xác nhận an toàn."""
         if confirmed is False:
-
             return False
-
         if confirmed is True:
-
             self._reset_all_character_voices()
-
             return True
 
         msg = MessageBox(
-
             "Xác nhận đặt lại giọng",
-
-            "Bạn có chắc chắn muốn đặt lại toàn bộ giọng đã gán cho tất cả nhân vật về mặc định? Thao tác này sẽ hủy toàn bộ cấu hình đã khóa.",
-
+            "Bạn có chắc chắn muốn đặt lại toàn bộ giọng đã gán về giọng gốc từ video? Thao tác này sẽ hủy các giọng trí tuệ nhân tạo đang gán.",
             self,
-
         )
-
-        msg.yesButton.setText("Đặt Lại")
-
+        msg.yesButton.setText("Đặt Lại Về Giọng Gốc")
         msg.cancelButton.setText("Hủy Bỏ")
-
         if msg.exec():
-
             self._reset_all_character_voices()
-
             return True
-
         return False
 
     def _reset_all_character_voices(self):
-
-        """Đặt lại toàn bộ phân vai và cấu hình giọng nhân vật."""
-
-        self.speaker_profiles.clear()
-
-        self.is_speakers_detected = False
+        """Đặt lại toàn bộ phân vai và cấu hình giọng nhân vật về giọng gốc từ video."""
+        if hasattr(self, "chk_single_unified_voice"):
+            self.chk_single_unified_voice.setChecked(False)
 
         for blk in self.subtitle_blocks:
-
-            blk.voice_ref_path = ""
-
             blk.voice_instruct = ""
-
             blk.is_speaker_locked = False
 
-        self._update_casting_table()
-
-        self._populate_subtitle_table()
-
-        InfoBar.success("Đã đặt lại", "Đã xóa toàn bộ cấu hình giọng gán cho nhân vật.", parent=self, duration=2500)
+        if self.current_video_path and os.path.exists(self.current_video_path):
+            self.speaker_profiles.clear()
+            self.is_speakers_detected = False
+            self._run_auto_detect_speakers()
+            InfoBar.success(
+                "Đã đặt lại về giọng gốc",
+                "Đang tự động phân tích và trích xuất lại mẫu giọng gốc từ video cho tất cả nhân vật.",
+                parent=self,
+                duration=3500,
+            )
+        else:
+            self.speaker_profiles.clear()
+            self.is_speakers_detected = False
+            self._update_casting_table()
+            self._populate_subtitle_table()
+            InfoBar.info(
+                "Đã đặt lại cấu hình",
+                "Đã xóa toàn bộ cấu hình giọng gán cho nhân vật. Vui lòng tải video để trích xuất giọng gốc.",
+                parent=self,
+                duration=3500,
+            )
 
     def _audition_all_speakers(self):
 
@@ -6971,8 +7025,22 @@ class OmniVoiceInterface(ScrollArea):
             norm = normalize_character_profile(prof, speaker_id=sid)
             if not getattr(norm, "display_name", ""):
                 norm.display_name = str(spk)
-            # Luôn gán giọng trí tuệ nhân tạo từ kho mẫu tiếng Việt
-            if not getattr(norm, "preset_name", "") or getattr(norm, "method", "") != "preset":
+
+            # Ưu tiên mẫu giọng gốc nếu được trích xuất từ âm thanh video gốc
+            orig_sample = (
+                getattr(norm, "source_audio_path", "")
+                or (prof.get("source_audio_path", "") if isinstance(prof, dict) else "")
+                or getattr(norm, "ref_audio_path", "")
+                or (prof.get("ref_audio_path", "") if isinstance(prof, dict) else "")
+            )
+            if orig_sample and os.path.exists(orig_sample):
+                norm.method = "clone"
+                norm.source_audio_path = orig_sample
+                norm.ref_audio_path = orig_sample
+                norm.preset_name = ""
+                norm.voice_instruct = ""
+                norm.status = "locked"
+            elif not getattr(norm, "preset_name", "") or getattr(norm, "method", "") != "preset":
                 assigned_preset = catalog_keys[idx % len(catalog_keys)]
                 norm.method = "preset"
                 norm.preset_name = assigned_preset
@@ -6991,20 +7059,31 @@ class OmniVoiceInterface(ScrollArea):
             elif len(self._worker.subtitle_blocks) == len(self.subtitle_blocks):
                 for ui_blk, w_blk in zip(self.subtitle_blocks, self._worker.subtitle_blocks):
                     ui_blk.speaker = getattr(w_blk, "speaker", ui_blk.speaker)
-                    ui_blk.voice_ref_path = ""
                     spk_name = getattr(ui_blk, "speaker", "")
                     if spk_name in normalized:
-                        ui_blk.voice_instruct = getattr(normalized[spk_name], "voice_instruct", "")
+                        prof_obj = normalized[spk_name]
+                        if getattr(prof_obj, "method", "") == "clone" and getattr(prof_obj, "source_audio_path", ""):
+                            ui_blk.voice_ref_path = getattr(prof_obj, "source_audio_path", "")
+                            ui_blk.voice_instruct = ""
+                        else:
+                            ui_blk.voice_instruct = getattr(prof_obj, "voice_instruct", "")
+                            ui_blk.voice_ref_path = ""
                     else:
                         ui_blk.voice_instruct = getattr(w_blk, "voice_instruct", ui_blk.voice_instruct)
+                        ui_blk.voice_ref_path = getattr(w_blk, "voice_ref_path", "")
                     ui_blk.confidence_level = getattr(w_blk, "confidence_level", getattr(ui_blk, "confidence_level", "high"))
                     ui_blk.is_speaker_locked = getattr(w_blk, "is_speaker_locked", getattr(ui_blk, "is_speaker_locked", False))
         else:
             for blk in self.subtitle_blocks:
                 spk_name = getattr(blk, "speaker", "")
                 if spk_name in normalized:
-                    blk.voice_instruct = getattr(normalized[spk_name], "voice_instruct", "")
-                    blk.voice_ref_path = ""
+                    prof_obj = normalized[spk_name]
+                    if getattr(prof_obj, "method", "") == "clone" and getattr(prof_obj, "source_audio_path", ""):
+                        blk.voice_ref_path = getattr(prof_obj, "source_audio_path", "")
+                        blk.voice_instruct = ""
+                    else:
+                        blk.voice_instruct = getattr(prof_obj, "voice_instruct", "")
+                        blk.voice_ref_path = ""
 
         self._populate_subtitle_table()
 
@@ -8367,7 +8446,7 @@ class OmniVoiceInterface(ScrollArea):
 
         if hasattr(self, "btn_reset_all_voices"):
 
-            self.btn_reset_all_voices.setText("Đặt Lại Toàn Bộ Giọng")
+            self.btn_reset_all_voices.setText("Đặt Lại Về Giọng Gốc")
 
         if hasattr(self, "btn_audition_all_speakers"):
 

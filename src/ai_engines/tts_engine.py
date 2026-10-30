@@ -2484,23 +2484,8 @@ class TTSEngine:
         if not (self.multi_speaker_mode == "single" and self.mode == "design"):
             self._prepare_and_lock_character_prompts(blocks)
 
-        unified_anchor_prompt: Optional[VoiceClonePrompt] = None
-        unified_anchor_wav: Optional[str] = None
-        if self.multi_speaker_mode == "single" and self.mode == "design":
-            target_ins = self.instruct
-            if not target_ins and blocks:
-                target_ins = getattr(blocks[0], "voice_instruct", "")
-            if not target_ins:
-                target_ins = DEFAULT_SPEAKER_PRESETS["Người nói 1"]["instruct"]
-            unified_anchor_prompt, unified_anchor_wav = self._get_or_create_preset_anchor_prompt(
-                instruct=target_ins,
-                preset_name=getattr(self, "preset_name", None),
-            )
-            if unified_anchor_prompt is not None:
-                self.log(
-                    f"Đã tạo và khóa mẫu giọng mỏ neo đồng nhất cho toàn bộ tệp phụ đề "
-                    f"từ cấu hình thiết kế giọng ({target_ins[:30]}...)."
-                )
+        # Khi chạy chế độ thiết kế giọng tiếng Việt, sử dụng trực tiếp chỉ thị thiết kế giọng
+        # kết hợp cố định hạt ngẫu nhiên để bảo đảm âm sắc tự nhiên, trong trẻo và không bị bóp méo.
 
         if self.mode == "clone" and self.current_prompt is None and self.multi_speaker_mode == "single":
             if not self.auto_extract_ref and self.ref_audio_path and os.path.exists(self.ref_audio_path):
@@ -2578,20 +2563,14 @@ class TTSEngine:
                 # Chế độ 1 giọng đọc đồng nhất: Áp dụng một mẫu giọng duy nhất cho mọi câu thoại trong tệp phụ đề
                 spk_label = "Giọng đồng nhất"
                 if self.mode == "design":
-                    if unified_anchor_prompt is not None:
-                        active_block_mode = "clone"
-                        override_prompt = unified_anchor_prompt
-                        override_ref = unified_anchor_wav
-                        override_instruct = None
-                    else:
-                        active_block_mode = "design"
-                        override_instruct = (
-                            self.instruct
-                            or getattr(blk, "voice_instruct", "")
-                            or DEFAULT_SPEAKER_PRESETS["Người nói 1"]["instruct"]
-                        )
-                        override_prompt = None
-                        override_ref = None
+                    active_block_mode = "design"
+                    override_instruct = (
+                        self.instruct
+                        or getattr(blk, "voice_instruct", "")
+                        or DEFAULT_SPEAKER_PRESETS["Người nói 1"]["instruct"]
+                    )
+                    override_prompt = None
+                    override_ref = None
                 elif self.mode == "clone":
                     active_block_mode = "clone"
                     if self.current_prompt is not None:
@@ -2633,21 +2612,11 @@ class TTSEngine:
                     if not ins_cand and self.instruct:
                         ins_cand = self.instruct
 
-                    # Tạo hoặc nạp mẫu giọng mỏ neo cho nhân vật
-                    char_prompt, char_wav = self._get_or_create_preset_anchor_prompt(
-                        instruct=ins_cand,
-                        preset_name=preset_name,
-                    )
-                    if char_prompt is not None:
-                        active_block_mode = "clone"
-                        override_prompt = char_prompt
-                        override_ref = char_wav
-                        override_instruct = None
-                    else:
-                        active_block_mode = "design"
-                        override_ref = None
-                        override_prompt = None
-                        override_instruct = ins_cand
+                    # Chế độ thiết kế giọng tiếng Việt thuần túy, không tạo clone trung gian tránh làm méo âm
+                    active_block_mode = "design"
+                    override_ref = None
+                    override_prompt = None
+                    override_instruct = ins_cand
                 else:
                     ref_cand = getattr(blk, "voice_ref_path", "") or (prof.get("ref_audio_path", "") or prof.get("source_audio_path", "") if is_dict else getattr(prof, "source_audio_path", ""))
                     character_prompt_key = f"character_{spk_key}" if spk_key else ""

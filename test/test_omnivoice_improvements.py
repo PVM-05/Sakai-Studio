@@ -506,22 +506,21 @@ def test_single_unified_voice_consistency_across_blocks():
         assert report.status == "success"
         assert len(recorded_calls) == 2
         for call_kw in recorded_calls:
-            # Xác nhận rõ rệt chế độ clone với mẫu mỏ neo đồng nhất cho toàn bộ phụ đề
-            assert call_kw.get("override_mode") == "clone"
-            assert call_kw.get("override_prompt") is not None
-            assert call_kw.get("override_ref_audio") is not None
-            assert "anchor_" in call_kw.get("override_ref_audio")
-            assert call_kw.get("override_instruct") is None
+            # Xác nhận chạy chế độ thiết kế giọng thuần túy với đúng instruct, không dùng prompt clone tránh méo tiếng
+            assert call_kw.get("override_mode") == "design"
+            assert call_kw.get("override_prompt") is None
+            assert call_kw.get("override_ref_audio") is None
+            assert call_kw.get("override_instruct") == expected_instruct
 
-        # Cả 2 khối phụ đề phải dùng chung 1 đối tượng prompt mỏ neo và 1 tệp âm thanh mỏ neo
-        assert recorded_calls[0]["override_prompt"] is recorded_calls[1]["override_prompt"]
-        assert recorded_calls[0]["override_ref_audio"] == recorded_calls[1]["override_ref_audio"]
+        # Cả 2 khối phụ đề phải dùng chung đúng instruct của preset
+        assert recorded_calls[0]["override_instruct"] == recorded_calls[1]["override_instruct"]
 
         # Kiểm tra trực tiếp tham số truyền vào model.generate() cho 2 khối phụ đề
         assert mock_model.generate.call_count == 2
         for call_item in mock_model.generate.call_args_list:
             gen_kwargs = call_item.kwargs
-            assert gen_kwargs.get("voice_clone_prompt") is recorded_calls[0]["override_prompt"]
+            assert gen_kwargs.get("instruct") == expected_instruct
+            assert "voice_clone_prompt" not in gen_kwargs or gen_kwargs.get("voice_clone_prompt") is None
     finally:
         if os.path.exists(tmp_out):
             os.remove(tmp_out)
@@ -667,13 +666,10 @@ def test_synthesize_blocks_single_mode_pure_design_no_anchor_clone():
         assert report.status == "success"
         assert len(recorded_calls) == 2
         for call_kw in recorded_calls:
-            # Ở chế độ 1 giọng đọc đồng nhất, pipeline sử dụng mẫu mỏ neo (clone) để âm sắc đồng nhất
-            assert call_kw.get("override_mode") == "clone"
-            assert call_kw.get("override_prompt") is not None
-            assert call_kw.get("override_ref_audio") is not None
-            assert "anchor_" in call_kw.get("override_ref_audio")
-        assert recorded_calls[0]["override_prompt"] is recorded_calls[1]["override_prompt"]
-        assert recorded_calls[0]["override_ref_audio"] == recorded_calls[1]["override_ref_audio"]
+            # Ở chế độ thiết kế giọng đơn nhất, phải chạy thuần túy mode design và KHÔNG dùng prompt clone tránh bóp méo âm thanh
+            assert call_kw.get("override_mode") == "design"
+            assert call_kw.get("override_prompt") is None
+            assert call_kw.get("override_instruct") == "male, young adult"
     finally:
         if os.path.exists(tmp_out):
             os.remove(tmp_out)
@@ -722,11 +718,10 @@ def test_unified_voice_srt_without_speaker_uses_design_preset():
         assert report.status == "success"
         assert len(recorded_calls) == 2
         for call_kw in recorded_calls:
-            assert call_kw.get("override_mode") == "clone"
-            assert call_kw.get("override_prompt") is not None
-            assert call_kw.get("override_ref_audio") is not None
-            assert "anchor_" in call_kw.get("override_ref_audio")
-        assert recorded_calls[0]["override_prompt"] is recorded_calls[1]["override_prompt"]
+            assert call_kw.get("override_mode") == "design"
+            assert call_kw.get("override_prompt") is None
+            assert call_kw.get("override_ref_audio") is None
+            assert call_kw.get("override_instruct") == instruct
     finally:
         if os.path.exists(tmp_out):
             os.remove(tmp_out)
@@ -789,12 +784,10 @@ def test_unified_voice_overrides_stale_clone_profiles():
         assert len(recorded_calls) == 1
         call_kw = recorded_calls[0]
         # Tuyệt đối không được sử dụng lại mẫu clone cũ của nhân vật cũ
-        assert call_kw.get("override_mode") == "clone"
-        assert call_kw.get("override_prompt") is not None
-        assert call_kw.get("override_prompt") is not old_prompt_mock
-        assert call_kw.get("override_ref_audio") is not None
-        assert call_kw.get("override_ref_audio") != dummy_sample
-        assert "anchor_" in call_kw.get("override_ref_audio")
+        assert call_kw.get("override_mode") == "design"
+        assert call_kw.get("override_prompt") is None
+        assert call_kw.get("override_ref_audio") is None
+        assert call_kw.get("override_instruct") == instruct
     finally:
         for p in (dummy_sample, tmp_out):
             if os.path.exists(p):
@@ -949,20 +942,20 @@ def test_synthesize_blocks_model_generate_exact_kwargs_and_translated_text():
         assert mock_model.generate.call_count == 3
         calls = mock_model.generate.call_args_list
 
-        anchor_prompt = calls[0].kwargs.get("voice_clone_prompt")
-        assert anchor_prompt is not None
-
-        # Lượt 1: Phải đọc translated_text "Lời dịch tiếng Việt một" với prompt mỏ neo đồng nhất
+        # Lượt 1: Phải đọc translated_text "Lời dịch tiếng Việt một" với instruct
         assert calls[0].kwargs.get("text") == "Lời dịch tiếng Việt một"
-        assert calls[0].kwargs.get("voice_clone_prompt") is anchor_prompt
+        assert calls[0].kwargs.get("instruct") == expected_instruct
+        assert "voice_clone_prompt" not in calls[0].kwargs or calls[0].kwargs.get("voice_clone_prompt") is None
 
-        # Lượt 2: Phải đọc text gốc "Lời thoại gốc không có bản dịch" với cùng prompt mỏ neo đồng nhất
+        # Lượt 2: Phải đọc text gốc "Lời thoại gốc không có bản dịch" với instruct
         assert calls[1].kwargs.get("text") == "Lời thoại gốc không có bản dịch"
-        assert calls[1].kwargs.get("voice_clone_prompt") is anchor_prompt
+        assert calls[1].kwargs.get("instruct") == expected_instruct
+        assert "voice_clone_prompt" not in calls[1].kwargs or calls[1].kwargs.get("voice_clone_prompt") is None
 
-        # Lượt 3: Phải lùi về text gốc "Lời thoại với bản dịch khoảng trắng" với cùng prompt mỏ neo đồng nhất
+        # Lượt 3: Phải lùi về text gốc "Lời thoại với bản dịch khoảng trắng" với instruct
         assert calls[2].kwargs.get("text") == "Lời thoại với bản dịch khoảng trắng"
-        assert calls[2].kwargs.get("voice_clone_prompt") is anchor_prompt
+        assert calls[2].kwargs.get("instruct") == expected_instruct
+        assert "voice_clone_prompt" not in calls[2].kwargs or calls[2].kwargs.get("voice_clone_prompt") is None
     finally:
         if os.path.exists(tmp_out):
             os.remove(tmp_out)
@@ -1002,15 +995,12 @@ def test_synthesize_blocks_nameless_and_none_speaker_exact_preset_kwargs():
     try:
         report = engine.synthesize_blocks(blocks, total_duration=5.0, output_path=tmp_out)
         assert report.status == "success"
-        # 2 lượt sinh câu thoại
+        # 2 lượt sinh câu thoại bằng instruct
         assert mock_model.generate.call_count == 2
 
-        block_calls = mock_model.generate.call_args_list
-        shared_prompt = block_calls[0].kwargs.get("voice_clone_prompt")
-        assert shared_prompt is not None
-
-        for call in block_calls:
-            assert call.kwargs.get("voice_clone_prompt") is shared_prompt
+        for call in mock_model.generate.call_args_list:
+            assert call.kwargs.get("instruct") == expected_instruct
+            assert "voice_clone_prompt" not in call.kwargs or call.kwargs.get("voice_clone_prompt") is None
     finally:
         if os.path.exists(tmp_out):
             os.remove(tmp_out)
@@ -1069,16 +1059,13 @@ def test_synthesize_blocks_ignores_old_clone_profiles_in_single_unified_mode():
         assert report.status == "success"
 
         # Kiểm tra _get_or_create_prompt_for_audio TUYỆT ĐỐI không được gọi đến tệp mẫu cũ
-        assert engine._get_or_create_prompt_for_audio.call_count == 1
-        called_audio = engine._get_or_create_prompt_for_audio.call_args[0][0]
-        assert "old_sample_a.wav" not in called_audio
-        assert "anchor_" in called_audio
+        assert engine._get_or_create_prompt_for_audio.call_count == 0
 
-        # Kiểm tra khối câu thoại được sinh bằng prompt mỏ neo đồng nhất, không dùng tệp cũ
+        # Kiểm tra khối câu thoại được sinh bằng pure design, không dùng clone tệp cũ
         assert mock_model.generate.call_count == 1
         block_kwargs = mock_model.generate.call_args_list[0].kwargs
-        assert block_kwargs.get("voice_clone_prompt") is not None
-        assert block_kwargs.get("ref_audio") != "old_sample_a.wav"
+        assert block_kwargs.get("instruct") == expected_instruct
+        assert "voice_clone_prompt" not in block_kwargs or block_kwargs.get("voice_clone_prompt") is None
     finally:
         if os.path.exists(tmp_out):
             os.remove(tmp_out)
@@ -1384,4 +1371,72 @@ def test_on_analysis_success_handles_none_entries_gracefully():
     assert ytdlp.is_playlist is True
     assert len(ytdlp.playlist_entries) == 2
     assert ytdlp.playlist_table.rowCount() == 2
+
+
+def test_reset_all_voices_triggers_speaker_detection_when_video_present():
+    _ensure_qapp()
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.translator import SubtitleBlock
+    from unittest.mock import MagicMock
+
+    interface = OmniVoiceInterface()
+    interface.chk_single_unified_voice.setChecked(True)
+    interface.subtitle_blocks = [
+        SubtitleBlock(index=1, start_time=0.0, end_time=1.5, text="Câu thoại mẫu", voice_instruct="male, instruct")
+    ]
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+        tmp_video = f.name
+
+    try:
+        interface.current_video_path = tmp_video
+        mock_detect = MagicMock()
+        interface._run_auto_detect_speakers = mock_detect
+
+        # Gọi hàm đặt lại giọng
+        interface._reset_all_character_voices()
+
+        # Kiểm tra chế độ 1 giọng đọc đã được tắt để nhường chỗ cho giọng gốc
+        assert interface.chk_single_unified_voice.isChecked() is False
+        assert interface.subtitle_blocks[0].voice_instruct == ""
+        # Đã kích hoạt trích xuất lại giọng gốc từ video
+        mock_detect.assert_called_once()
+    finally:
+        if os.path.exists(tmp_video):
+            os.remove(tmp_video)
+
+
+def test_on_speakers_detected_preserves_video_source_audio_samples():
+    _ensure_qapp()
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+    from src.ai_engines.translator import SubtitleBlock
+
+    interface = OmniVoiceInterface()
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        sample_wav = f.name
+
+    try:
+        interface.subtitle_blocks = [
+            SubtitleBlock(index=1, start_time=0.0, end_time=1.5, text="Câu thoại của nhân vật A", speaker="Nhân vật A")
+        ]
+        detected = {
+            "Nhân vật A": CharacterVoiceProfile(
+                speaker_id="spk_0",
+                display_name="Nhân vật A",
+                method="clone",
+                source_audio_path=sample_wav,
+            )
+        }
+        interface._on_speakers_detected(detected)
+
+        # Kiểm tra hồ sơ nhân vật giữ nguyên phương thức clone và đường dẫn tệp âm thanh gốc từ video
+        assert "Nhân vật A" in interface.speaker_profiles
+        prof = interface.speaker_profiles["Nhân vật A"]
+        assert prof.method == "clone"
+        assert prof.source_audio_path == sample_wav
+        assert interface.subtitle_blocks[0].voice_ref_path == sample_wav
+        assert interface.subtitle_blocks[0].voice_instruct == ""
+    finally:
+        if os.path.exists(sample_wav):
+            os.remove(sample_wav)
 
