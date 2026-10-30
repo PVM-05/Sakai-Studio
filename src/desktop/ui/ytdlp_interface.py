@@ -15,7 +15,10 @@ from qfluentwidgets import (ScrollArea, CardWidget, LineEdit, PushButton,
                            PrimaryPushButton, ComboBox, ProgressBar, PlainTextEdit,
                            BodyLabel, TitleLabel, FluentIcon, InfoBar, TableWidget,
                            TransparentToolButton)
-import yt_dlp
+try:
+    import yt_dlp
+except ImportError:
+    yt_dlp = None
 from src.core.config import config, tr
 from src.core.tools.folder_memory import FolderMemoryDialog
 
