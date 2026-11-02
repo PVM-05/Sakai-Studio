@@ -320,8 +320,11 @@ def normalize_vietnamese_numbers_and_text(text: str) -> str:
     s = re.sub(r"\b[vV]?\d+(\.\d+){2,}\b", repl_version, s)
     s = re.sub(r"\b[vV]\d+\.\d+\b", repl_version, s)
 
-    # 6. Phân tách hàng nghìn có dấu chấm: 10.000, 1.000.000
-    s = re.sub(r"\b\d{1,3}(\.\d{3})+\b", lambda m: m.group(0).replace(".", ""), s)
+    # 6. Phân tách hàng nghìn có dấu chấm: 1.000.000 (từ 2 nhóm trở lên), .000 tròn hoặc theo sau bởi đơn vị tiền tệ
+    # Không xóa dấu chấm của số thập phân đơn lẻ như 3.141
+    s = re.sub(r"\b\d{1,3}(\.\d{3}){2,}\b", lambda m: m.group(0).replace(".", ""), s)
+    s = re.sub(r"\b\d{1,3}\.000\b", lambda m: m.group(0).replace(".", ""), s)
+    s = re.sub(r"\b\d{1,3}\.\d{3}(?=\s*(?:đồng|đ|vnd|usd|k|triệu|tỷ))\b", lambda m: m.group(0).replace(".", ""), s, flags=re.IGNORECASE)
 
     # 7. Phần trăm và đơn vị đo lường
     s = re.sub(r"(?<=\d)\s*%", " phần trăm", s)
@@ -558,6 +561,9 @@ def build_voice_design_instruct(
     return ", ".join(parts) if parts else None
 
 
+# Câu thoại mẫu chuẩn tiếng Việt dùng để tạo mẫu mỏ neo khóa âm sắc nhất quán
+ANCHOR_SAMPLE_VI = "Xin chào các bạn, đây là giọng đọc mẫu tiếng Việt chuẩn để đồng bộ âm sắc xuyên suốt toàn bộ video."
+
 # Danh mục 22 giọng đọc mẫu tiếng Việt đa phong cách kèm câu thoại nghe thử
 VIETNAMESE_VOICE_CATALOG: Dict[str, Dict[str, str]] = {
     "Nam Thanh Niên Chuẩn - Thuyết Minh Và Tin Tức": {
@@ -753,9 +759,9 @@ VIETNAMESE_VOICE_CATALOG: Dict[str, Dict[str, str]] = {
         "gender": "male",
         "accent": "nam",
         "age_group": "young_adult",
-        "pitch": "moderate",
+        "pitch": "high",
         "style": "soi_noi",
-        "instruct": "male, young adult, moderate pitch",
+        "instruct": "male, young adult, high pitch",
         "sample_vi": "[laughter] Thật sự không thể ngờ tình huống bất ngờ đó lại diễn ra ngay trước mắt chúng tôi!",
     },
     "Nữ Xúc Động Sâu Lắng - Kèm Tiếng Thở Dài Biểu Cảm": {
@@ -764,9 +770,9 @@ VIETNAMESE_VOICE_CATALOG: Dict[str, Dict[str, str]] = {
         "gender": "female",
         "accent": "trung",
         "age_group": "young_adult",
-        "pitch": "moderate",
+        "pitch": "low",
         "style": "tam_su",
-        "instruct": "female, young adult, moderate pitch",
+        "instruct": "female, young adult, low pitch",
         "sample_vi": "[sigh] Giá như ngày hôm ấy chúng ta kịp nói với nhau một lời chân thành.",
     },
     "Nam Phong Cách Âu Mỹ Đọc Tiếng Việt": {
@@ -925,7 +931,7 @@ class TTSEngine:
         # Cấu hình đa giọng đọc / phân vai người nói
         # multi_speaker_mode: "single" | "auto_video_cluster" | "per_line_video_clone" | "auto_srt_text" | "custom_table"
         self.multi_speaker_mode = multi_speaker_mode or "single"
-        self.max_speakers = max(1, min(8, int(max_speakers)))
+        self.max_speakers = max(1, min(16, int(max_speakers)))
         self.speaker_profiles: Dict[str, Dict[str, Any]] = speaker_profiles or {}
         if speaker_model_path:
             self.speaker_model_path = str(speaker_model_path).strip()
@@ -1022,8 +1028,13 @@ class TTSEngine:
         target_lang = language or (getattr(app_config.targetLanguage, "value", "vi") if hasattr(app_config, "targetLanguage") else "vi")
         if target_lang == "zh-CN":
             target_lang = "zh"
-        if target_lang not in cls.get_supported_languages():
+        if target_lang not in LANG_IDS and target_lang not in LANG_NAMES and target_lang != "Auto":
             target_lang = "vi"
+
+        resume_cache_dir = getattr(app_config.mmoTTSResumeCacheDir, "value", "") if hasattr(app_config, "mmoTTSResumeCacheDir") else ""
+        speaker_model_path = getattr(app_config.mmoSpeakerModelPath, "value", "") if hasattr(app_config, "mmoSpeakerModelPath") else ""
+        enable_ai_vocal_sep = getattr(app_config.mmoTTSEnableAiVocalSeparation, "value", True) if hasattr(app_config, "mmoTTSEnableAiVocalSeparation") else True
+        overflow_strategy = getattr(app_config.mmoTTSOverflowStrategy, "value", "extend") if hasattr(app_config, "mmoTTSOverflowStrategy") else "extend"
 
         return cls(
             parent_logger=parent_logger,
@@ -1051,6 +1062,10 @@ class TTSEngine:
             normalize_text=normalize_text,
             enable_flashinfer=enable_flashinfer,
             voice_prompt_cache_dir=prompt_dir,
+            resume_cache_dir=resume_cache_dir,
+            speaker_model_path=speaker_model_path,
+            enable_ai_vocal_separation=enable_ai_vocal_sep,
+            overflow_strategy=overflow_strategy,
             multi_speaker_mode=multi_speaker_mode,
             max_speakers=max_speakers,
             ducking_mode=ducking_mode,
@@ -1118,6 +1133,7 @@ class TTSEngine:
             self.model = OmniVoice.from_pretrained(
                 self.model_name_or_path,
                 device_map=device,
+                dtype=dtype,
                 torch_dtype=dtype,
                 low_cpu_mem_usage=True,
                 load_asr=self.load_asr,
@@ -1152,29 +1168,26 @@ class TTSEngine:
                 torch.cuda.empty_cache()
             self.log("Đã giải phóng hoàn toàn bộ nhớ VRAM.")
 
-    def _transcribe_ref_audio_fallback(self, ref_audio_path: str) -> str:
+    def _transcribe_ref_audio_fallback(self, ref_audio_path: str, use_global: bool = False) -> str:
         """
         Tự động nhận diện văn bản của tệp âm thanh giọng mẫu nếu người dùng không nhập ref_text.
         Ưu tiên dùng faster-whisper nội bộ của Sakai Studio để tiết kiệm VRAM trước khi dùng ASR của OmniVoice.
         """
-        if self.ref_text and self.ref_text.strip():
+        if use_global and self.ref_text and self.ref_text.strip():
             return self.ref_text.strip()
 
         try:
-            from src.ai_engines.whisper_fallback import WhisperFallback
-            wf = WhisperFallback(model_size="base")
-            if wf.is_available():
-                self.log("Đang tự động nhận diện nội dung giọng mẫu bằng Whisper...")
-                segs = wf.transcribe_audio(ref_audio_path)
-                if segs:
-                    transcript = " ".join(s.get("text", "").strip() for s in segs if s.get("text")).strip()
-                    if transcript:
-                        self.log(f"Nội dung giọng mẫu nhận diện được: {transcript}")
-                        return transcript
+            from src.ai_engines.whisper_fallback import run_whisper_segments
+            segs = run_whisper_segments(ref_audio_path, model_size="small", language=None)
+            if segs:
+                transcript = " ".join(t.strip() for _, _, t in segs if t and t.strip()).strip()
+                if transcript:
+                    self.log(f"Nội dung giọng mẫu nhận diện được từ Whisper: {transcript}")
+                    return transcript
         except Exception as e:
-            logger.debug(f"WhisperFallback không khả dụng cho giọng mẫu: {e}")
+            logger.debug(f"Whisper fallback không khả dụng cho giọng mẫu: {e}")
 
-        # Nếu WhisperFallback không trả về kết quả, để OmniVoice tự xử lý hoặc dùng chuỗi mặc định
+        # Nếu Whisper fallback không trả về kết quả, để OmniVoice tự xử lý hoặc dùng chuỗi mặc định
         return ""
 
     def set_reference_voice(self, ref_audio_path: str, ref_text: Optional[str] = None) -> bool:
@@ -1200,7 +1213,7 @@ class TTSEngine:
         try:
             resolved_ref_text = self.ref_text
             if not resolved_ref_text:
-                resolved_ref_text = self._transcribe_ref_audio_fallback(ref_audio_path)
+                resolved_ref_text = self._transcribe_ref_audio_fallback(ref_audio_path, use_global=True)
 
             self.current_prompt = self.model.create_voice_clone_prompt(
                 ref_audio=ref_audio_path,
@@ -1345,7 +1358,7 @@ class TTSEngine:
 
             resolved_text = ref_text
             if not resolved_text and isinstance(audio_source, str) and os.path.exists(audio_source):
-                resolved_text = self._transcribe_ref_audio_fallback(audio_source)
+                resolved_text = self._transcribe_ref_audio_fallback(audio_source, use_global=False)
 
             if self.model is None:
                 return None
@@ -1362,110 +1375,124 @@ class TTSEngine:
             self.log(f"Không thể tạo mẫu giọng cho {cache_key}: {e}")
             return None
 
-    def _get_or_create_preset_anchor_prompt(
+    def _build_anchor_prompt(
         self,
+        key: str,
         instruct: Optional[str] = None,
-        preset_name: Optional[str] = None,
+        sample_text: Optional[str] = None,
+        tries: int = 4,
     ) -> Tuple[Optional[VoiceClonePrompt], Optional[str]]:
         """
-        Tạo hoặc tải mẫu đặc trưng giọng nói mỏ neo (Anchor Voice Prompt) cho chế độ giọng đồng nhất hoặc nhân vật preset,
-        bảo đảm âm sắc, cao độ và ngữ điệu đồng nhất 100% giữa tất cả các câu trong tệp phụ đề.
-        Trả về bộ đôi (VoiceClonePrompt, anchor_wav_path).
+        Tạo hoặc nạp mẫu giọng mỏ neo (Anchor Voice Prompt) bằng Voice Design với nhiều hạt số ngẫu nhiên,
+        chọn mẫu sạch nhất đạt chuẩn chất lượng âm thanh rồi tạo VoiceClonePrompt để dùng lại cho mọi câu.
+        Bảo đảm âm sắc, cao độ và ngữ điệu đồng nhất 100% giữa tất cả các câu trong tệp phụ đề.
         """
-        target_instruct = instruct or self.instruct
-        if not target_instruct:
-            target_instruct = DEFAULT_SPEAKER_PRESETS["Người nói 1"]["instruct"]
+        target_ins = (instruct or self.instruct or DEFAULT_SPEAKER_PRESETS["Người nói 1"]["instruct"]).strip()
+        target_sample = sample_text or ANCHOR_SAMPLE_VI
 
-        preset_slug = "unified_anchor"
-        sample_text = "Xin chào các bạn, đây là giọng đọc mẫu tiếng Việt chuẩn để đồng bộ âm sắc."
-
-        resolved_preset = preset_name or getattr(self, "preset_name", None)
-        if resolved_preset and resolved_preset in VIETNAMESE_VOICE_CATALOG:
-            preset_slug = VIETNAMESE_VOICE_CATALOG[resolved_preset].get("slug", "unified_anchor")
-            sample_text = VIETNAMESE_VOICE_CATALOG[resolved_preset].get("sample_vi", sample_text)
-            if not target_instruct:
-                target_instruct = VIETNAMESE_VOICE_CATALOG[resolved_preset]["instruct"]
-        else:
-            for info in VIETNAMESE_VOICE_CATALOG.values():
-                if info.get("instruct") == target_instruct or info.get("name") == target_instruct:
-                    preset_slug = info.get("slug", "unified_anchor")
-                    sample_text = info.get("sample_vi", sample_text)
-                    break
-
-        ins_hash = hashlib.sha1((target_instruct or "").strip().encode("utf-8")).hexdigest()[:8]
-        cache_key = f"anchor_preset_{preset_slug}_{ins_hash}"
+        tag = hashlib.sha1(
+            f"{key}|{target_ins}|{self.model_name_or_path}|{self.language}".encode("utf-8")
+        ).hexdigest()[:10]
 
         anchor_dir = getattr(self, "voice_prompt_cache_dir", None) or os.path.join(BASE_DIR, "output", "voice_prompts")
         os.makedirs(anchor_dir, exist_ok=True)
-        anchor_wav_path = os.path.join(anchor_dir, f"anchor_{preset_slug}_{ins_hash}.wav")
-        anchor_pt_path = os.path.join(anchor_dir, f"anchor_{preset_slug}_{ins_hash}.pt")
+        wav_path = os.path.join(anchor_dir, f"anchor_{tag}.wav")
+        pt_path = os.path.join(anchor_dir, f"anchor_{tag}.pt")
+        ck = f"anchor_{tag}"
 
-        if cache_key in self._speaker_prompt_cache:
-            return self._speaker_prompt_cache[cache_key], anchor_wav_path
+        if ck in self._speaker_prompt_cache:
+            return self._speaker_prompt_cache[ck], wav_path
 
-        try:
-            self.load_model()
-            if self.model is None:
-                return None, None
+        if os.path.exists(pt_path) and os.path.exists(wav_path) and os.path.getsize(wav_path) > 1000:
+            try:
+                if hasattr(VoiceClonePrompt, "load"):
+                    p = VoiceClonePrompt.load(pt_path)
+                    if p is not None:
+                        self._speaker_prompt_cache[ck] = p
+                        return p, wav_path
+            except Exception:
+                pass
 
-            # 1. Thử nạp từ tệp prompt .pt đã lưu từ trước
-            if os.path.exists(anchor_pt_path) and os.path.getsize(anchor_pt_path) > 100:
+        self.load_model()
+        if self.model is None:
+            return None, None
+
+        best, best_score = None, -1.0
+        base = zlib.crc32(tag.encode("utf-8")) % 100000
+
+        for t in range(tries):
+            seed = base + t * 7919
+            if torch is not None:
                 try:
-                    if hasattr(VoiceClonePrompt, "load"):
-                        prompt = VoiceClonePrompt.load(anchor_pt_path)
-                        if prompt is not None:
-                            self._speaker_prompt_cache[cache_key] = prompt
-                            return prompt, anchor_wav_path
+                    torch.manual_seed(seed)
+                    if torch.cuda.is_available():
+                        torch.cuda.manual_seed_all(seed)
                 except Exception:
                     pass
 
-            # 2. Nếu chưa có tệp wav mỏ neo, sinh đoạn âm thanh mẫu bằng Voice Design với seed cố định
-            if not os.path.exists(anchor_wav_path) or os.path.getsize(anchor_wav_path) < 1000:
-                torch_mod = getattr(sys.modules.get("torch"), "manual_seed", None)
-                if torch_mod is not None:
-                    try:
-                        import torch
-                        torch.manual_seed(42)
-                        if torch.cuda.is_available():
-                            torch.cuda.manual_seed_all(42)
-                    except Exception:
-                        pass
-
+            try:
                 gen_config = self.build_generation_config()
                 res = self.model.generate(
-                    text=sample_text,
+                    text=target_sample,
                     language=self.language or "vi",
-                    instruct=target_instruct,
+                    instruct=target_ins,
                     generation_config=gen_config,
                     normalize_text=False,
                 )
                 if isinstance(res, (list, tuple)) and len(res) > 0:
                     first = res[0]
-                    anchor_arr = first.detach().cpu().numpy() if hasattr(first, "detach") else np.asarray(first)
+                    arr = first.detach().cpu().numpy() if hasattr(first, "detach") else np.asarray(first)
                 else:
-                    anchor_arr = np.asarray(res, dtype=np.float32)
-                anchor_arr = np.squeeze(anchor_arr).astype(np.float32)
-                if anchor_arr.size > 0:
-                    sf.write(anchor_wav_path, anchor_arr, self.sample_rate)
+                    arr = np.asarray(res, dtype=np.float32)
+                arr = np.squeeze(arr).astype(np.float32)
+                ok, _ = is_audio_quality_acceptable_for_voice_lock(arr, self.sample_rate, min_duration_sec=2.5)
+                if not ok:
+                    continue
+                score = float(np.sqrt(np.mean(arr ** 2))) * min(len(arr) / float(self.sample_rate) / 5.0, 1.0)
+                if score > best_score:
+                    best, best_score = arr, score
+            except Exception as e:
+                self.log(f"Lỗi khi thử tạo mẫu mỏ neo lần {t + 1}: {e}")
 
-            # 3. Tạo VoiceClonePrompt từ tệp wav mỏ neo
-            if os.path.exists(anchor_wav_path) and os.path.getsize(anchor_wav_path) >= 1000:
-                prompt = self._get_or_create_prompt_for_audio(
-                    anchor_wav_path,
-                    cache_key=cache_key,
-                    ref_text=sample_text,
-                )
-                if prompt is not None:
-                    try:
-                        if hasattr(prompt, "save"):
-                            prompt.save(anchor_pt_path)
-                    except Exception:
-                        pass
-                    return prompt, anchor_wav_path
-        except Exception as e:
-            self.log(f"Không thể tạo mẫu giọng mỏ neo cho {preset_slug}: {e}")
+        if best is None:
+            self.log(f"Không thể tạo được mẫu mỏ neo đạt chuẩn chất lượng cho {key}.")
+            return None, None
+
+        sf.write(wav_path, best, self.sample_rate)
+        prompt = self.model.create_voice_clone_prompt(
+            ref_audio=wav_path,
+            ref_text=target_sample,
+            preprocess_prompt=False,
+        )
+        if prompt is not None:
+            if hasattr(prompt, "save"):
+                try:
+                    prompt.save(pt_path)
+                except Exception:
+                    pass
+            self._speaker_prompt_cache[ck] = prompt
+            return prompt, wav_path
 
         return None, None
+
+    def _get_or_create_preset_anchor_prompt(
+        self,
+        instruct: Optional[str] = None,
+        preset_name: Optional[str] = None,
+    ) -> Tuple[Optional[VoiceClonePrompt], Optional[str]]:
+        """Hàm tương thích ngược gọi _build_anchor_prompt."""
+        resolved_preset = preset_name or getattr(self, "preset_name", "unified")
+        target_ins = instruct or self.instruct
+        sample_text = ANCHOR_SAMPLE_VI
+        if resolved_preset in VIETNAMESE_VOICE_CATALOG:
+            s_vi = VIETNAMESE_VOICE_CATALOG[resolved_preset].get("sample_vi", "")
+            if len(s_vi.split()) >= 12:
+                sample_text = s_vi
+        return self._build_anchor_prompt(
+            key=f"preset_{resolved_preset}",
+            instruct=target_ins,
+            sample_text=sample_text,
+        )
 
     @staticmethod
     def _extract_acoustic_features(seg: np.ndarray, sr: int) -> Optional[np.ndarray]:
@@ -1654,6 +1681,12 @@ class TTSEngine:
 
         self._active_diarizer_session = None
 
+        # Xóa các mẫu giọng khóa tự động cũ và cache prompt nhân vật từ lần nhận diện trước
+        self.reset_speaker_locked_prompt()
+        keys_to_clean = [k for k in self._speaker_prompt_cache if k.startswith("character_") or k.startswith("char_")]
+        for k in keys_to_clean:
+            self._speaker_prompt_cache.pop(k, None)
+
         from .speaker_diarization import SpeakerDiarizationCoordinator, ConfidenceLevel
 
         cuda_avail = bool(torch is not None and getattr(torch, "cuda", None) is not None and torch.cuda.is_available())
@@ -1666,28 +1699,28 @@ class TTSEngine:
         )
 
         self.last_diarization_error = ""
-        self.log(f"Đang tách kênh giọng nói từ video để nhận diện đa nhân vật: {os.path.basename(video_path)}...")
+        self.log(f"Đang chuẩn bị âm thanh từ video để nhận diện đa nhân vật: {os.path.basename(video_path)}...")
         separator = VoiceSeparator()
         temp_vocals = os.path.join(self.voice_prompt_cache_dir, f"diarize_vocals_{uuid.uuid4().hex[:8]}.wav")
         temp_raw_audio = os.path.join(self.voice_prompt_cache_dir, f"diarize_audio_{uuid.uuid4().hex[:8]}.wav")
         source_audio_for_diarization = ""
 
         try:
-            ok = separator.separate_from_video(video_path, temp_vocals)
-            if ok and os.path.isfile(temp_vocals) and os.path.getsize(temp_vocals) > 0:
+            if enable_ai_vocal_separation:
                 try:
-                    _voc_info = sf.info(temp_vocals)
-                    if _voc_info.frames > 0:
-                        _sample_frames = min(_voc_info.frames, 32000)
-                        _check_data, _ = sf.read(temp_vocals, stop=_sample_frames)
-                        if np.max(np.abs(_check_data)) >= 1e-4:
-                            source_audio_for_diarization = temp_vocals
-                except Exception:
-                    pass
+                    ok = separator.separate_from_video(video_path, temp_vocals)
+                    if ok and os.path.isfile(temp_vocals) and os.path.getsize(temp_vocals) > 0:
+                        _voc_info = sf.info(temp_vocals)
+                        if _voc_info.frames > 0:
+                            _sample_frames = min(_voc_info.frames, 32000)
+                            _check_data, _ = sf.read(temp_vocals, stop=_sample_frames)
+                            if np.max(np.abs(_check_data)) >= 1e-4:
+                                source_audio_for_diarization = temp_vocals
+                except Exception as e:
+                    self.log(f"Tách giọng AI không khả dụng hoặc lỗi: {e}. Sử dụng âm thanh gốc.")
 
             if not source_audio_for_diarization:
-                # Nếu tách giọng thất bại hoặc bị lọc thành im lặng, dùng âm thanh gốc từ video/audio
-                self.log("Không tách được giọng sạch; đang thử trích xuất âm thanh gốc để phân tích.")
+                # Trích xuất âm thanh gốc chất lượng cao từ video
                 if separator._extract_audio(video_path, temp_raw_audio) and os.path.isfile(temp_raw_audio):
                     source_audio_for_diarization = temp_raw_audio
                 elif os.path.isfile(video_path):
@@ -1744,7 +1777,40 @@ class TTSEngine:
                     prof_data = prof.to_dict()
                 else:
                     prof_data = dict(prof)
-                prof_data["pitch_hz"] = 150.0
+
+                # Đo đặc trưng âm học thực tế (F0 trung vị, giới tính, cao độ) từ tệp mẫu âm thanh
+                src_path = prof_data.get("source_audio_path") or getattr(prof, "source_audio_path", "")
+                f0 = 150.0
+                gender = "auto"
+                pitch_lvl = "moderate"
+                if src_path and os.path.exists(src_path):
+                    try:
+                        audio_d, a_sr = sf.read(src_path, dtype="float32")
+                        if audio_d.ndim > 1:
+                            audio_d = np.mean(audio_d, axis=1)
+                        feat = self._extract_acoustic_features(audio_d, a_sr)
+                        if feat is not None:
+                            f0 = float(feat[0] * 200.0)
+                            if f0 > 250.0:
+                                gender = "child"
+                                pitch_lvl = "very_high"
+                            elif f0 > 165.0:
+                                gender = "female"
+                                pitch_lvl = "high" if f0 > 210.0 else "moderate"
+                            else:
+                                gender = "male"
+                                pitch_lvl = "very_low" if f0 < 100.0 else ("low" if f0 < 130.0 else "moderate")
+                    except Exception as feat_err:
+                        self.log(f"Không thể đo đặc trưng âm học của {spk_name}: {feat_err}")
+
+                prof_data["pitch_hz"] = f0
+                prof_data["gender"] = gender
+                prof_data["pitch_level"] = pitch_lvl
+                if hasattr(prof, "gender"):
+                    prof.gender = gender
+                if hasattr(prof, "pitch_level"):
+                    prof.pitch_level = pitch_lvl
+
                 ratio = getattr(prof, "high_confidence_ratio", 1.0)
                 prof_data["high_confidence_ratio"] = float(ratio)
                 prof_data["description"] = f"Độ tin cậy: {int(ratio * 100)}%"
@@ -2484,8 +2550,35 @@ class TTSEngine:
         if not (self.multi_speaker_mode == "single" and self.mode == "design"):
             self._prepare_and_lock_character_prompts(blocks)
 
-        # Khi chạy chế độ thiết kế giọng tiếng Việt, sử dụng trực tiếp chỉ thị thiết kế giọng
-        # kết hợp cố định hạt ngẫu nhiên để bảo đảm âm sắc tự nhiên, trong trẻo và không bị bóp méo.
+        unified_anchor_prompt: Optional[VoiceClonePrompt] = None
+        unified_anchor_wav: Optional[str] = None
+        if self.multi_speaker_mode == "single" and self.mode == "design":
+            target_ins = self.instruct
+            if not target_ins and blocks:
+                target_ins = getattr(blocks[0], "voice_instruct", "")
+            if not target_ins:
+                target_ins = DEFAULT_SPEAKER_PRESETS["Người nói 1"]["instruct"]
+
+            resolved_preset = getattr(self, "preset_name", "unified")
+            sample_text = ANCHOR_SAMPLE_VI
+            if resolved_preset in VIETNAMESE_VOICE_CATALOG:
+                s_vi = VIETNAMESE_VOICE_CATALOG[resolved_preset].get("sample_vi", "")
+                if len(s_vi.split()) >= 12:
+                    sample_text = s_vi
+
+            unified_anchor_prompt, unified_anchor_wav = self._build_anchor_prompt(
+                key=f"unified_{resolved_preset}",
+                instruct=target_ins,
+                sample_text=sample_text,
+            )
+            if unified_anchor_prompt is not None:
+                self.log(
+                    f"Đã tạo và khóa mẫu giọng mỏ neo đồng nhất cho toàn bộ tệp phụ đề: {os.path.basename(unified_anchor_wav)}"
+                )
+            else:
+                self.log(
+                    "Cảnh báo: Không thể tạo mẫu giọng mỏ neo đồng nhất. Chuyển sang chế độ thiết kế giọng trực tiếp từng câu."
+                )
 
         if self.mode == "clone" and self.current_prompt is None and self.multi_speaker_mode == "single":
             if not self.auto_extract_ref and self.ref_audio_path and os.path.exists(self.ref_audio_path):
@@ -2559,18 +2652,24 @@ class TTSEngine:
 
             # 2. Chế độ Đa nhân vật hoặc dự phòng khi nhái giọng từng câu không đủ chất lượng
             active_block_mode: Optional[str] = None
-            if self.multi_speaker_mode == "single" and (self.mode == "design" or not (self.speaker_profiles and len(self.speaker_profiles) > 1)):
+            if self.multi_speaker_mode == "single" and (self.mode == "design" or not (self.speaker_profiles and spk_key in self.speaker_profiles)):
                 # Chế độ 1 giọng đọc đồng nhất: Áp dụng một mẫu giọng duy nhất cho mọi câu thoại trong tệp phụ đề
                 spk_label = "Giọng đồng nhất"
                 if self.mode == "design":
-                    active_block_mode = "design"
-                    override_instruct = (
-                        self.instruct
-                        or getattr(blk, "voice_instruct", "")
-                        or DEFAULT_SPEAKER_PRESETS["Người nói 1"]["instruct"]
-                    )
-                    override_prompt = None
-                    override_ref = None
+                    if unified_anchor_prompt is not None:
+                        active_block_mode = "clone"
+                        override_prompt = unified_anchor_prompt
+                        override_ref = unified_anchor_wav
+                        override_instruct = None
+                    else:
+                        active_block_mode = "design"
+                        override_instruct = (
+                            self.instruct
+                            or getattr(blk, "voice_instruct", "")
+                            or DEFAULT_SPEAKER_PRESETS["Người nói 1"]["instruct"]
+                        )
+                        override_prompt = None
+                        override_ref = None
                 elif self.mode == "clone":
                     active_block_mode = "clone"
                     if self.current_prompt is not None:
@@ -2582,13 +2681,8 @@ class TTSEngine:
                             ref_text=self.ref_text,
                         )
                     if override_prompt is None:
-                        active_block_mode = "design"
-                        override_instruct = (
-                            self.instruct
-                            or getattr(blk, "voice_instruct", "")
-                            or DEFAULT_SPEAKER_PRESETS["Người nói 1"]["instruct"]
-                        )
-                        override_ref = None
+                        self.log("Cảnh báo: Không thể nạp đặc trưng giọng mẫu nhân bản trong chế độ một giọng.")
+                        raise RuntimeError(f"Không thể khởi tạo mẫu giọng nhân bản cho chế độ một giọng từ tệp: {self.ref_audio_path or 'chưa có'}")
             elif override_prompt is None and spk_key:
                 prof = self.speaker_profiles.get(spk_key, {}) if spk_key else {}
                 is_dict = isinstance(prof, dict)
@@ -2612,11 +2706,27 @@ class TTSEngine:
                     if not ins_cand and self.instruct:
                         ins_cand = self.instruct
 
-                    # Chế độ thiết kế giọng tiếng Việt thuần túy, không tạo clone trung gian tránh làm méo âm
-                    active_block_mode = "design"
-                    override_ref = None
-                    override_prompt = None
-                    override_instruct = ins_cand
+                    sample_text = ANCHOR_SAMPLE_VI
+                    if preset_name in VIETNAMESE_VOICE_CATALOG:
+                        s_vi = VIETNAMESE_VOICE_CATALOG[preset_name].get("sample_vi", "")
+                        if len(s_vi.split()) >= 12:
+                            sample_text = s_vi
+
+                    char_prompt, char_wav = self._build_anchor_prompt(
+                        key=f"char_{spk_key}_{preset_name}",
+                        instruct=ins_cand,
+                        sample_text=sample_text,
+                    )
+                    if char_prompt is not None:
+                        active_block_mode = "clone"
+                        override_prompt = char_prompt
+                        override_ref = char_wav
+                        override_instruct = None
+                    else:
+                        active_block_mode = "design"
+                        override_ref = None
+                        override_prompt = None
+                        override_instruct = ins_cand
                 else:
                     ref_cand = getattr(blk, "voice_ref_path", "") or (prof.get("ref_audio_path", "") or prof.get("source_audio_path", "") if is_dict else getattr(prof, "source_audio_path", ""))
                     character_prompt_key = f"character_{spk_key}" if spk_key else ""
@@ -2667,6 +2777,31 @@ class TTSEngine:
                                 preset_name = preset_keys[cluster_num % len(preset_keys)]
                                 override_instruct = VIETNAMESE_VOICE_CATALOG[preset_name]["instruct"]
                                 active_block_mode = "design"
+                            else:
+                                # spk_key == "Chưa xác định" hoặc rỗng: kế thừa người nói của câu liền trước (hoặc liền sau)
+                                neighbor_spk = None
+                                if i > 0 and getattr(blocks[i - 1], "speaker", "") not in ("", "Chưa xác định"):
+                                    neighbor_spk = getattr(blocks[i - 1], "speaker", "")
+                                elif i + 1 < len(blocks) and getattr(blocks[i + 1], "speaker", "") not in ("", "Chưa xác định"):
+                                    neighbor_spk = getattr(blocks[i + 1], "speaker", "")
+
+                                if neighbor_spk:
+                                    n_prof = self.speaker_profiles.get(neighbor_spk, {})
+                                    n_dict = isinstance(n_prof, dict)
+                                    n_prompt = self._speaker_prompt_cache.get(f"character_{neighbor_spk}")
+                                    if n_prompt is not None:
+                                        override_prompt = n_prompt
+                                        active_block_mode = "clone"
+                                        spk_label = f"{neighbor_spk} (kế thừa)"
+                                    else:
+                                        override_instruct = (
+                                            self._speaker_instruct_cache.get(neighbor_spk, "")
+                                            or (n_prof.get("instruct") or n_prof.get("voice_instruct") if n_dict else getattr(n_prof, "voice_instruct", ""))
+                                            or DEFAULT_SPEAKER_PRESETS.get(neighbor_spk, {}).get("instruct", "")
+                                        )
+                                        if override_instruct:
+                                            active_block_mode = "design"
+                                            spk_label = f"{neighbor_spk} (kế thừa)"
 
             if active_block_mode == "design":
                 method_desc = f"Thiết kế giọng: {override_instruct[:30]}..." if override_instruct else "Thiết kế giọng"

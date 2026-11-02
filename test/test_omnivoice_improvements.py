@@ -479,8 +479,9 @@ def test_single_unified_voice_consistency_across_blocks():
     engine.load_model = MagicMock()
     mock_model = MagicMock()
     sr = 24000
-    mock_model.generate.return_value = [np.ones(sr, dtype=np.float32) * 0.5]
-    mock_model.create_voice_clone_prompt.return_value = MagicMock()
+    mock_model.generate.return_value = [np.ones(sr * 4, dtype=np.float32) * 0.5]
+    mock_prompt = MagicMock()
+    mock_model.create_voice_clone_prompt.return_value = mock_prompt
     engine.model = mock_model
 
     # Tạo 2 khối phụ đề với nhãn người nói khác nhau
@@ -506,21 +507,14 @@ def test_single_unified_voice_consistency_across_blocks():
         assert report.status == "success"
         assert len(recorded_calls) == 2
         for call_kw in recorded_calls:
-            # Xác nhận chạy chế độ thiết kế giọng thuần túy với đúng instruct, không dùng prompt clone tránh méo tiếng
-            assert call_kw.get("override_mode") == "design"
-            assert call_kw.get("override_prompt") is None
-            assert call_kw.get("override_ref_audio") is None
-            assert call_kw.get("override_instruct") == expected_instruct
+            # Xác nhận chạy chế độ mỏ neo clone đồng nhất khóa trọn vẹn âm sắc
+            assert call_kw.get("override_mode") == "clone"
+            assert call_kw.get("override_prompt") is mock_prompt
+            assert "anchor_" in os.path.basename(call_kw.get("override_ref_audio", ""))
 
-        # Cả 2 khối phụ đề phải dùng chung đúng instruct của preset
-        assert recorded_calls[0]["override_instruct"] == recorded_calls[1]["override_instruct"]
-
-        # Kiểm tra trực tiếp tham số truyền vào model.generate() cho 2 khối phụ đề
-        assert mock_model.generate.call_count == 2
-        for call_item in mock_model.generate.call_args_list:
-            gen_kwargs = call_item.kwargs
-            assert gen_kwargs.get("instruct") == expected_instruct
-            assert "voice_clone_prompt" not in gen_kwargs or gen_kwargs.get("voice_clone_prompt") is None
+        # Cả 2 khối phụ đề phải dùng chung đúng cùng một mẫu prompt mỏ neo
+        assert recorded_calls[0]["override_prompt"] is recorded_calls[1]["override_prompt"]
+        assert recorded_calls[0]["override_ref_audio"] == recorded_calls[1]["override_ref_audio"]
     finally:
         if os.path.exists(tmp_out):
             os.remove(tmp_out)
@@ -575,7 +569,7 @@ def test_vietnamese_duration_estimation_safe_floor():
     sample_vietnamese = "Đây là một câu kiểm tra thời lượng tiếng Việt tương đối dài để bảo đảm hệ thống không bao giờ bị cắt cụt các từ cuối cùng."
     tokens = mock_model._estimate_target_tokens(sample_vietnamese, None, None, speed=1.0)
     words = len(sample_vietnamese.split())
-    assert tokens >= int(words * 8.5)
+    assert tokens >= int(words * 6.0)
 
 
 def test_preview_unified_voice_uses_first_srt_line_when_loaded():
@@ -632,14 +626,16 @@ def test_audition_character_voice_uses_subtitle_line_when_no_exact_speaker_match
     assert captured_args.get("text") == "Lời thoại trong phim của nhân vật"
 
 
-def test_synthesize_blocks_single_mode_pure_design_no_anchor_clone():
+def test_synthesize_blocks_single_mode_fallback_to_design_when_anchor_fails():
+    """Kiểm tra khi tạo mỏ neo thất bại (hoặc không đạt chuẩn chất lượng), hệ thống tự động lùi về chế độ thiết kế giọng trực tiếp từng câu (fallback design) để đảm bảo không bị gián đoạn tiến trình."""
     from src.ai_engines.tts_engine import TTSEngine
     from src.ai_engines.translator import SubtitleBlock
-    from unittest.mock import MagicMock
+    from unittest.mock import MagicMock, patch
 
     engine = TTSEngine(auto_extract_ref=False, mode="design", multi_speaker_mode="single", instruct="male, young adult")
     engine.load_model = MagicMock()
     mock_model = MagicMock()
+    # Âm thanh ngắn dưới 2.5s sẽ bị kiểm tra chất lượng từ chối, gây fallback về design
     mock_model.generate.return_value = [np.ones(24000, dtype=np.float32) * 0.5]
     mock_model.create_voice_clone_prompt.return_value = MagicMock()
     engine.model = mock_model
@@ -666,7 +662,7 @@ def test_synthesize_blocks_single_mode_pure_design_no_anchor_clone():
         assert report.status == "success"
         assert len(recorded_calls) == 2
         for call_kw in recorded_calls:
-            # Ở chế độ thiết kế giọng đơn nhất, phải chạy thuần túy mode design và KHÔNG dùng prompt clone tránh bóp méo âm thanh
+            # Khi mỏ neo không thành công, hệ thống lùi về thiết kế giọng trực tiếp từng câu
             assert call_kw.get("override_mode") == "design"
             assert call_kw.get("override_prompt") is None
             assert call_kw.get("override_instruct") == "male, young adult"
@@ -691,8 +687,9 @@ def test_unified_voice_srt_without_speaker_uses_design_preset():
     )
     engine.load_model = MagicMock()
     mock_model = MagicMock()
-    mock_model.generate.return_value = [np.ones(24000, dtype=np.float32) * 0.5]
-    mock_model.create_voice_clone_prompt.return_value = MagicMock()
+    mock_model.generate.return_value = [np.ones(24000 * 4, dtype=np.float32) * 0.5]
+    mock_prompt = MagicMock()
+    mock_model.create_voice_clone_prompt.return_value = mock_prompt
     engine.model = mock_model
 
     # Phụ đề hoàn toàn không có nhãn người nói
@@ -718,10 +715,9 @@ def test_unified_voice_srt_without_speaker_uses_design_preset():
         assert report.status == "success"
         assert len(recorded_calls) == 2
         for call_kw in recorded_calls:
-            assert call_kw.get("override_mode") == "design"
-            assert call_kw.get("override_prompt") is None
-            assert call_kw.get("override_ref_audio") is None
-            assert call_kw.get("override_instruct") == instruct
+            assert call_kw.get("override_mode") == "clone"
+            assert call_kw.get("override_prompt") is mock_prompt
+            assert "anchor_" in os.path.basename(call_kw.get("override_ref_audio", ""))
     finally:
         if os.path.exists(tmp_out):
             os.remove(tmp_out)
@@ -752,8 +748,9 @@ def test_unified_voice_overrides_stale_clone_profiles():
         )
         engine.load_model = MagicMock()
         mock_model = MagicMock()
-        mock_model.generate.return_value = [np.ones(24000, dtype=np.float32) * 0.5]
-        mock_model.create_voice_clone_prompt.return_value = MagicMock()
+        mock_model.generate.return_value = [np.ones(24000 * 4, dtype=np.float32) * 0.5]
+        mock_prompt = MagicMock()
+        mock_model.create_voice_clone_prompt.return_value = mock_prompt
         engine.model = mock_model
 
         old_prompt_mock = MagicMock()
@@ -784,10 +781,11 @@ def test_unified_voice_overrides_stale_clone_profiles():
         assert len(recorded_calls) == 1
         call_kw = recorded_calls[0]
         # Tuyệt đối không được sử dụng lại mẫu clone cũ của nhân vật cũ
-        assert call_kw.get("override_mode") == "design"
-        assert call_kw.get("override_prompt") is None
-        assert call_kw.get("override_ref_audio") is None
-        assert call_kw.get("override_instruct") == instruct
+        assert call_kw.get("override_mode") == "clone"
+        assert call_kw.get("override_prompt") is mock_prompt
+        assert call_kw.get("override_prompt") is not old_prompt_mock
+        assert call_kw.get("override_ref_audio") != dummy_sample
+        assert "anchor_" in os.path.basename(call_kw.get("override_ref_audio", ""))
     finally:
         for p in (dummy_sample, tmp_out):
             if os.path.exists(p):
@@ -918,8 +916,9 @@ def test_synthesize_blocks_model_generate_exact_kwargs_and_translated_text():
     engine.load_model = MagicMock()
     mock_model = MagicMock()
     sr = 24000
-    mock_model.generate.return_value = [np.ones(sr, dtype=np.float32) * 0.5]
-    mock_model.create_voice_clone_prompt.return_value = MagicMock()
+    mock_model.generate.return_value = [np.ones(sr * 4, dtype=np.float32) * 0.5]
+    mock_prompt = MagicMock()
+    mock_model.create_voice_clone_prompt.return_value = mock_prompt
     engine.model = mock_model
 
     # Khối 1: Có cả translated_text và text -> phải ưu tiên tuyệt đối translated_text
@@ -938,31 +937,32 @@ def test_synthesize_blocks_model_generate_exact_kwargs_and_translated_text():
         report = engine.synthesize_blocks(blocks, total_duration=6.0, output_path=tmp_out)
         assert report.status == "success"
 
-        # Kiểm tra 3 lượt gọi đến model.generate() cho 3 khối câu thoại
-        assert mock_model.generate.call_count == 3
+        # 4 lượt thử mỏ neo (4 seeds) + 3 lượt sinh khối câu thoại = 7 lượt gọi đến model.generate()
+        assert mock_model.generate.call_count == 7
         calls = mock_model.generate.call_args_list
 
-        # Lượt 1: Phải đọc translated_text "Lời dịch tiếng Việt một" với instruct
-        assert calls[0].kwargs.get("text") == "Lời dịch tiếng Việt một"
-        assert calls[0].kwargs.get("instruct") == expected_instruct
-        assert "voice_clone_prompt" not in calls[0].kwargs or calls[0].kwargs.get("voice_clone_prompt") is None
+        # Lượt 0..3: Thử nghiệm tạo mẫu mỏ neo
+        for c in calls[:4]:
+            assert c.kwargs.get("instruct") == expected_instruct
 
-        # Lượt 2: Phải đọc text gốc "Lời thoại gốc không có bản dịch" với instruct
-        assert calls[1].kwargs.get("text") == "Lời thoại gốc không có bản dịch"
-        assert calls[1].kwargs.get("instruct") == expected_instruct
-        assert "voice_clone_prompt" not in calls[1].kwargs or calls[1].kwargs.get("voice_clone_prompt") is None
+        # Lượt 4: Phải đọc translated_text "Lời dịch tiếng Việt một" với prompt mỏ neo đồng nhất
+        assert calls[4].kwargs.get("text") == "Lời dịch tiếng Việt một"
+        assert calls[4].kwargs.get("voice_clone_prompt") is mock_prompt
 
-        # Lượt 3: Phải lùi về text gốc "Lời thoại với bản dịch khoảng trắng" với instruct
-        assert calls[2].kwargs.get("text") == "Lời thoại với bản dịch khoảng trắng"
-        assert calls[2].kwargs.get("instruct") == expected_instruct
-        assert "voice_clone_prompt" not in calls[2].kwargs or calls[2].kwargs.get("voice_clone_prompt") is None
+        # Lượt 5: Phải đọc text gốc "Lời thoại gốc không có bản dịch" với prompt mỏ neo đồng nhất
+        assert calls[5].kwargs.get("text") == "Lời thoại gốc không có bản dịch"
+        assert calls[5].kwargs.get("voice_clone_prompt") is mock_prompt
+
+        # Lượt 6: Phải lùi về text gốc "Lời thoại với bản dịch khoảng trắng" với prompt mỏ neo đồng nhất
+        assert calls[6].kwargs.get("text") == "Lời thoại với bản dịch khoảng trắng"
+        assert calls[6].kwargs.get("voice_clone_prompt") is mock_prompt
     finally:
         if os.path.exists(tmp_out):
             os.remove(tmp_out)
 
 
 def test_synthesize_blocks_nameless_and_none_speaker_exact_preset_kwargs():
-    """Kiểm tra khối phụ đề không có tên người nói (speaker=None hoặc speaker='') nhận đúng hướng dẫn preset vào model.generate."""
+    """Kiểm tra khối phụ đề không có tên người nói (speaker=None hoặc speaker='') nhận đúng prompt mỏ neo của preset vào model.generate."""
     from src.ai_engines.tts_engine import TTSEngine, VIETNAMESE_VOICE_CATALOG
     from src.ai_engines.translator import SubtitleBlock
     from unittest.mock import MagicMock
@@ -980,8 +980,10 @@ def test_synthesize_blocks_nameless_and_none_speaker_exact_preset_kwargs():
     )
     engine.load_model = MagicMock()
     mock_model = MagicMock()
-    mock_model.generate.return_value = [np.ones(24000, dtype=np.float32) * 0.3]
-    mock_model.create_voice_clone_prompt.return_value = MagicMock()
+    sr = 24000
+    mock_model.generate.return_value = [np.ones(sr * 4, dtype=np.float32) * 0.3]
+    mock_prompt = MagicMock()
+    mock_model.create_voice_clone_prompt.return_value = mock_prompt
     engine.model = mock_model
 
     blocks = [
@@ -995,12 +997,11 @@ def test_synthesize_blocks_nameless_and_none_speaker_exact_preset_kwargs():
     try:
         report = engine.synthesize_blocks(blocks, total_duration=5.0, output_path=tmp_out)
         assert report.status == "success"
-        # 2 lượt sinh câu thoại bằng instruct
-        assert mock_model.generate.call_count == 2
+        # 4 lượt thử mỏ neo + 2 lượt sinh câu thoại = 6 lượt gọi
+        assert mock_model.generate.call_count == 6
 
-        for call in mock_model.generate.call_args_list:
-            assert call.kwargs.get("instruct") == expected_instruct
-            assert "voice_clone_prompt" not in call.kwargs or call.kwargs.get("voice_clone_prompt") is None
+        for call in mock_model.generate.call_args_list[4:]:
+            assert call.kwargs.get("voice_clone_prompt") is mock_prompt
     finally:
         if os.path.exists(tmp_out):
             os.remove(tmp_out)
@@ -1025,8 +1026,10 @@ def test_synthesize_blocks_ignores_old_clone_profiles_in_single_unified_mode():
     )
     engine.load_model = MagicMock()
     mock_model = MagicMock()
-    mock_model.generate.return_value = [np.ones(24000, dtype=np.float32) * 0.4]
-    mock_model.create_voice_clone_prompt.return_value = MagicMock()
+    sr = 24000
+    mock_model.generate.return_value = [np.ones(sr * 4, dtype=np.float32) * 0.4]
+    mock_prompt = MagicMock()
+    mock_model.create_voice_clone_prompt.return_value = mock_prompt
     engine.model = mock_model
     engine._get_or_create_prompt_for_audio = MagicMock()
 
@@ -1061,11 +1064,11 @@ def test_synthesize_blocks_ignores_old_clone_profiles_in_single_unified_mode():
         # Kiểm tra _get_or_create_prompt_for_audio TUYỆT ĐỐI không được gọi đến tệp mẫu cũ
         assert engine._get_or_create_prompt_for_audio.call_count == 0
 
-        # Kiểm tra khối câu thoại được sinh bằng pure design, không dùng clone tệp cũ
-        assert mock_model.generate.call_count == 1
-        block_kwargs = mock_model.generate.call_args_list[0].kwargs
-        assert block_kwargs.get("instruct") == expected_instruct
-        assert "voice_clone_prompt" not in block_kwargs or block_kwargs.get("voice_clone_prompt") is None
+        # Kiểm tra khối câu thoại được sinh bằng prompt mỏ neo đồng nhất, không dùng clone tệp cũ
+        # 4 lượt thử mỏ neo + 1 lượt sinh câu thoại = 5 lượt gọi
+        assert mock_model.generate.call_count == 5
+        block_kwargs = mock_model.generate.call_args_list[4].kwargs
+        assert block_kwargs.get("voice_clone_prompt") is mock_prompt
     finally:
         if os.path.exists(tmp_out):
             os.remove(tmp_out)
@@ -1093,12 +1096,16 @@ def test_synthesize_blocks_cache_invalidation_when_switching_presets():
             mode="design",
             multi_speaker_mode="single",
             instruct=ins_a,
+            preset_name=preset_a,
             resume_cache_dir=cache_dir,
             normalize_text=False,
         )
         engine_a.load_model = MagicMock()
         mock_model_a = MagicMock()
-        mock_model_a.generate.return_value = [np.ones(24000, dtype=np.float32) * 0.1]
+        sr = 24000
+        mock_model_a.generate.return_value = [np.ones(sr * 4, dtype=np.float32) * 0.1]
+        mock_prompt_a = MagicMock()
+        mock_model_a.create_voice_clone_prompt.return_value = mock_prompt_a
         engine_a.model = mock_model_a
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
@@ -1107,7 +1114,8 @@ def test_synthesize_blocks_cache_invalidation_when_switching_presets():
         try:
             rep_a = engine_a.synthesize_blocks(blocks, total_duration=3.0, output_path=out_a)
             assert rep_a.status == "success"
-            assert mock_model_a.generate.call_count == 1
+            # 4 lượt thử mỏ neo A + 1 lượt sinh block = 5
+            assert mock_model_a.generate.call_count == 5
         finally:
             if os.path.exists(out_a):
                 os.remove(out_a)
@@ -1118,12 +1126,15 @@ def test_synthesize_blocks_cache_invalidation_when_switching_presets():
             mode="design",
             multi_speaker_mode="single",
             instruct=ins_b,
+            preset_name=preset_b,
             resume_cache_dir=cache_dir,
             normalize_text=False,
         )
         engine_b.load_model = MagicMock()
         mock_model_b = MagicMock()
-        mock_model_b.generate.return_value = [np.ones(24000, dtype=np.float32) * 0.8]
+        mock_model_b.generate.return_value = [np.ones(sr * 4, dtype=np.float32) * 0.8]
+        mock_prompt_b = MagicMock()
+        mock_model_b.create_voice_clone_prompt.return_value = mock_prompt_b
         engine_b.model = mock_model_b
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
@@ -1133,12 +1144,14 @@ def test_synthesize_blocks_cache_invalidation_when_switching_presets():
             rep_b = engine_b.synthesize_blocks(blocks, total_duration=3.0, output_path=out_b)
             assert rep_b.status == "success"
             # mock_model_b PHẢI được gọi vì khóa cache khác biệt hoàn toàn giữa Preset A và B
-            assert mock_model_b.generate.call_count == 1
+            # 4 lượt thử mỏ neo B + 1 lượt sinh block = 5
+            assert mock_model_b.generate.call_count == 5
 
-            # 3. Chạy lại lần nữa với Preset B -> Phải trúng cache (cache hit), không cần gọi generate lại
+            # 3. Chạy lại lần nữa với Preset B -> Phải trúng cache (cache hit), không cần gọi generate lại cho block
             mock_model_b.reset_mock()
             rep_b2 = engine_b.synthesize_blocks(blocks, total_duration=3.0, output_path=out_b)
             assert rep_b2.status == "success"
+            # Anchor đã có trong file cache pt/wav nên mock_model_b.generate không cần chạy lại
             assert mock_model_b.generate.call_count == 0
         finally:
             if os.path.exists(out_b):

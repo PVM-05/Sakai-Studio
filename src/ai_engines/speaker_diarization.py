@@ -1000,6 +1000,34 @@ class SpeakerDiarizationCoordinator:
                 dur = max(0.0, _parse_time_to_seconds(getattr(blk, "end_time", 0)) - _parse_time_to_seconds(getattr(blk, "start_time", 0)))
                 profile.total_duration += dur
 
+            # Hậu xử lý: Gán câu "Chưa xác định" hoặc câu ngắn cho người nói liền kề (khoảng cách <= 1.5s)
+            for pos, block_idx in enumerate(valid_indices):
+                blk = blocks[block_idx]
+                if getattr(blk, "speaker", "") == "Chưa xác định":
+                    cur_start = _parse_time_to_seconds(getattr(blk, "start_time", 0))
+                    assigned_neighbor = None
+                    if pos > 0:
+                        prev_blk = blocks[valid_indices[pos - 1]]
+                        prev_spk = getattr(prev_blk, "speaker", "")
+                        prev_end = _parse_time_to_seconds(getattr(prev_blk, "end_time", 0))
+                        if prev_spk and prev_spk != "Chưa xác định" and (cur_start - prev_end <= 1.5):
+                            assigned_neighbor = prev_spk
+                    if not assigned_neighbor and pos < len(valid_indices) - 1:
+                        next_blk = blocks[valid_indices[pos + 1]]
+                        next_spk = getattr(next_blk, "speaker", "")
+                        next_start = _parse_time_to_seconds(getattr(next_blk, "start_time", 0))
+                        cur_end = _parse_time_to_seconds(getattr(blk, "end_time", 0))
+                        if next_spk and next_spk != "Chưa xác định" and (next_start - cur_end <= 1.0):
+                            assigned_neighbor = next_spk
+
+                    if assigned_neighbor and assigned_neighbor in detected_profiles:
+                        blk.speaker = assigned_neighbor
+                        blk.confidence_level = ConfidenceLevel.REVIEW_NEEDED.value
+                        prof = detected_profiles[assigned_neighbor]
+                        prof.utterance_count += 1
+                        dur = max(0.0, _parse_time_to_seconds(getattr(blk, "end_time", 0)) - cur_start)
+                        prof.total_duration += dur
+
             for speaker_name, profile in detected_profiles.items():
                 members = [
                     pos for pos, block_idx in enumerate(valid_indices)
@@ -1052,7 +1080,7 @@ class SpeakerDiarizationCoordinator:
 
                 if best_single is not None:
                     merged = best_single
-                    selected_ref_text = best_single_text
+                    selected_ref_text = best_single_text if len(best_single_text.split()) >= 3 else ""
                 else:
                     collected: List[np.ndarray] = []
                     text_parts: List[str] = []
@@ -1072,7 +1100,7 @@ class SpeakerDiarizationCoordinator:
                             collected.append(pause)
                             collected_len += len(pause)
                     merged = np.concatenate(collected)[: int(7.5 * sr)] if collected else np.zeros(0, dtype=np.float32)
-                    selected_ref_text = " ".join(text_parts).strip()
+                    selected_ref_text = ""  # Ghép nhiều đoạn: để Whisper tự động nhận diện chính xác trên clip đã ghép
 
                 if len(merged) > 0:
                     # Chuẩn hóa biên độ âm lượng đỉnh ở mức -1.0 dBFS (peak 0.90) để chống vỡ tiếng
