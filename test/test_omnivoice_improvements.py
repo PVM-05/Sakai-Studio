@@ -1453,3 +1453,151 @@ def test_on_speakers_detected_preserves_video_source_audio_samples():
         if os.path.exists(sample_wav):
             os.remove(sample_wav)
 
+
+def test_user_locked_profile_preserved_on_diarization_rerun():
+    """Kiểm tra hồ sơ nhân vật được người dùng khóa (user_locked=True) được bảo toàn qua các lần nhận diện lại."""
+    engine = TTSEngine(mode="clone")
+    engine.speaker_profiles = {
+        "Nhân vật Đã Khóa": CharacterVoiceProfile(
+            speaker_id="spk_locked",
+            display_name="Nhân vật Đã Khóa",
+            method="preset",
+            preset_name="Nữ Thanh Niên",
+            status="locked",
+            user_locked=True,
+        ),
+        "Người nói 1": CharacterVoiceProfile(
+            speaker_id="spk_0",
+            display_name="Người nói 1",
+            method="clone",
+            status="locked",
+            user_locked=False,
+        ),
+    }
+
+    mock_coordinator = MagicMock()
+    mock_coordinator.last_provider = "CPUExecutionProvider"
+    mock_coordinator.process_video_subtitles.return_value = {
+        "Người nói 1": CharacterVoiceProfile(
+            speaker_id="spk_0",
+            display_name="Người nói 1 (Mới)",
+            method="clone",
+            status="locked",
+            user_locked=False,
+        )
+    }
+
+    b1 = SubtitleBlock(1, "00:00:01,000", "00:00:03,000", "Xin chào")
+    with patch("src.ai_engines.speaker_diarization.SpeakerDiarizationCoordinator", return_value=mock_coordinator), \
+         patch("src.ai_engines.tts_engine.VoiceSeparator._extract_audio", return_value=True), \
+         patch("os.path.isfile", return_value=True), \
+         patch("os.path.exists", return_value=True):
+        engine.detect_speakers_from_video("fake_video.mp4", [b1], max_speakers=2)
+
+    assert "Nhân vật Đã Khóa" in engine.speaker_profiles
+    p_locked = engine.speaker_profiles["Nhân vật Đã Khóa"]
+    preset_val = p_locked.preset_name if hasattr(p_locked, "preset_name") else p_locked.get("preset_name")
+    assert preset_val == "Nữ Thanh Niên"
+    p_new = engine.speaker_profiles["Người nói 1"]
+    name_val = p_new.display_name if hasattr(p_new, "display_name") else p_new.get("display_name")
+    assert name_val == "Người nói 1 (Mới)"
+
+
+def test_srt_prefix_regex_ignores_generic_words_and_timestamps():
+    """Kiểm tra phát hiện người nói từ SRT bỏ qua ghi chú chung (Lưu ý:) và mốc giờ (12:30:)."""
+    engine = TTSEngine(mode="clone")
+    b1 = SubtitleBlock(1, "00:00:01,000", "00:00:03,000", "Lưu ý: Vui lòng không làm ồn trong phòng thu.")
+    b2 = SubtitleBlock(2, "00:00:04,000", "00:00:06,000", "12:30: Cuộc hẹn bắt đầu.")
+    b3 = SubtitleBlock(3, "00:00:07,000", "00:00:09,000", "Hôm nay - chúng ta cùng thảo luận.")
+    b4 = SubtitleBlock(4, "00:00:10,000", "00:00:12,000", "[Đạo Diễn]: Chuẩn bị bấm máy!")
+
+    profiles = engine.detect_speakers_from_srt_text([b1, b2, b3, b4])
+
+    assert b1.text.startswith("Lưu ý:")
+    assert b2.text.startswith("12:30:")
+    assert b3.text.startswith("Hôm nay -")
+    assert b4.text == "Chuẩn bị bấm máy!"
+    assert b4.speaker == "Người nói 1"
+
+
+def test_config_sync_items_and_aliases():
+    """Kiểm tra đồng bộ các mục cấu hình TTS MMO và alias tương thích hai chiều."""
+    from src.core.config import cfg
+
+    assert hasattr(cfg, "mmoTTSResumeCacheDir")
+    assert hasattr(cfg, "mmoTTSOverflowStrategy")
+    assert hasattr(cfg, "mmoTTSEnableAiVocalSeparation")
+    assert hasattr(cfg, "mmoTTSAIVocalSeparation")
+
+    engine = TTSEngine.from_app_config()
+    assert engine.overflow_strategy in ("extend", "stretch", "strict_sync", "preserve_speech")
+
+
+def test_preserve_speech_cursor_drift():
+    """Kiểm tra chiến lược preserve_speech bù trôi mốc thời gian an toàn không cắt đuôi câu."""
+    import soundfile as sf
+    engine = TTSEngine(auto_extract_ref=False, mode="design", multi_speaker_mode="single", overflow_strategy="preserve_speech")
+    engine.load_model = MagicMock()
+    mock_model = MagicMock()
+    sr = 24000
+    mock_model.sampling_rate = sr
+    mock_model.generate.return_value = [np.ones(sr * 3, dtype=np.float32) * 0.4]
+    mock_model.create_voice_clone_prompt.return_value = MagicMock()
+    engine.model = mock_model
+
+    b1 = SubtitleBlock(1, "00:00:01,000", "00:00:02,000", "Câu một thoại dài hơn thời lượng khả dụng.")
+    b2 = SubtitleBlock(2, "00:00:02,100", "00:00:03,000", "Câu hai kế tiếp.")
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+        out_wav = tf.name
+
+    try:
+        rep = engine.synthesize_blocks([b1, b2], total_duration=8.0, output_path=out_wav)
+        assert rep.status in ("success", "partial")
+        assert rep.succeeded_count == 2
+        assert os.path.exists(out_wav)
+        data, _ = sf.read(out_wav)
+        assert len(data) > int(2.0 * sr)
+    finally:
+        if os.path.exists(out_wav):
+            os.remove(out_wav)
+
+
+def test_camplus_voice_consistency_refinement_loop():
+    """Kiểm tra vòng kiểm định tính nhất quán âm sắc CAM++ phát hiện câu lệch chuẩn và tái tạo."""
+    from src.ai_engines.tts_engine import DubbingReport
+    engine = TTSEngine(auto_extract_ref=False, mode="design", multi_speaker_mode="single")
+    engine.speaker_model_path = "fake_camplus.onnx"
+    sr = 24000
+    engine.sample_rate = sr
+
+    normal_audio = np.ones(sr * 2, dtype=np.float32) * 0.5
+    outlier_audio = np.ones(sr * 2, dtype=np.float32) * -0.5
+
+    items = [
+        {"index": 0, "audio": normal_audio, "start_sample": 0, "spk_key": "spk_1", "text": "Câu 1", "mode": "design", "prompt": None, "ref": None, "instruct": "test"},
+        {"index": 1, "audio": normal_audio, "start_sample": sr * 3, "spk_key": "spk_1", "text": "Câu 2", "mode": "design", "prompt": None, "ref": None, "instruct": "test"},
+        {"index": 2, "audio": outlier_audio, "start_sample": sr * 6, "spk_key": "spk_1", "text": "Câu 3", "mode": "design", "prompt": None, "ref": None, "instruct": "test"},
+    ]
+    full_audio = np.zeros(sr * 10, dtype=np.float32)
+    rep = DubbingReport(total_blocks=3)
+
+    mock_session = MagicMock()
+    # Giả lập embedding: câu 0 và 1 có vector [1, 0], câu 2 có vector [0, 1] (cosin với centroid thấp < 0.65)
+    def fake_extract(session, audio, sample_rate):
+        if float(audio[0]) > 0:
+            return np.array([1.0, 0.0], dtype=np.float32)
+        return np.array([0.0, 1.0], dtype=np.float32)
+
+    improved_audio = np.ones(sr * 2, dtype=np.float32) * 0.8
+    engine.generate_single = MagicMock(return_value=improved_audio)
+
+    with patch("os.path.exists", return_value=True), \
+         patch("src.ai_engines.speaker_embedding_onnx.create_speaker_session", return_value=mock_session), \
+         patch("src.ai_engines.speaker_embedding_onnx.extract_speaker_embedding", side_effect=fake_extract), \
+         patch("src.ai_engines.speaker_embedding_onnx.close_speaker_session"):
+        engine._verify_and_refine_voice_consistency(items, full_audio, rep, min_sim=0.65)
+
+    assert rep.inconsistent_retried_count >= 1
+
+

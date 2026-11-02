@@ -60,6 +60,7 @@ class CharacterVoiceProfile:
     recommended_voices: List[Dict[str, Any]] = field(default_factory=list)
     error_message: str = ""
     ref_text: str = ""
+    user_locked: bool = False
 
     # Các thuộc tính bí danh hỗ trợ tương thích ngược 2 chiều
     @property
@@ -135,6 +136,7 @@ class CharacterVoiceProfile:
             "recommended_voices": list(self.recommended_voices) if self.recommended_voices else [],
             "error_message": self.error_message,
             "ref_text": self.ref_text,
+            "user_locked": self.user_locked,
         }
 
     _ALIAS_SET_MAP = {
@@ -208,6 +210,7 @@ class CharacterVoiceProfile:
             recommended_voices=list(data.get("recommended_voices") or []),
             error_message=str(data.get("error_message") or ""),
             ref_text=str(data.get("ref_text") or ""),
+            user_locked=bool(data.get("user_locked", False)),
         )
         return profile
 

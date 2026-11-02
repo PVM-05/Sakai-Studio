@@ -71,6 +71,7 @@ class DubbingReport:
     truncated_lines: List[int] = field(default_factory=list)
     overflow_lines: List[Dict[str, Any]] = field(default_factory=list)
     timestamp_issues: List[Dict[str, Any]] = field(default_factory=list)
+    inconsistent_retried_count: int = 0
     audio_duration_sec: float = 0.0
     rms_energy: float = 0.0
     peak_amplitude: float = 0.0
@@ -260,20 +261,36 @@ def normalize_vietnamese_numbers_and_text(text: str) -> str:
     """
     Chuẩn hóa số đếm, số thập phân, phần trăm sang chữ viết tiếng Việt lưu loát.
     Hỗ trợ quy tắc riêng cho số điện thoại/mã bắt đầu bằng 0, định dạng phiên bản và ngày tháng.
-    Bảo vệ nguyên vẹn các thẻ biểu cảm phi ngôn từ trong ngoặc vuông.
+    Bảo vệ nguyên vẹn các thẻ biểu cảm phi ngôn từ trong ngoặc vuông được OmniVoice hỗ trợ,
+    lọc bỏ các thẻ phụ đề âm thanh không thuộc danh mục hỗ trợ (ví dụ: [Music], (cười)...).
     """
     if not text or not text.strip():
         return ""
 
+    # Chuyển đổi ký tự xuống dòng thành khoảng trắng và xóa gạch đầu dòng phân cách câu thoại
+    cleaned_input = re.sub(r"\s*[\r\n]+\s*", " ", text)
+    cleaned_input = re.sub(r"(^|\s)[-–—]\s+", r"\1", cleaned_input).strip()
+    if not cleaned_input:
+        return ""
+
     digits = ["không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín"]
 
-    # 1. Bảo vệ các thẻ biểu cảm trong ngoặc vuông
+    # 1. Lọc bỏ các thẻ âm thanh trong ngoặc đơn hoặc ngoặc vuông không được OmniVoice hỗ trợ
+    # Chỉ bảo vệ các thẻ phi ngôn từ chuẩn của OmniVoice
+    valid_tags_set = set(NON_VERBAL_TAGS)
     tags = []
-    def save_tag(match):
-        tags.append(match.group(0))
-        return f"__TAG_{len(tags) - 1}__"
 
-    s = re.sub(r"\[[a-zA-Z0-9_\-]+\]", save_tag, text.strip())
+    def handle_bracket_tag(match):
+        raw_tag = match.group(0)
+        if raw_tag in valid_tags_set:
+            tags.append(raw_tag)
+            return f"__TAG_{len(tags) - 1}__"
+        # Thẻ lạ không được hỗ trợ -> lọc bỏ để tránh TTS đọc thành lời
+        return " "
+
+    s = re.sub(r"\[[a-zA-Z0-9_\-]+\]", handle_bracket_tag, cleaned_input)
+    # Lọc bỏ các chú thích biểu cảm trong ngoặc đơn thông dụng của phụ đề: (cười), (khóc), (thở dài)...
+    s = re.sub(r"\((?:cười|khóc|thở dài|hét|nhạc|tiếng cười|vỗ tay|music|applause|laughter|crying|sigh)\)", " ", s, flags=re.IGNORECASE)
 
     # 2. Xử lý định dạng ngày tháng: 29/10/2026 hoặc 29-10-2026
     def repl_date(m):
@@ -320,11 +337,14 @@ def normalize_vietnamese_numbers_and_text(text: str) -> str:
     s = re.sub(r"\b[vV]?\d+(\.\d+){2,}\b", repl_version, s)
     s = re.sub(r"\b[vV]\d+\.\d+\b", repl_version, s)
 
-    # 6. Phân tách hàng nghìn có dấu chấm: 1.000.000 (từ 2 nhóm trở lên), .000 tròn hoặc theo sau bởi đơn vị tiền tệ
-    # Không xóa dấu chấm của số thập phân đơn lẻ như 3.141
+    # 6. Phân tách hàng nghìn có dấu chấm trong tiếng Việt:
+    # Trong tiếng Việt, dấu chấm theo sau đúng 3 chữ số là phân tách hàng nghìn (ví dụ: 2.500 người, 1.000.000 đồng).
+    # Dấu phẩy mới là phân tách thập phân tiêu chuẩn tiếng Việt (ví dụ: 1,5 hoặc 3,14).
     s = re.sub(r"\b\d{1,3}(\.\d{3}){2,}\b", lambda m: m.group(0).replace(".", ""), s)
     s = re.sub(r"\b\d{1,3}\.000\b", lambda m: m.group(0).replace(".", ""), s)
     s = re.sub(r"\b\d{1,3}\.\d{3}(?=\s*(?:đồng|đ|vnd|usd|k|triệu|tỷ))\b", lambda m: m.group(0).replace(".", ""), s, flags=re.IGNORECASE)
+    # Hàng nghìn đơn lẻ: 2.500 người -> 2500 người (trừ trường hợp số 0 ở đầu)
+    s = re.sub(r"\b([1-9]\d{0,2})\.(\d{3})\b", r"\1\2", s)
 
     # 7. Phần trăm và đơn vị đo lường
     s = re.sub(r"(?<=\d)\s*%", " phần trăm", s)
@@ -342,7 +362,7 @@ def normalize_vietnamese_numbers_and_text(text: str) -> str:
     for pattern, repl in units:
         s = re.sub(pattern, repl, s, flags=re.IGNORECASE)
 
-    # 8. Số thập phân: 1,5 hoặc 1.5
+    # 8. Số thập phân: 1,5 hoặc 1.5 (sau khi đã bóc tách hàng nghìn \d{1,3}\.\d{3} ở bước 6)
     def repl_decimal(m):
         integer_part = int(m.group(1))
         decimal_part = " ".join(digits[int(d)] for d in m.group(2))
@@ -373,12 +393,17 @@ def normalize_vietnamese_numbers_and_text(text: str) -> str:
 def preprocess_vietnamese_tts_text(text: str) -> str:
     """
     Chuẩn hóa văn bản tiếng Việt trước khi đưa vào OmniVoice:
+    - Chuyển đổi xuống dòng thành khoảng trắng và xóa gạch đầu dòng thoại.
     - Mở rộng các đơn vị đo lường, ký hiệu phần trăm, nhiệt độ, tiền tệ phổ biến theo ngữ cảnh.
     - Phiên âm số đếm, số thập phân, số điện thoại sang chữ tiếng Việt tự nhiên.
     - Bổ sung dấu ngắt câu cuối nếu thiếu để hạ giọng trọn vẹn và không bị cụt câu.
     - Giữ nguyên các thẻ biểu cảm phi ngôn từ trong ngoặc vuông.
     """
-    normalized = normalize_vietnamese_numbers_and_text(text)
+    if not text or not text.strip():
+        return ""
+    cleaned_text = re.sub(r"\s*[\r\n]+\s*", " ", text)
+    cleaned_text = re.sub(r"(^|\s)[-–—]\s+", r"\1", cleaned_text).strip()
+    normalized = normalize_vietnamese_numbers_and_text(cleaned_text)
     if not normalized:
         return ""
     if normalized[-1] not in ".!?;:…":
@@ -563,6 +588,10 @@ def build_voice_design_instruct(
 
 # Câu thoại mẫu chuẩn tiếng Việt dùng để tạo mẫu mỏ neo khóa âm sắc nhất quán
 ANCHOR_SAMPLE_VI = "Xin chào các bạn, đây là giọng đọc mẫu tiếng Việt chuẩn để đồng bộ âm sắc xuyên suốt toàn bộ video."
+ANCHOR_SAMPLE_EN = "Hello everyone, this is a standard reference voice sample used to calibrate timbre, pitch, and speech rhythm."
+ANCHOR_SAMPLE_ZH = "大家好，这是一段用于校准音色、音高与语速节奏的基准声音样本。"
+ANCHOR_SAMPLE_JA = "皆さんこんにちは、これは声の音色やピッチ、話速を正確に補正するための基準音声サンプルです。"
+ANCHOR_SAMPLE_KO = "안녕하세요 여러분, 이것은 음색과 음높이, 말하기 리듬을 일관되게 보정하기 위한 기준 음성 샘플입니다."
 
 # Danh mục 22 giọng đọc mẫu tiếng Việt đa phong cách kèm câu thoại nghe thử
 VIETNAMESE_VOICE_CATALOG: Dict[str, Dict[str, str]] = {
@@ -971,19 +1000,41 @@ class TTSEngine:
 
     def reset_speaker_locked_prompt(self, speaker_id: Optional[str] = None):
         """
-        Xóa mẫu giọng tự động khóa (consistent_{speaker_id}) của một nhân vật hoặc toàn bộ nhân vật
+        Xóa mẫu giọng tự động khóa và bộ nhớ đệm prompt của một nhân vật hoặc toàn bộ nhân vật
         để tạo lại mẫu giọng mới sạch hơn ở lần tổng hợp tiếp theo.
         """
+        prefixes = ("character_", "char_", "anchor_", "unified_", "spk_", "line_", "consistent_")
         if speaker_id:
-            self._speaker_prompt_cache.pop(f"consistent_{speaker_id}", None)
-            prof = self.speaker_profiles.get(speaker_id)
-            if prof and str(prof.get("ref_audio_path", "")).find("locked_") != -1:
-                prof["ref_audio_path"] = ""
-            self.log(f"Đã đặt lại mẫu giọng khóa tự động của {speaker_id}.")
-        else:
-            keys_to_remove = [k for k in self._speaker_prompt_cache if k.startswith("consistent_")]
+            keys_to_remove = [
+                k for k in list(self._speaker_prompt_cache.keys())
+                if any(k.startswith(f"{pfx}{speaker_id}") for pfx in prefixes) or k == f"character_{speaker_id}"
+            ]
             for k in keys_to_remove:
                 self._speaker_prompt_cache.pop(k, None)
+            prof = self.speaker_profiles.get(speaker_id)
+            if prof:
+                if isinstance(prof, dict):
+                    if any(marker in str(prof.get("ref_audio_path", "")) for marker in ("locked_", "anchor_", "temp_")):
+                        prof["ref_audio_path"] = ""
+                else:
+                    if any(marker in str(getattr(prof, "source_audio_path", "")) for marker in ("locked_", "anchor_", "temp_")):
+                        prof.source_audio_path = ""
+            self.log(f"Đã đặt lại mẫu giọng khóa tự động của {speaker_id}.")
+        else:
+            self._speaker_prompt_cache.clear()
+            self._speaker_instruct_cache.clear()
+            # Dọn dẹp các tệp mẫu mỏ neo tạm thời trên đĩa nếu tồn tại
+            cache_dir = getattr(self, "voice_prompt_cache_dir", None)
+            if cache_dir and os.path.exists(cache_dir):
+                try:
+                    for f_name in os.listdir(cache_dir):
+                        if any(f_name.startswith(pfx) for pfx in ("anchor_", "perline_voc_", "diarize_")):
+                            try:
+                                os.remove(os.path.join(cache_dir, f_name))
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
             self.log("Đã đặt lại toàn bộ mẫu giọng khóa tự động của các nhân vật.")
 
     @classmethod
@@ -1033,7 +1084,11 @@ class TTSEngine:
 
         resume_cache_dir = getattr(app_config.mmoTTSResumeCacheDir, "value", "") if hasattr(app_config, "mmoTTSResumeCacheDir") else ""
         speaker_model_path = getattr(app_config.mmoSpeakerModelPath, "value", "") if hasattr(app_config, "mmoSpeakerModelPath") else ""
-        enable_ai_vocal_sep = getattr(app_config.mmoTTSEnableAiVocalSeparation, "value", True) if hasattr(app_config, "mmoTTSEnableAiVocalSeparation") else True
+        enable_ai_vocal_sep = (
+            getattr(app_config.mmoTTSEnableAiVocalSeparation, "value", True)
+            if hasattr(app_config, "mmoTTSEnableAiVocalSeparation")
+            else (getattr(app_config.mmoTTSAIVocalSeparation, "value", True) if hasattr(app_config, "mmoTTSAIVocalSeparation") else True)
+        )
         overflow_strategy = getattr(app_config.mmoTTSOverflowStrategy, "value", "extend") if hasattr(app_config, "mmoTTSOverflowStrategy") else "extend"
 
         return cls(
@@ -1146,7 +1201,10 @@ class TTSEngine:
             if self.enable_flashinfer and torch.cuda.is_available():
                 try:
                     from omnivoice.models.omnivoice_flashinfer import apply_flashinfer
-                    apply_flashinfer(self.model, enable_cuda_graph=True)
+                    try:
+                        apply_flashinfer(self.model, enable_cuda_graph=True, cuda_graph_buckets=[4, 8, 12, 16, 20, 28, 36, 48])
+                    except TypeError:
+                        apply_flashinfer(self.model, enable_cuda_graph=True)
                     self.log("Đã kích hoạt tăng tốc phần cứng FlashInfer + CUDA Graph trên GPU NVIDIA.")
                 except Exception as fi_err:
                     self.log(f"Không thể kích hoạt FlashInfer (sử dụng nhân CUDA tiêu chuẩn): {fi_err}")
@@ -1375,6 +1433,24 @@ class TTSEngine:
             self.log(f"Không thể tạo mẫu giọng cho {cache_key}: {e}")
             return None
 
+    def _get_anchor_sample_text(self, preset_name: Optional[str] = None) -> str:
+        """Lấy câu thoại mẫu chuẩn hóa phù hợp với ngôn ngữ và preset được chọn."""
+        if self.language in ("vi", None, ""):
+            if preset_name and preset_name in VIETNAMESE_VOICE_CATALOG:
+                s_vi = VIETNAMESE_VOICE_CATALOG[preset_name].get("sample_vi", "")
+                if len(s_vi.split()) >= 12:
+                    return s_vi
+            return ANCHOR_SAMPLE_VI
+        elif self.language in ("en", "english"):
+            return ANCHOR_SAMPLE_EN
+        elif self.language in ("zh", "chinese"):
+            return ANCHOR_SAMPLE_ZH
+        elif self.language in ("ja", "japanese"):
+            return ANCHOR_SAMPLE_JA
+        elif self.language in ("ko", "korean"):
+            return ANCHOR_SAMPLE_KO
+        return ANCHOR_SAMPLE_VI
+
     def _build_anchor_prompt(
         self,
         key: str,
@@ -1388,7 +1464,7 @@ class TTSEngine:
         Bảo đảm âm sắc, cao độ và ngữ điệu đồng nhất 100% giữa tất cả các câu trong tệp phụ đề.
         """
         target_ins = (instruct or self.instruct or DEFAULT_SPEAKER_PRESETS["Người nói 1"]["instruct"]).strip()
-        target_sample = sample_text or ANCHOR_SAMPLE_VI
+        target_sample = sample_text or self._get_anchor_sample_text()
 
         tag = hashlib.sha1(
             f"{key}|{target_ins}|{self.model_name_or_path}|{self.language}".encode("utf-8")
@@ -1483,16 +1559,39 @@ class TTSEngine:
         """Hàm tương thích ngược gọi _build_anchor_prompt."""
         resolved_preset = preset_name or getattr(self, "preset_name", "unified")
         target_ins = instruct or self.instruct
-        sample_text = ANCHOR_SAMPLE_VI
-        if resolved_preset in VIETNAMESE_VOICE_CATALOG:
-            s_vi = VIETNAMESE_VOICE_CATALOG[resolved_preset].get("sample_vi", "")
-            if len(s_vi.split()) >= 12:
-                sample_text = s_vi
+        sample_text = self._get_anchor_sample_text(resolved_preset)
         return self._build_anchor_prompt(
             key=f"preset_{resolved_preset}",
             instruct=target_ins,
             sample_text=sample_text,
         )
+
+    def _get_or_create_fallback_anchor(self) -> Tuple[Optional[VoiceClonePrompt], Optional[str]]:
+        """Lấy hoặc tạo mẫu giọng mỏ neo dự phòng khi câu thoại bị khuyết nhân vật."""
+        ck = "fallback_anchor_global"
+        if ck in self._speaker_prompt_cache:
+            return self._speaker_prompt_cache[ck], getattr(self, "_fallback_anchor_wav_path", None)
+
+        fb_instruct = ""
+        if self.speaker_profiles:
+            for p in self.speaker_profiles.values():
+                ins = p.get("voice_instruct") or p.get("instruct") if isinstance(p, dict) else getattr(p, "voice_instruct", "")
+                if ins:
+                    fb_instruct = ins
+                    break
+        if not fb_instruct:
+            fb_instruct = self.instruct or DEFAULT_SPEAKER_PRESETS["Người nói 1"]["instruct"]
+
+        sample_text = self._get_anchor_sample_text()
+        prompt, wav_path = self._build_anchor_prompt(
+            key="fallback_anchor_global",
+            instruct=fb_instruct,
+            sample_text=sample_text,
+        )
+        self._fallback_anchor_wav_path = wav_path
+        if prompt is not None:
+            self._speaker_prompt_cache[ck] = prompt
+        return prompt, wav_path
 
     @staticmethod
     def _extract_acoustic_features(seg: np.ndarray, sr: int) -> Optional[np.ndarray]:
@@ -1540,7 +1639,7 @@ class TTSEngine:
                     lag = min_lag + best_idx
                     f0_list.append(float(sr) / float(lag))
 
-        if not spectra:
+        if not spectra or not f0_list:
             return None
 
         mean_spec = np.mean(np.stack(spectra, axis=0), axis=0)
@@ -1558,7 +1657,7 @@ class TTSEngine:
         band_arr = np.array(band_energies, dtype=np.float32)
         band_arr = band_arr / (np.linalg.norm(band_arr) + 1e-6)
 
-        median_f0 = float(np.median(f0_list)) if f0_list else 155.0
+        median_f0 = float(np.median(f0_list))
         iqr_f0 = float(np.percentile(f0_list, 75) - np.percentile(f0_list, 25)) if len(f0_list) >= 4 else 15.0
 
         feat = np.concatenate([
@@ -1692,6 +1791,22 @@ class TTSEngine:
         cuda_avail = bool(torch is not None and getattr(torch, "cuda", None) is not None and torch.cuda.is_available())
         use_cuda = cuda_avail if prefer_cuda is None else bool(prefer_cuda)
         effective_allow_mock = self.allow_mock if allow_mock is None else bool(allow_mock)
+
+        # Tự động tải mô hình CAM++ nếu chưa có hoặc dung lượng không hợp lệ (< 1MB)
+        if not self.speaker_model_path or not os.path.exists(self.speaker_model_path) or os.path.getsize(self.speaker_model_path) < 1024 * 1024:
+            try:
+                from .speaker_embedding_onnx import download_speaker_embedding_model
+                target_path = self.speaker_model_path or os.path.join(self.voice_prompt_cache_dir, "campplus_cn_common.onnx")
+                self.log(f"Đang kiểm tra và tải mô hình nhận diện giọng CAM++: {target_path}...")
+                dl_path = download_speaker_embedding_model(target_path)
+                if dl_path and os.path.exists(dl_path) and os.path.getsize(dl_path) >= 1024 * 1024:
+                    self.speaker_model_path = dl_path
+                    self.log("Tải mô hình nhận diện giọng CAM++ thành công.")
+                else:
+                    self.log("Cảnh báo: Tệp mô hình CAM++ không đủ dung lượng tiêu chuẩn sau khi tải.")
+            except Exception as dl_err:
+                self.log(f"Cảnh báo: Không thể tự động tải mô hình CAM++: {dl_err}")
+
         coordinator = SpeakerDiarizationCoordinator(
             model_path=self.speaker_model_path,
             prefer_cuda=use_cuda,
@@ -1778,38 +1893,67 @@ class TTSEngine:
                 else:
                     prof_data = dict(prof)
 
-                # Đo đặc trưng âm học thực tế (F0 trung vị, giới tính, cao độ) từ tệp mẫu âm thanh
+                # Đo đặc trưng âm học thực tế (F0 trung vị, giới tính, cao độ) trên toàn bộ các câu của từng nhân vật
                 src_path = prof_data.get("source_audio_path") or getattr(prof, "source_audio_path", "")
                 f0 = 150.0
                 gender = "auto"
                 pitch_lvl = "moderate"
-                if src_path and os.path.exists(src_path):
+                speaker_f0_list: List[float] = []
+
+                if source_audio_for_diarization and os.path.exists(source_audio_for_diarization):
+                    try:
+                        diar_info = sf.info(source_audio_for_diarization)
+                        d_sr = diar_info.samplerate
+                        for blk in blocks:
+                            if getattr(blk, "speaker", "") == spk_name:
+                                b_start = parse_timestamp_to_seconds(blk.start_time)
+                                b_end = parse_timestamp_to_seconds(getattr(blk, "end_time", blk.start_time))
+                                if b_end - b_start >= 0.8:
+                                    s_f = max(0, int(b_start * d_sr))
+                                    e_f = min(diar_info.frames, int(b_end * d_sr))
+                                    if e_f - s_f >= int(0.4 * d_sr):
+                                        seg_audio, _ = sf.read(source_audio_for_diarization, start=s_f, stop=e_f, dtype="float32")
+                                        if seg_audio.ndim > 1:
+                                            seg_audio = np.mean(seg_audio, axis=1)
+                                        c_feat = self._extract_acoustic_features(seg_audio, d_sr)
+                                        if c_feat is not None:
+                                            speaker_f0_list.append(float(c_feat[0] * 200.0))
+                    except Exception as loop_err:
+                        self.log(f"Không thể quét F0 chuỗi câu thoại của {spk_name}: {loop_err}")
+
+                if not speaker_f0_list and src_path and os.path.exists(src_path):
                     try:
                         audio_d, a_sr = sf.read(src_path, dtype="float32")
                         if audio_d.ndim > 1:
                             audio_d = np.mean(audio_d, axis=1)
                         feat = self._extract_acoustic_features(audio_d, a_sr)
                         if feat is not None:
-                            f0 = float(feat[0] * 200.0)
-                            if f0 > 250.0:
-                                gender = "child"
-                                pitch_lvl = "very_high"
-                            elif f0 > 165.0:
-                                gender = "female"
-                                pitch_lvl = "high" if f0 > 210.0 else "moderate"
-                            else:
-                                gender = "male"
-                                pitch_lvl = "very_low" if f0 < 100.0 else ("low" if f0 < 130.0 else "moderate")
+                            speaker_f0_list.append(float(feat[0] * 200.0))
                     except Exception as feat_err:
                         self.log(f"Không thể đo đặc trưng âm học của {spk_name}: {feat_err}")
 
-                prof_data["pitch_hz"] = f0
+                if speaker_f0_list:
+                    f0 = float(np.median(speaker_f0_list))
+                    if f0 > 245.0:
+                        gender = "child"
+                        pitch_lvl = "very_high"
+                    elif f0 > 175.0:
+                        gender = "female"
+                        pitch_lvl = "high" if f0 > 210.0 else "moderate"
+                    else:
+                        gender = "male"
+                        pitch_lvl = "very_low" if f0 < 100.0 else ("low" if f0 < 130.0 else "moderate")
+
+                prof_data["pitch_hz"] = round(f0, 1)
                 prof_data["gender"] = gender
                 prof_data["pitch_level"] = pitch_lvl
+                prof_data["user_locked"] = False
                 if hasattr(prof, "gender"):
                     prof.gender = gender
                 if hasattr(prof, "pitch_level"):
                     prof.pitch_level = pitch_lvl
+                if hasattr(prof, "user_locked"):
+                    prof.user_locked = False
 
                 ratio = getattr(prof, "high_confidence_ratio", 1.0)
                 prof_data["high_confidence_ratio"] = float(ratio)
@@ -1821,18 +1965,22 @@ class TTSEngine:
 
             # Hợp nhất (merge) detected_profiles với self.speaker_profiles hiện có
             # Bảo toàn nguyên vẹn hồ sơ của các nhân vật đã được người dùng tùy chỉnh hoặc đã khóa
-            merged_profiles = dict(self.speaker_profiles) if self.speaker_profiles else {}
+            locked_names = {
+                getattr(b, "speaker", "")
+                for b in (blocks or [])
+                if getattr(b, "is_speaker_locked", False) and getattr(b, "speaker", "").strip()
+            }
+            def _user_locked(k, p):
+                if k in locked_names:
+                    return True
+                if isinstance(p, dict):
+                    return bool(p.get("user_locked", False))
+                return bool(getattr(p, "user_locked", False))
+
+            merged_profiles = {k: v for k, v in (self.speaker_profiles or {}).items() if _user_locked(k, v)}
             for spk_name, p_data in detected_profiles.items():
                 if spk_name not in merged_profiles:
                     merged_profiles[spk_name] = p_data
-                else:
-                    existing_prof = merged_profiles[spk_name]
-                    is_locked = (
-                        (existing_prof.get("status") == "locked" if isinstance(existing_prof, dict) else getattr(existing_prof, "status", "")) == "locked"
-                        or (existing_prof.get("method") == "preset" if isinstance(existing_prof, dict) else getattr(existing_prof, "method", "")) == "preset"
-                    )
-                    if not is_locked:
-                        merged_profiles[spk_name] = p_data
 
             self.speaker_profiles = merged_profiles
             self.log(
@@ -1869,8 +2017,13 @@ class TTSEngine:
             return {}
 
         prefix_re = re.compile(
-            r"^\s*(?:\[([^\]]{1,25})\]\s*[:：\-–—]?|\(([^\)]{1,25})\)\s*[:：\-–—]?|([A-Za-zÀ-ỹ0-9_ ]{1,20})\s*[:：\-–—])\s*(.+)$"
+            r"^\s*(?:\[([^\]\r\n]{1,25})\]\s*[:：]?|\(([^)\r\n]{1,25})\)\s*[:：]|([A-Za-zÀ-ỹ0-9_ ]{1,25})\s*[:：])\s*(.+)$"
         )
+        ignored_speaker_prefixes = {
+            "lưu ý", "chú ý", "ghi chú", "hướng dẫn", "lời dẫn", "lời thoại",
+            "note", "warning", "tip", "info", "tập", "phần", "bài", "trích dẫn",
+            "chương", "cảnh", "hồi", "đoạn", "nhạc", "tiếng động",
+        }
         female_markers = {"nữ", "nu", "female", "woman", "girl", "cô", "chị", "bà", "mẹ", "em", "nàng", "thiếp", "tiểu thư"}
         male_markers = {"nam", "male", "man", "boy", "anh", "ông", "bố", "cha", "chú", "bác", "chàng", "huynh", "trẫm"}
         elder_markers = {"ông", "bà", "lão", "cụ", "elder", "old"}
@@ -1879,7 +2032,7 @@ class TTSEngine:
         named_speaker_map: Dict[str, str] = {}
         detected_profiles: Dict[str, Dict[str, Any]] = {}
 
-        def _register_speaker(spk_id: str, instruct_str: str, desc_str: str, method: str = "preset", ref_path: str = ""):
+        def _register_speaker(spk_id: str, instruct_str: str, desc_str: str, method: str = "preset", ref_path: str = "", user_locked: bool = False):
             if spk_id not in detected_profiles:
                 detected_profiles[spk_id] = {
                     "speaker_id": spk_id,
@@ -1889,6 +2042,7 @@ class TTSEngine:
                     "source_audio_path": ref_path,
                     "method": method,
                     "status": "locked",
+                    "user_locked": user_locked,
                     "instruct": instruct_str,
                     "voice_instruct": instruct_str,
                     "count": 0,
@@ -1908,7 +2062,17 @@ class TTSEngine:
             if m:
                 tag_name = (m.group(1) or m.group(2) or m.group(3) or "").strip()
                 tag_key = tag_name.lower()
-                if f"[{tag_key}]" not in NON_VERBAL_TAGS:
+                is_pure_num_or_ts = bool(re.match(r"^\d+([:.]\d+)?$", tag_name))
+                is_ignored_word = tag_key in ignored_speaker_prefixes
+                is_non_verbal = f"[{tag_key}]" in NON_VERBAL_TAGS
+                
+                is_valid_plain_name = True
+                if m.group(3):
+                    words_in_tag = tag_name.split()
+                    if len(words_in_tag) > 4 or not any(c.isalpha() for c in tag_name):
+                        is_valid_plain_name = False
+
+                if not is_pure_num_or_ts and not is_ignored_word and not is_non_verbal and is_valid_plain_name:
                     has_valid_prefix = True
                     clean_text = m.group(4).lstrip(":：-–— ").strip()
                     if blk.translated_text:
@@ -1946,7 +2110,7 @@ class TTSEngine:
                 if not ex_method:
                     ex_method = "clone" if ex_ref else "preset"
 
-                _register_speaker(assigned_spk, assigned_instruct, assigned_desc, method=ex_method, ref_path=ex_ref)
+                _register_speaker(assigned_spk, assigned_instruct, assigned_desc, method=ex_method, ref_path=ex_ref, user_locked=True)
                 continue
 
             assigned_spk = ""
@@ -2010,19 +2174,23 @@ class TTSEngine:
             blk.voice_ref_path = ""
             _register_speaker(assigned_spk, assigned_instruct, assigned_desc)
 
-        # Hợp nhất với self.speaker_profiles hiện có, bảo toàn các hồ sơ đã khóa
-        merged_profiles = dict(self.speaker_profiles) if self.speaker_profiles else {}
+        # Hợp nhất với self.speaker_profiles hiện có, bảo toàn các hồ sơ người dùng đã khóa
+        locked_names = {
+            getattr(b, "speaker", "")
+            for b in (blocks or [])
+            if getattr(b, "is_speaker_locked", False) and getattr(b, "speaker", "").strip()
+        }
+        def _user_locked(k, p):
+            if k in locked_names:
+                return True
+            if isinstance(p, dict):
+                return bool(p.get("user_locked", False))
+            return bool(getattr(p, "user_locked", False))
+
+        merged_profiles = {k: v for k, v in (self.speaker_profiles or {}).items() if _user_locked(k, v)}
         for spk_name, p_data in detected_profiles.items():
             if spk_name not in merged_profiles:
                 merged_profiles[spk_name] = p_data
-            else:
-                existing_prof = merged_profiles[spk_name]
-                is_locked = (
-                    (existing_prof.get("status") == "locked" if isinstance(existing_prof, dict) else getattr(existing_prof, "status", "")) == "locked"
-                    or (existing_prof.get("method") == "preset" if isinstance(existing_prof, dict) else getattr(existing_prof, "method", "")) == "preset"
-                )
-                if not is_locked:
-                    merged_profiles[spk_name] = p_data
 
         self.speaker_profiles = merged_profiles
         self.log(
@@ -2314,15 +2482,24 @@ class TTSEngine:
         existing = full_audio[start_sample:end_sample]
         active_indices = np.where(np.abs(existing) > 1e-4)[0]
         if len(active_indices) > 0:
-            max_fade = min(int(0.12 * sample_rate), len(audio_arr), len(existing))
-            fade_len = min(max_fade, int(active_indices[-1]) + 1)
+            overlap_end = int(active_indices[-1]) + 1
+            max_fade = min(int(0.12 * sample_rate), len(audio_arr), len(existing), overlap_end)
+            fade_len = max(max_fade, 4) if max_fade > 4 else 0
             if fade_len > 4:
                 t = np.linspace(0.0, np.pi / 2.0, fade_len, dtype=np.float32)
                 fade_out = np.cos(t) ** 2
                 fade_in = np.sin(t) ** 2
                 blended = existing[:fade_len] * fade_out + audio_arr[:fade_len] * fade_in
                 full_audio[start_sample : start_sample + fade_len] = blended
-                full_audio[start_sample + fade_len : end_sample] = audio_arr[fade_len:]
+
+                # Nếu đoạn cũ còn kéo dài sau fade_len (do đuôi câu trước bị lấn), hòa trộn nhẹ thay vì ghi đè mất tiếng
+                if overlap_end > fade_len:
+                    mid_existing = existing[fade_len:overlap_end]
+                    mid_audio = audio_arr[fade_len:overlap_end]
+                    full_audio[start_sample + fade_len : start_sample + overlap_end] = np.maximum(-1.0, np.minimum(1.0, mid_existing + mid_audio))
+
+                if end_sample > start_sample + overlap_end:
+                    full_audio[start_sample + overlap_end : end_sample] = audio_arr[overlap_end:]
             else:
                 full_audio[start_sample:end_sample] = np.maximum(-1.0, np.minimum(1.0, existing + audio_arr))
         else:
@@ -2405,7 +2582,7 @@ class TTSEngine:
             f"{index}|{text}|{speaker}|{method_or_mode or ''}|{ref_path or ''}|{mtime_str}|"
             f"{instruct or ''}|{target_dur or 0.0:.2f}|{self.mode}|{self.speed:.2f}|"
             f"{getattr(self, 'guidance_scale', 2.0):.2f}|{getattr(self, 'num_step', 32)}|"
-            f"{int(getattr(self, 'denoise', True))}|{getattr(self, 't_shift', 0.5):.2f}"
+            f"{int(getattr(self, 'denoise', True))}|{getattr(self, 't_shift', 0.5):.2f}|{getattr(self, 'overflow_strategy', 'extend')}"
         )
         digest = hashlib.sha1(raw_key.encode("utf-8", errors="ignore")).hexdigest()[:16]
         return os.path.join(self.resume_cache_dir, f"blk_{index + 1:04d}_{digest}.wav")
@@ -2442,7 +2619,13 @@ class TTSEngine:
                         ref_path = blk.voice_ref_path
                         break
 
-            char_prompt_key = f"character_{spk}"
+            mtime_suffix = ""
+            if ref_path and os.path.exists(ref_path):
+                try:
+                    mtime_suffix = f"_{int(os.path.getmtime(ref_path))}"
+                except Exception:
+                    pass
+            char_prompt_key = f"character_{spk}{mtime_suffix}"
 
             # 1. Nếu nhân vật chọn phương pháp preset hoặc đã có preset chỉ định rõ
             if method == "preset" and preset_name in VIETNAMESE_VOICE_CATALOG:
@@ -2451,10 +2634,16 @@ class TTSEngine:
 
             # 2. Nếu nhân vật chọn phương pháp clone
             if method == "clone" and ref_path and os.path.exists(ref_path):
-                if char_prompt_key not in self._speaker_prompt_cache:
-                    prompt = self._get_or_create_prompt_for_audio(ref_path, cache_key=char_prompt_key)
+                if char_prompt_key not in self._speaker_prompt_cache and f"character_{spk}" not in self._speaker_prompt_cache:
+                    prof_ref_text = prof.get("ref_text", "") if isinstance(prof, dict) else getattr(prof, "ref_text", "")
+                    prompt = self._get_or_create_prompt_for_audio(
+                        ref_path,
+                        cache_key=char_prompt_key,
+                        ref_text=prof_ref_text or None,
+                    )
                     if prompt is not None:
                         self._speaker_prompt_cache[char_prompt_key] = prompt
+                        self._speaker_prompt_cache[f"character_{spk}"] = prompt
                     else:
                         # Tạo prompt thất bại: Chuyển đổi dự phòng an toàn sang preset tiếng Việt và khóa vĩnh viễn
                         chosen_preset = preset_name if preset_name in VIETNAMESE_VOICE_CATALOG else preset_keys[idx % len(preset_keys)]
@@ -2525,10 +2714,18 @@ class TTSEngine:
 
         if self.multi_speaker_mode == "auto_video_cluster" and video_path and os.path.exists(video_path):
             if has_unassigned_or_unlocked:
-                self.detect_speakers_from_video(video_path, blocks, max_speakers=self.max_speakers)
+                try:
+                    self.detect_speakers_from_video(video_path, blocks, max_speakers=self.max_speakers)
+                except Exception as exc:
+                    self.last_diarization_error = str(exc)
+                    self.log(f"Cảnh báo: Nhận diện người nói từ video thất bại ({exc}), tiếp tục tổng hợp với cấu hình mặc định.")
         elif self.multi_speaker_mode == "auto_srt_text":
             if has_unassigned_or_unlocked:
-                self.detect_speakers_from_srt_text(blocks, max_speakers=self.max_speakers)
+                try:
+                    self.detect_speakers_from_srt_text(blocks, max_speakers=self.max_speakers)
+                except Exception as exc:
+                    self.last_diarization_error = str(exc)
+                    self.log(f"Cảnh báo: Phân vai từ văn bản phụ đề thất bại ({exc}), tiếp tục tổng hợp với cấu hình mặc định.")
         elif self.multi_speaker_mode == "per_line_video_clone" and video_path and os.path.exists(video_path):
             self.log("Đang tách kênh giọng nói gốc khỏi nhạc nền để nhái giọng theo từng câu thoại...")
             sep = VoiceSeparator()
@@ -2560,11 +2757,7 @@ class TTSEngine:
                 target_ins = DEFAULT_SPEAKER_PRESETS["Người nói 1"]["instruct"]
 
             resolved_preset = getattr(self, "preset_name", "unified")
-            sample_text = ANCHOR_SAMPLE_VI
-            if resolved_preset in VIETNAMESE_VOICE_CATALOG:
-                s_vi = VIETNAMESE_VOICE_CATALOG[resolved_preset].get("sample_vi", "")
-                if len(s_vi.split()) >= 12:
-                    sample_text = s_vi
+            sample_text = self._get_anchor_sample_text(resolved_preset)
 
             unified_anchor_prompt, unified_anchor_wav = self._build_anchor_prompt(
                 key=f"unified_{resolved_preset}",
@@ -2590,6 +2783,8 @@ class TTSEngine:
 
         total_samples = int((max(total_duration, 1.0) + 5.0) * self.sample_rate)
         full_audio = np.zeros(total_samples, dtype=np.float32)
+        speech_cursor_sample: int = 0
+        generated_blocks_audio: List[Dict[str, Any]] = []
 
         # GIAI ĐOẠN 3 & 4: Tổng hợp từng câu, kiểm tra chất lượng và căn chỉnh âm thanh
         for i, blk in enumerate(blocks):
@@ -2607,11 +2802,11 @@ class TTSEngine:
                 report.skipped_empty_count += 1
                 continue
 
-            text_to_speak = (
-                preprocess_vietnamese_tts_text(raw_text)
-                if (self.language in (None, "vi") and self.normalize_text)
-                else raw_text.strip()
-            )
+            if self.language in (None, "vi") and self.normalize_text:
+                text_to_speak = preprocess_vietnamese_tts_text(raw_text)
+            else:
+                cleaned_tx = re.sub(r"\s*[\r\n]+\s*", " ", raw_text)
+                text_to_speak = re.sub(r"(^|\s)[-–—]\s+", r"\1", cleaned_tx).strip()
 
             start_sec = max(0.0, parse_timestamp_to_seconds(blk.start_time))
             end_sec = max(start_sec + 0.2, parse_timestamp_to_seconds(getattr(blk, "end_time", start_sec)))
@@ -2682,7 +2877,10 @@ class TTSEngine:
                         )
                     if override_prompt is None:
                         self.log("Cảnh báo: Không thể nạp đặc trưng giọng mẫu nhân bản trong chế độ một giọng.")
-                        raise RuntimeError(f"Không thể khởi tạo mẫu giọng nhân bản cho chế độ một giọng từ tệp: {self.ref_audio_path or 'chưa có'}")
+                        report.status = "failed"
+                        report.message = f"Không thể khởi tạo mẫu giọng nhân bản cho chế độ một giọng từ tệp: {self.ref_audio_path or 'chưa có'}"
+                        self.last_report = report
+                        return report
             elif override_prompt is None and spk_key:
                 prof = self.speaker_profiles.get(spk_key, {}) if spk_key else {}
                 is_dict = isinstance(prof, dict)
@@ -2770,7 +2968,6 @@ class TTSEngine:
                             elif spk_key and spk_key != "Chưa xác định":
                                 preset_keys = list(VIETNAMESE_VOICE_CATALOG.keys())
                                 cluster_num = 0
-                                import re
                                 match = re.search(r"\d+", spk_key)
                                 if match:
                                     cluster_num = int(match.group()) - 1
@@ -2803,6 +3000,18 @@ class TTSEngine:
                                             active_block_mode = "design"
                                             spk_label = f"{neighbor_spk} (kế thừa)"
 
+                                if override_prompt is None and not override_instruct:
+                                    fb_p, fb_w = self._get_or_create_fallback_anchor()
+                                    if fb_p is not None:
+                                        override_prompt = fb_p
+                                        override_ref = fb_w
+                                        active_block_mode = "clone"
+                                        spk_label = "Giọng mỏ neo dự phòng"
+                                    else:
+                                        override_instruct = self.instruct or DEFAULT_SPEAKER_PRESETS["Người nói 1"]["instruct"]
+                                        active_block_mode = "design"
+                                        spk_label = "Thiết kế giọng dự phòng"
+
             if active_block_mode == "design":
                 method_desc = f"Thiết kế giọng: {override_instruct[:30]}..." if override_instruct else "Thiết kế giọng"
             elif override_ref and "anchor_" in os.path.basename(override_ref):
@@ -2820,10 +3029,23 @@ class TTSEngine:
                     cached_arr, c_sr = sf.read(cache_wav_path, dtype="float32")
                     if cached_arr.ndim > 1:
                         cached_arr = np.mean(cached_arr, axis=1)
-                    start_sample = int(start_sec * self.sample_rate)
+                    nominal_sample = int(start_sec * self.sample_rate)
+                    if self.overflow_strategy == "preserve_speech":
+                        min_gap = int(0.04 * self.sample_rate)
+                        max_drift = int(1.5 * self.sample_rate)
+                        start_sample = min(max(nominal_sample, speech_cursor_sample + min_gap), nominal_sample + max_drift)
+                    else:
+                        start_sample = nominal_sample
+
                     full_audio = self._overlay_audio_segment(full_audio, cached_arr, start_sample, self.sample_rate)
+                    speech_cursor_sample = start_sample + len(cached_arr)
                     report.succeeded_count += 1
                     report.resumed_from_cache_count += 1
+                    generated_blocks_audio.append({
+                        "index": i, "audio": cached_arr, "start_sample": start_sample, "spk_key": spk_key or spk_label,
+                        "text": text_to_speak, "target_dur": target_dur, "mode": active_block_mode,
+                        "prompt": override_prompt, "ref": override_ref, "instruct": override_instruct,
+                    })
                     self.log(f"Khôi phục từ bộ nhớ đệm [{i + 1}/{len(blocks)}] ({spk_label} · {method_desc}): {text_to_speak}")
                     continue
 
@@ -2920,9 +3142,22 @@ class TTSEngine:
                     except Exception:
                         pass
 
-                start_sample = int(start_sec * self.sample_rate)
+                nominal_sample = int(start_sec * self.sample_rate)
+                if self.overflow_strategy == "preserve_speech":
+                    min_gap = int(0.04 * self.sample_rate)
+                    max_drift = int(1.5 * self.sample_rate)
+                    start_sample = min(max(nominal_sample, speech_cursor_sample + min_gap), nominal_sample + max_drift)
+                else:
+                    start_sample = nominal_sample
+
                 full_audio = self._overlay_audio_segment(full_audio, audio_arr, start_sample, self.sample_rate)
+                speech_cursor_sample = start_sample + len(audio_arr)
                 report.succeeded_count += 1
+                generated_blocks_audio.append({
+                    "index": i, "audio": audio_arr, "start_sample": start_sample, "spk_key": spk_key or spk_label,
+                    "text": text_to_speak, "target_dur": target_dur, "mode": active_block_mode,
+                    "prompt": override_prompt, "ref": override_ref, "instruct": override_instruct,
+                })
 
             except Exception as e:
                 err_str = str(e)
@@ -2941,6 +3176,22 @@ class TTSEngine:
                     )
                 else:
                     self.log(f"Lỗi khi tổng hợp khối phụ đề {i + 1}: {err_str}")
+
+        # GIAI ĐOẠN 3.5: Kiểm định tính nhất quán âm sắc bằng mô hình CAM++ và tự động tái tạo câu lệch chuẩn
+        if (
+            not self._cancel_requested
+            and getattr(self, "speaker_model_path", "")
+            and os.path.exists(self.speaker_model_path)
+            and len(generated_blocks_audio) >= 2
+        ):
+            try:
+                self._verify_and_refine_voice_consistency(
+                    generated_blocks_audio=generated_blocks_audio,
+                    full_audio=full_audio,
+                    report=report,
+                )
+            except Exception as verif_err:
+                self.log(f"Kiểm tra tính nhất quán CAM++ bỏ qua: {verif_err}")
 
         # Chuẩn hóa âm lượng đầu ra an toàn (-1.0 dBFS / đỉnh tối đa 0.891) tránh vỡ tiếng khi ghép video
         max_peak = float(np.max(np.abs(full_audio))) if full_audio.size > 0 else 0.0
@@ -2993,6 +3244,105 @@ class TTSEngine:
 
         self.last_report = report
         return report
+
+    def _verify_and_refine_voice_consistency(
+        self,
+        generated_blocks_audio: List[Dict[str, Any]],
+        full_audio: np.ndarray,
+        report: DubbingReport,
+        min_sim: float = 0.65,
+    ) -> None:
+        """
+        Kiểm định tính nhất quán âm sắc bằng mô hình CAM++ và tự động tái tạo câu lệch chuẩn:
+        - Gom nhóm các câu thoại theo từng nhân vật (hoặc giọng đồng nhất)
+        - Trích xuất embedding cho các câu có thời lượng >= 0.8 giây
+        - Tính vector trọng tâm (centroid) âm sắc chuẩn hóa L2 của nhân vật
+        - Đo độ tương đồng cosin của từng câu với centroid
+        - Tự động tổng hợp lại tối đa 2 lần với seed khác đối với các câu có độ tương đồng < min_sim
+        """
+        from .speaker_embedding_onnx import create_speaker_session, extract_speaker_embedding, close_speaker_session
+
+        session = None
+        try:
+            session = create_speaker_session(self.speaker_model_path, prefer_cuda=False)
+            if session is None:
+                return
+
+            spk_groups: Dict[str, List[Dict[str, Any]]] = {}
+            for rec in generated_blocks_audio:
+                s_key = rec.get("spk_key") or "default"
+                spk_groups.setdefault(s_key, []).append(rec)
+
+            for s_key, items in spk_groups.items():
+                if len(items) < 2:
+                    continue
+
+                valid_items = [it for it in items if len(it["audio"]) >= int(0.8 * self.sample_rate)]
+                if len(valid_items) < 2:
+                    continue
+
+                embs = []
+                for it in valid_items:
+                    emb = extract_speaker_embedding(session, it["audio"], sample_rate=self.sample_rate)
+                    embs.append(emb)
+
+                centroid = np.mean(np.stack(embs, axis=0), axis=0)
+                norm = float(np.linalg.norm(centroid))
+                if norm < 1e-6:
+                    continue
+                centroid = centroid / norm
+
+                for idx_it, it in enumerate(valid_items):
+                    emb = embs[idx_it]
+                    sim = float(np.dot(emb, centroid))
+                    if sim < min_sim:
+                        self.log(
+                            f"Phát hiện câu {it['index'] + 1} có âm sắc lệch chuẩn ({round(sim, 2)} < {min_sim}). "
+                            "Đang tự động tái tạo với hạt số mới..."
+                        )
+                        best_audio = it["audio"]
+                        best_sim = sim
+                        for retry in range(2):
+                            if self._cancel_requested:
+                                break
+                            r_seed = 10007 + retry * 7919 + it["index"] * 101
+                            if torch is not None:
+                                torch.manual_seed(r_seed)
+                                if torch.cuda.is_available():
+                                    torch.cuda.manual_seed_all(r_seed)
+
+                            new_arr = self.generate_single(
+                                it["text"],
+                                override_mode=it["mode"],
+                                override_prompt=it["prompt"],
+                                override_ref_audio=it["ref"],
+                                override_instruct=it["instruct"],
+                            )
+                            if len(new_arr) > 0:
+                                new_arr = np.squeeze(np.asarray(new_arr, dtype=np.float32))
+                                trimmed = self._trim_silence_padding(new_arr, sample_rate=self.sample_rate)
+                                if len(trimmed) > 0:
+                                    new_arr = trimmed
+                                if len(new_arr) >= int(0.5 * self.sample_rate):
+                                    new_emb = extract_speaker_embedding(session, new_arr, sample_rate=self.sample_rate)
+                                    new_sim = float(np.dot(new_emb, centroid))
+                                    if new_sim > best_sim:
+                                        best_sim = new_sim
+                                        best_audio = new_arr
+                                        if new_sim >= min_sim:
+                                            break
+
+                        if best_sim > sim:
+                            it["audio"] = best_audio
+                            full_audio[it["start_sample"] : it["start_sample"] + len(best_audio)] = best_audio
+                            report.inconsistent_retried_count += 1
+                            self.log(
+                                f"Tái tạo câu {it['index'] + 1} thành công: "
+                                f"Độ tương đồng âm sắc nâng từ {round(sim, 2)} lên {round(best_sim, 2)}."
+                            )
+        finally:
+            if session is not None:
+                close_speaker_session(session)
 
     def _get_video_duration(self, video_path: str) -> float:
         """Lấy độ dài thời gian của video bằng FFmpeg."""
@@ -3121,7 +3471,7 @@ class TTSEngine:
             "-i", video_in,
             "-i", tts_audio_in,
             "-filter_complex",
-            f"[0:a]volume={original_volume}[a0]; [1:a]volume=1.0[a1]; [a0][a1]amix=inputs=2:duration=first:dropout_transition=2,alimiter=limit=0.96[outa]",
+            f"[0:a]volume={original_volume}[a0]; [1:a]volume=1.0[a1]; [a0][a1]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,alimiter=limit=0.96[outa]",
             "-map", "0:v", "-map", "[outa]",
             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
             video_out,

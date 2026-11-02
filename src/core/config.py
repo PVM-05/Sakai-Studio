@@ -843,6 +843,14 @@ class Config(QConfig):
     )
     mmoTTSMaxSpeakers = RangeConfigItem("MMO", "TTSMaxSpeakers", 4, RangeValidator(1, 16))
     mmoTTSAIVocalSeparation = ConfigItem("MMO", "TTSAIVocalSeparation", True, BoolValidator())
+    mmoTTSEnableAiVocalSeparation = mmoTTSAIVocalSeparation
+    mmoTTSResumeCacheDir = ConfigItem("MMO", "TTSResumeCacheDir", "")
+    mmoTTSOverflowStrategy = OptionsConfigItem(
+        "MMO",
+        "TTSOverflowStrategy",
+        "extend",
+        OptionsValidator(["extend", "stretch", "strict_sync", "preserve_speech"]),
+    )
     mmoTTSDuckingMode = OptionsConfigItem("MMO", "TTSDuckingMode", "dynamic", OptionsValidator(["dynamic", "fixed"]))
     mmoTTSTShift = ConfigItem("MMO", "TTSTShift", 0.1)
     mmoTTSLayerPenalty = ConfigItem("MMO", "TTSLayerPenalty", 5.0)
@@ -865,6 +873,7 @@ if not os.path.exists(CONFIG_FILE):
             except Exception:
                 pass
 config = Config()
+cfg = config
 qconfig.load(CONFIG_FILE, config)
 
 # Backward compatibility migration

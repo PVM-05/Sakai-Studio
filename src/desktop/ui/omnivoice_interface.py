@@ -4043,6 +4043,8 @@ class OmniVoiceInterface(ScrollArea):
 
                 "status": "locked",
 
+                "user_locked": True,
+
                 "source_audio_path": file_path,
 
             }
@@ -4059,6 +4061,8 @@ class OmniVoiceInterface(ScrollArea):
 
             prof.status = "locked"
 
+            prof.user_locked = True
+
         else:
 
             prof["source_audio_path"] = file_path
@@ -4074,6 +4078,8 @@ class OmniVoiceInterface(ScrollArea):
             prof["method"] = "clone"
 
             prof["status"] = "locked"
+
+            prof["user_locked"] = True
 
         for blk in self.subtitle_blocks:
 
@@ -4261,6 +4267,7 @@ class OmniVoiceInterface(ScrollArea):
             self.speaker_profiles[target_spk] = CharacterVoiceProfile(
                 speaker_id=f"spk_{len(self.speaker_profiles)}",
                 display_name=target_spk,
+                user_locked=True,
             )
 
         self.sub_table.blockSignals(True)
@@ -4868,12 +4875,14 @@ class OmniVoiceInterface(ScrollArea):
             prof.voice_instruct = instruct_val
             prof.source_audio_path = ""
             prof.status = "locked"
+            prof.user_locked = True
         else:
             prof["method"] = "preset"
             prof["preset_name"] = preset_name
             prof["voice_instruct"] = instruct_val
             prof["source_audio_path"] = ""
             prof["status"] = "locked"
+            prof["user_locked"] = True
 
         for blk in self.subtitle_blocks:
             if getattr(blk, "speaker", "") == spk_name:

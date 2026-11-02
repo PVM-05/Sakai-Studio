@@ -1713,8 +1713,8 @@ def _combine_text(text, ref_text: Optional[str] = None) -> str:
     else:
         full_text = text.strip()
 
-    # filter out newline / carriage-return characters
-    full_text = re.sub(r"[\r\n]+", "", full_text)
+    # filter out newline / carriage-return characters and replace with space to avoid word concatenation
+    full_text = re.sub(r"[\r\n]+", " ", full_text)
 
     # replace Chinese parentheses with English ones
     full_text = full_text.replace("\uff08", "(").replace("\uff09", ")")
