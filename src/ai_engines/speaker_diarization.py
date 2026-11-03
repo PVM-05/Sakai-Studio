@@ -408,35 +408,55 @@ def agglomerative_cluster_embeddings(
 
     effective_max_k = max(1, min(int(max_k), n_samples))
 
-    while len(clusters) > 1:
-        if target_k is not None and len(clusters) <= target_k:
-            break
+    try:
+        from scipy.spatial.distance import squareform
+        from scipy.cluster.hierarchy import linkage, fcluster
 
-        n_c = len(clusters)
-        min_dist = float("inf")
-        merge_i, merge_j = -1, -1
+        condensed_dist = squareform(dist_matrix, checks=False)
+        Z = linkage(condensed_dist, method="average")
 
-        # Tìm 2 cụm có khoảng cách liên kết trung bình nhỏ nhất
-        for i in range(n_c):
-            c_i = clusters[i]
-            for j in range(i + 1, n_c):
-                c_j = clusters[j]
-                sub_dists = dist_matrix[np.ix_(c_i, c_j)]
-                avg_dist = float(np.mean(sub_dists))
-                if avg_dist < min_dist:
-                    min_dist = avg_dist
-                    merge_i, merge_j = i, j
+        if target_k is not None:
+            raw_labels = fcluster(Z, t=target_k, criterion="maxclust") - 1
+        else:
+            raw_labels = fcluster(Z, t=threshold, criterion="distance") - 1
+            n_c = len(np.unique(raw_labels))
+            if n_c > effective_max_k:
+                raw_labels = fcluster(Z, t=effective_max_k, criterion="maxclust") - 1
+            elif n_c < min_k and n_samples >= min_k:
+                raw_labels = fcluster(Z, t=min_k, criterion="maxclust") - 1
 
-        if target_k is None:
-            # Chế độ tự động theo ngưỡng: nếu khoảng cách nhỏ nhất đã vượt threshold và số cụm đã <= max_k
-            if min_dist > threshold and len(clusters) <= effective_max_k:
+        cluster_dict: Dict[int, List[int]] = {}
+        for idx, lbl in enumerate(raw_labels):
+            cluster_dict.setdefault(int(lbl), []).append(idx)
+        clusters = list(cluster_dict.values())
+    except Exception:
+        clusters = [[i] for i in range(n_samples)]
+        while len(clusters) > 1:
+            if target_k is not None and len(clusters) <= target_k:
                 break
-            if len(clusters) <= min_k:
-                break
 
-        # Gộp cụm merge_j vào cụm merge_i và xóa cụm merge_j
-        clusters[merge_i].extend(clusters[merge_j])
-        clusters.pop(merge_j)
+            n_c = len(clusters)
+            min_dist = float("inf")
+            merge_i, merge_j = -1, -1
+
+            for i in range(n_c):
+                c_i = clusters[i]
+                for j in range(i + 1, n_c):
+                    c_j = clusters[j]
+                    sub_dists = dist_matrix[np.ix_(c_i, c_j)]
+                    avg_dist = float(np.mean(sub_dists))
+                    if avg_dist < min_dist:
+                        min_dist = avg_dist
+                        merge_i, merge_j = i, j
+
+            if target_k is None:
+                if min_dist > threshold and len(clusters) <= effective_max_k:
+                    break
+                if len(clusters) <= min_k:
+                    break
+
+            clusters[merge_i].extend(clusters[merge_j])
+            clusters.pop(merge_j)
 
     # Nếu ở chế độ tự động (không chỉ định exact_k) và đã gom thành nhiều cụm (>= 2):
     # Kiểm tra hệ số Silhouette để xác thực xem dữ liệu có thực sự tách biệt thành nhiều người nói hay không.

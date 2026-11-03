@@ -1525,9 +1525,9 @@ def test_audition_button_recovers_on_playback_end():
 def test_synthesize_blocks_strictly_respects_preset_method_over_stale_clone_path(tmp_path):
     """
     Xác minh synthesize_blocks tôn trọng tuyệt đối phương pháp preset:
-    - Khi nhân vật được đặt method='preset', ngay cả khi hồ sơ còn source_audio_path hoặc _speaker_prompt_cache,
-      hệ thống bắt buộc phải truyền override_mode='design', xóa override_prompt và override_ref_audio,
-      và chỉ sử dụng override_instruct.
+    - Khi nhân vật được đặt method='preset', ngay cả khi hồ sơ còn source_audio_path từ video cũ,
+      hệ thống tạo và khóa mỏ neo preset cho nhân vật để clone thống nhất,
+      tuyệt đối không sử dụng tệp âm thanh clone cũ (source_audio_path).
     """
     from unittest.mock import MagicMock
     from src.ai_engines.tts_engine import TTSEngine, SubtitleBlock
@@ -1538,6 +1538,10 @@ def test_synthesize_blocks_strictly_respects_preset_method_over_stale_clone_path
     ref_audio = tmp_path / "stale_sample.wav"
     ref_audio.write_bytes(b"RIFFdummydata")
 
+    mock_anchor_prompt = MagicMock()
+    mock_anchor_wav = str(tmp_path / "anchor_preset.wav")
+    engine._build_anchor_prompt = MagicMock(return_value=(mock_anchor_prompt, mock_anchor_wav))
+
     prof = CharacterVoiceProfile(
         speaker_id="spk_preset",
         display_name="Nhân vật 1",
@@ -1547,7 +1551,6 @@ def test_synthesize_blocks_strictly_respects_preset_method_over_stale_clone_path
         source_audio_path=str(ref_audio),
     )
     engine.speaker_profiles = {"Nhân vật 1": prof}
-    engine._speaker_prompt_cache["character_Nhân vật 1"] = MagicMock()
 
     blocks = [
         SubtitleBlock(
@@ -1574,10 +1577,11 @@ def test_synthesize_blocks_strictly_respects_preset_method_over_stale_clone_path
 
     assert len(captured_calls) == 1
     call = captured_calls[0]
-    assert call.get("override_mode") == "design"
-    assert call.get("override_prompt") is None
-    assert call.get("override_ref_audio") is None
-    assert call.get("override_instruct") == "male, young adult, clear"
+    assert call.get("override_mode") == "clone"
+    assert call.get("override_prompt") is mock_anchor_prompt
+    assert call.get("override_ref_audio") == mock_anchor_wav
+    assert call.get("override_ref_audio") != str(ref_audio)
+    assert call.get("override_instruct") is None
 
 
 def test_compute_block_cache_path_includes_method_and_mtime(tmp_path):

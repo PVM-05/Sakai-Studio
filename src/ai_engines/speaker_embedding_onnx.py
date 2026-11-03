@@ -114,6 +114,8 @@ def download_speaker_embedding_model(
         target_dir = project_root / "models" / "speaker_embedding"
     else:
         target_dir = Path(target_dir)
+        if target_dir.suffix.lower() == ".onnx" or (target_dir.is_file() and not target_dir.is_dir()):
+            target_dir = target_dir.parent
 
     from src.ai_engines.model_hashes import verify_weight_file
 
@@ -145,7 +147,9 @@ def download_speaker_embedding_model(
 
             shutil.copyfile(str(downloaded_path), str(target_file))
         res_file = target_file if target_file.is_file() else downloaded_path
-        verify_weight_file(res_file, "campplus.onnx")
+        verified = verify_weight_file(res_file, "campplus.onnx") or verify_weight_file(res_file, "campplus_cn_en_common_200k.onnx")
+        if not verified:
+            logger.warning(f"Cảnh báo: Tệp mô hình tải về ({res_file.name}) không khớp mã băm SHA-256 đã biết.")
         return str(res_file.resolve())
     except Exception as e:
         logger.error(f"Không thể tự động tải mô hình CAM++ ONNX: {e}")
@@ -245,17 +249,32 @@ def create_speaker_session(
 
 
 def _preprocess_audio(audio_data: np.ndarray, sample_rate: int = 16000) -> np.ndarray:
-    """Chuẩn hóa âm thanh đầu vào thành mono float32 và loại bỏ DC."""
+    """Chuẩn hóa âm thanh đầu vào thành mono float32 16 kHz và loại bỏ DC."""
     audio = np.asarray(audio_data)
     if audio.size == 0:
         raise ValueError("Đoạn âm thanh rỗng.")
-    if sample_rate != 16000:
-        raise ValueError(f"Mô hình speaker embedding yêu cầu 16 kHz; nhận được {sample_rate} Hz.")
     if audio.ndim > 1:
         audio = np.mean(audio, axis=1)
     audio = audio.astype(np.float32, copy=False)
     if not np.all(np.isfinite(audio)):
         raise ValueError("Âm thanh có chứa NaN hoặc vô cực.")
+
+    if sample_rate != 16000:
+        num_samples = int(round(len(audio) * 16000.0 / float(sample_rate)))
+        try:
+            import torchaudio.functional as F_ta
+            import torch
+
+            t = torch.from_numpy(audio).float()
+            if t.ndim == 1:
+                t = t.unsqueeze(0)
+            audio = F_ta.resample(t, int(sample_rate), 16000).squeeze(0).numpy()
+        except Exception:
+            from scipy import signal
+
+            audio = signal.resample(audio, num_samples).astype(np.float32)
+        sample_rate = 16000
+
     audio = audio - float(np.mean(audio))
     if len(audio) < int(0.25 * sample_rate):
         audio = np.pad(audio, (0, int(0.25 * sample_rate) - len(audio)))

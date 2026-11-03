@@ -1834,5 +1834,152 @@ def test_single_clone_fails_early_when_no_audio(tmp_path):
     assert "Không tìm thấy" in report.message or "không thể" in report.message
 
 
+def test_normalize_vietnamese_large_numbers_and_version_strings():
+    """Kiểm tra đọc đúng số tiền hàng triệu, số nghìn và phân biệt với chuỗi phiên bản."""
+    from src.ai_engines.tts_engine import normalize_vietnamese_numbers_and_text
+
+    t1 = normalize_vietnamese_numbers_and_text("Chi phí là 1.000.000 đồng")
+    assert "một triệu đồng" in t1
+    assert "chấm không" not in t1
+
+    t2 = normalize_vietnamese_numbers_and_text("Có 2.500 người tham gia")
+    assert "hai nghìn năm trăm người" in t2
+
+    t3 = normalize_vietnamese_numbers_and_text("Phiên bản v1.2.3 đã ra mắt")
+    assert "chấm" in t3
+
+
+def test_agglomerative_cluster_embeddings_scipy_accuracy():
+    """Kiểm tra phân cụm thứ bậc SciPy gom đúng 2 cụm vector tách biệt."""
+    from src.ai_engines.speaker_diarization import agglomerative_cluster_embeddings
+
+    # Tạo 2 nhóm vector trực giao rõ rệt
+    c1 = np.tile([1.0, 0.0, 0.0, 0.0], (4, 1))
+    c2 = np.tile([0.0, 1.0, 0.0, 0.0], (4, 1))
+    embs = np.vstack([c1, c2])
+
+    labels = agglomerative_cluster_embeddings(embs, exact_k=2)
+    assert len(labels) == 8
+    assert len(np.unique(labels)) == 2
+    assert np.all(labels[:4] == labels[0])
+    assert np.all(labels[4:] == labels[4])
+    assert labels[0] != labels[4]
+
+
+def test_download_speaker_embedding_model_file_path_handling(tmp_path):
+    """Kiểm tra hàm tải mô hình xử lý an toàn khi tham số là đường dẫn tệp thay vì thư mục."""
+    from src.ai_engines.speaker_embedding_onnx import download_speaker_embedding_model
+
+    file_target = tmp_path / "models" / "campplus.onnx"
+    # Giả lập tệp mô hình đã tồn tại sẵn
+    file_target.parent.mkdir(parents=True, exist_ok=True)
+    file_target.write_bytes(b"RIFF" + b"0" * 2000)
+
+    with patch("src.ai_engines.model_hashes.verify_weight_file", return_value=True):
+        res = download_speaker_embedding_model(file_target)
+        assert Path(res).is_file()
+        assert not (file_target.parent / "campplus.onnx").is_dir()
+
+
+def test_preprocess_audio_resamples_24k_to_16k():
+    """Kiểm tra _preprocess_audio tự động lấy mẫu lại từ 24 kHz về 16 kHz an toàn."""
+    from src.ai_engines.speaker_embedding_onnx import _preprocess_audio
+
+    # Tạo tín hiệu 24 kHz dài 1 giây (24000 mẫu)
+    audio_24k = np.sin(2 * np.pi * 440 * np.linspace(0, 1, 24000)).astype(np.float32)
+    processed = _preprocess_audio(audio_24k, sample_rate=24000)
+
+    # Đầu ra phải tương ứng 16000 mẫu (hoặc tối thiểu 0.25s)
+    assert len(processed) >= 15000 and len(processed) <= 17000
+    assert np.all(np.isfinite(processed))
+
+
+def test_generate_single_respects_custom_seed():
+    """Kiểm tra generate_single chấp nhận tham số hạt số ngẫu nhiên riêng biệt khi tái tạo."""
+    import torch
+    engine = TTSEngine(auto_extract_ref=False, instruct="instruct gốc")
+    engine.load_model = MagicMock()
+    engine.model = MagicMock()
+    engine.model.generate = MagicMock(return_value=[np.zeros(24000, dtype=np.float32)])
+
+    captured_seed = None
+
+    def fake_manual_seed(seed):
+        nonlocal captured_seed
+        captured_seed = seed
+
+    with patch("torch.manual_seed", side_effect=fake_manual_seed):
+        engine.generate_single("Kiểm tra hạt số", seed=777888)
+
+    assert captured_seed == 777888
+
+
+def test_reset_speaker_locked_prompt_removes_anchor_files_on_disk(tmp_path):
+    """Kiểm tra reset_speaker_locked_prompt dọn sạch các tệp mỏ neo đĩa của nhân vật."""
+    engine = TTSEngine(auto_extract_ref=False)
+    engine.voice_prompt_cache_dir = str(tmp_path)
+
+    wav_file = tmp_path / "anchor_spk1_test.wav"
+    pt_file = tmp_path / "anchor_spk1_test.pt"
+    wav_file.write_bytes(b"wavdata")
+    pt_file.write_bytes(b"ptdata")
+
+    engine._speaker_prompt_cache["char_Người nói 1"] = MagicMock()
+    engine._speaker_anchor_files["char_Người nói 1"] = {str(wav_file), str(pt_file)}
+
+    engine.reset_speaker_locked_prompt("Người nói 1")
+
+    assert not wav_file.exists()
+    assert not pt_file.exists()
+    assert "char_Người nói 1" not in engine._speaker_prompt_cache
+
+
+def test_compute_block_cache_path_includes_language_and_ref_audio(tmp_path):
+    """Kiểm tra khóa cache phụ thuộc vào ngôn ngữ và tệp âm thanh mẫu."""
+    engine = TTSEngine(auto_extract_ref=False, mode="clone")
+    engine.resume_cache_dir = str(tmp_path)
+    engine.ref_audio_path = str(tmp_path / "ref_a.wav")
+    (tmp_path / "ref_a.wav").write_bytes(b"123")
+
+    engine.language = "vi"
+    p_vi = engine._compute_block_cache_path(0, "Chào", "unified", None, None, 2.0)
+
+    engine.language = "en"
+    p_en = engine._compute_block_cache_path(0, "Chào", "unified", None, None, 2.0)
+
+    assert p_vi != p_en
+
+
+def test_synthesize_blocks_single_auto_mode_builds_anchor_prompt(tmp_path):
+    """Kiểm tra chế độ một giọng với mode='auto' tạo và khóa mỏ neo thống nhất."""
+    engine = TTSEngine(auto_extract_ref=False, mode="auto", multi_speaker_mode="single")
+    engine.load_model = MagicMock()
+
+    mock_prompt = MagicMock()
+    anchor_wav = str(tmp_path / "anchor_auto.wav")
+    engine._build_anchor_prompt = MagicMock(return_value=(mock_prompt, anchor_wav))
+
+    captured_calls = []
+
+    def fake_generate_single(text, **kwargs):
+        captured_calls.append(kwargs)
+        return np.zeros(24000, dtype=np.float32)
+
+    engine.generate_single = fake_generate_single
+
+    b1 = SubtitleBlock(1, "00:00:01,000", "00:00:03,000", "Câu một")
+    b2 = SubtitleBlock(2, "00:00:03,500", "00:00:05,500", "Câu hai")
+    out_wav = str(tmp_path / "out_auto.wav")
+
+    engine.synthesize_blocks([b1, b2], total_duration=6.0, output_path=out_wav)
+
+    assert len(captured_calls) == 2
+    for c in captured_calls:
+        assert c.get("override_mode") == "clone"
+        assert c.get("override_prompt") is mock_prompt
+        assert c.get("override_ref_audio") == anchor_wav
+
+
+
 
 

@@ -223,11 +223,11 @@ class VoiceSeparator:
             except Exception:
                 return False
 
-    def separate_from_video(self, video_path: str, output_path: str) -> bool:
+    def separate_from_video(self, video_path: str, output_path: str, sample_rate: int = 16000) -> bool:
         """
         Tách giọng nói trực tiếp từ video file.
         
-        Bước 1: Extract audio từ video (FFmpeg)
+        Bước 1: Extract audio từ video (FFmpeg) với tần số lấy mẫu phù hợp
         Bước 2: Tách vocals từ audio
         """
         if not os.path.exists(video_path):
@@ -239,7 +239,7 @@ class VoiceSeparator:
             temp_audio = os.path.join(temp_dir, "audio.wav")
 
             # Extract audio
-            if not self._extract_audio(video_path, temp_audio):
+            if not self._extract_audio(video_path, temp_audio, sample_rate=sample_rate):
                 return False
 
             # Separate vocals

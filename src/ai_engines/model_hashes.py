@@ -62,9 +62,6 @@ KNOWN_WEIGHT_HASHES: Dict[str, str] = {
     "campplus_cn_en_common_200k.onnx": (
         "dd1740aa1e1ffa3895f96aef2166b8af2bb2ad09c00769dd275ee36aef6a2a7f"
     ),
-    "campplus_cn_common.onnx": (
-        "dd1740aa1e1ffa3895f96aef2166b8af2bb2ad09c00769dd275ee36aef6a2a7f"
-    ),
 }
 
 
