@@ -782,6 +782,7 @@ class SpeakerDiarizationCoordinator:
         distance_threshold: float = 0.40,
         prefer_cuda: Optional[bool] = None,
         temp_dir: str = "",
+        clone_audio_path: Optional[str] = None,
     ) -> Dict[str, SpeakerVoiceProfile]:
         """
         Nhận diện người nói dựa trên âm thanh WAV đã trích xuất và các mốc phụ đề.
@@ -839,6 +840,19 @@ class SpeakerDiarizationCoordinator:
         sr = target_sr
         audio_duration = len(data) / float(sr)
 
+        clone_data = None
+        clone_sr = 24000
+        if clone_audio_path and os.path.isfile(clone_audio_path):
+            try:
+                c_d, c_s = sf.read(clone_audio_path, dtype="float32")
+                if c_d.ndim > 1:
+                    c_d = np.mean(c_d, axis=1)
+                clone_data = np.asarray(c_d, dtype=np.float32)
+                clone_sr = int(c_s)
+            except Exception as exc:
+                logger.warning(f"Không thể nạp tệp âm thanh gốc chất lượng cao: {exc}")
+                clone_data = None
+
         # Tự động nhận diện phân đoạn câu thoại bằng VAD khi không có tệp phụ đề SRT
         if not blocks:
             segs = detect_speech_segments_vad(data, sr, min_speech_sec=0.35)
@@ -862,6 +876,7 @@ class SpeakerDiarizationCoordinator:
                 blk.voice_instruct = ""
 
         audio_chunks: List[np.ndarray] = []
+        clone_audio_chunks: List[Optional[np.ndarray]] = []
         valid_indices: List[int] = []
         sample_durations: List[float] = []
 
@@ -929,6 +944,14 @@ class SpeakerDiarizationCoordinator:
                 continue
 
             audio_chunks.append(chunk.astype(np.float32, copy=False))
+            if clone_data is not None:
+                c_start_f = max(0, int(padded_start * clone_sr))
+                c_end_f = min(len(clone_data), int(padded_end * clone_sr))
+                c_chunk = clone_data[c_start_f:c_end_f]
+                c_chunk = trim_silence_vad(c_chunk, clone_sr)
+                clone_audio_chunks.append(c_chunk if c_chunk.size >= int(0.25 * clone_sr) else None)
+            else:
+                clone_audio_chunks.append(None)
             valid_indices.append(i)
             sample_durations.append(padded_end - padded_start)
 
@@ -1052,6 +1075,7 @@ class SpeakerDiarizationCoordinator:
                 candidates = []
                 for pos in target_pool:
                     chunk = audio_chunks[pos]
+                    c_chunk = clone_audio_chunks[pos] if pos < len(clone_audio_chunks) else None
                     duration = len(chunk) / float(sr)
                     rms = float(np.sqrt(np.mean(np.square(chunk, dtype=np.float64))))
                     if duration >= 0.50 and rms >= 1e-4:
@@ -1060,56 +1084,85 @@ class SpeakerDiarizationCoordinator:
                         score = c_score * dur_weight * min(rms * 10.0, 1.0)
                         cand_blk = blocks[valid_indices[pos]]
                         c_text = (getattr(cand_blk, "text", "") or getattr(cand_blk, "translated_text", "")).strip()
-                        candidates.append((score, duration, chunk, c_text))
+                        candidates.append((score, duration, chunk, c_text, c_chunk))
 
                 if not candidates and members:
                     best_pos = max(members, key=lambda p: len(audio_chunks[p]))
                     ch = audio_chunks[best_pos]
+                    c_ch = clone_audio_chunks[best_pos] if best_pos < len(clone_audio_chunks) else None
                     cand_blk = blocks[valid_indices[best_pos]]
                     c_text = (getattr(cand_blk, "text", "") or getattr(cand_blk, "translated_text", "")).strip()
-                    candidates.append((1.0, len(ch) / float(sr), ch, c_text))
+                    candidates.append((1.0, len(ch) / float(sr), ch, c_text, c_ch))
 
                 candidates.sort(key=lambda item: item[0], reverse=True)
 
                 # Ưu tiên lấy một đoạn đơn lẻ chuẩn nhất nếu độ dài >= 2.5 giây
                 # để tránh ghép nối nhiều đoạn khác nhau gây lẫn chất giọng hoặc tạp âm
                 best_single = None
+                best_single_clone = None
                 best_single_text = ""
-                for score, duration, chunk, c_text in candidates:
+                for score, duration, chunk, c_text, c_chunk in candidates:
                     if duration >= 2.5:
                         best_single = chunk[: int(7.0 * sr)]
+                        if c_chunk is not None and c_chunk.size >= int(2.5 * clone_sr):
+                            best_single_clone = c_chunk[: int(7.0 * clone_sr)]
                         best_single_text = c_text
                         break
 
                 if best_single is not None:
                     merged = best_single
+                    merged_clone = best_single_clone
                     selected_ref_text = best_single_text if len(best_single_text.split()) >= 3 else ""
                 else:
                     collected: List[np.ndarray] = []
+                    collected_clone: List[np.ndarray] = []
                     text_parts: List[str] = []
                     collected_len = 0
+                    collected_clone_len = 0
                     target_samples = int(7.0 * sr)
+                    target_clone_samples = int(7.0 * clone_sr)
                     pause = np.zeros(int(0.15 * sr), dtype=np.float32)
-                    for _, _, chunk, c_text in candidates:
+                    pause_clone = np.zeros(int(0.15 * clone_sr), dtype=np.float32)
+                    for _, _, chunk, c_text, c_chunk in candidates:
                         remaining = target_samples - collected_len
                         if remaining <= 0:
                             break
                         part = chunk[:remaining]
                         collected.append(part)
                         collected_len += len(part)
+
+                        if c_chunk is not None:
+                            rem_c = target_clone_samples - collected_clone_len
+                            if rem_c > 0:
+                                c_part = c_chunk[:rem_c]
+                                collected_clone.append(c_part)
+                                collected_clone_len += len(c_part)
+
                         if c_text and c_text not in text_parts:
                             text_parts.append(c_text)
                         if collected_len < target_samples:
                             collected.append(pause)
                             collected_len += len(pause)
+                            if collected_clone:
+                                collected_clone.append(pause_clone)
+                                collected_clone_len += len(pause_clone)
                     merged = np.concatenate(collected)[: int(7.5 * sr)] if collected else np.zeros(0, dtype=np.float32)
+                    merged_clone = np.concatenate(collected_clone)[: int(7.5 * clone_sr)] if collected_clone else None
                     selected_ref_text = ""  # Ghép nhiều đoạn: để Whisper tự động nhận diện chính xác trên clip đã ghép
 
-                if len(merged) > 0:
+                # Ưu tiên mẫu âm thanh gốc chất lượng cao (>= 24 kHz) nếu có
+                if merged_clone is not None and len(merged_clone) >= int(1.0 * clone_sr):
+                    out_sample = merged_clone
+                    out_sr = clone_sr
+                else:
+                    out_sample = merged
+                    out_sr = sr
+
+                if len(out_sample) > 0:
                     # Chuẩn hóa biên độ âm lượng đỉnh ở mức -1.0 dBFS (peak 0.90) để chống vỡ tiếng
-                    peak_val = float(np.max(np.abs(merged)))
+                    peak_val = float(np.max(np.abs(out_sample)))
                     if peak_val > 0.01:
-                        merged = (merged / peak_val * 0.90).astype(np.float32)
+                        out_sample = (out_sample / peak_val * 0.90).astype(np.float32)
 
                     if temp_dir:
                         sample_root = Path(temp_dir)
@@ -1120,7 +1173,7 @@ class SpeakerDiarizationCoordinator:
                     sample_path = sample_root / (
                         f"{Path(video_path).stem}_{profile.speaker_id}_{uuid.uuid4().hex[:8]}.wav"
                     )
-                    sf.write(str(sample_path), merged, sr)
+                    sf.write(str(sample_path), out_sample, out_sr)
                     profile.source_audio_path = str(sample_path)
                     profile.ref_text = selected_ref_text
                     profile.method = "clone"

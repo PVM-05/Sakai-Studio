@@ -488,14 +488,14 @@ class VoiceSeparator:
                 return p
         return None
 
-    def _extract_audio(self, video_path: str, output_audio: str) -> bool:
-        """Extract audio từ video bằng FFmpeg."""
+    def _extract_audio(self, video_path: str, output_audio: str, sample_rate: int = 16000) -> bool:
+        """Trích xuất âm thanh từ video bằng FFmpeg với tần số lấy mẫu tùy chọn."""
         if not self._ffmpeg_bin:
             return False
         cmd = [
             self._ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
             "-i", video_path,
-            "-vn", "-ac", "1", "-ar", "16000",
+            "-vn", "-ac", "1", "-ar", str(sample_rate),
             "-acodec", "pcm_s16le",
             output_audio,
         ]

@@ -13,6 +13,8 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+from pathlib import Path
+import soundfile as sf
 import numpy as np
 import pytest
 from unittest.mock import MagicMock, patch
@@ -1599,5 +1601,162 @@ def test_camplus_voice_consistency_refinement_loop():
         engine._verify_and_refine_voice_consistency(items, full_audio, rep, min_sim=0.65)
 
     assert rep.inconsistent_retried_count >= 1
+
+
+def test_campplus_model_sha256_verification(tmp_path):
+    """Kiểm tra mã băm SHA-256 của mô hình CAM++ được đăng ký và xác thực toàn vẹn."""
+    from src.ai_engines.model_hashes import KNOWN_WEIGHT_HASHES, verify_weight_file
+
+    assert "campplus.onnx" in KNOWN_WEIGHT_HASHES
+    assert KNOWN_WEIGHT_HASHES["campplus.onnx"] == "dd1740aa1e1ffa3895f96aef2166b8af2bb2ad09c00769dd275ee36aef6a2a7f"
+
+    # Tạo tệp giả lập có mã băm sai
+    bad_model = tmp_path / "campplus.onnx"
+    bad_model.write_bytes(b"corrupted_model_content_12345")
+    assert not verify_weight_file(bad_model, "campplus.onnx")
+
+
+def test_extract_audio_sample_rate_and_clone_high_quality(tmp_path):
+    """Kiểm tra trích xuất âm thanh gốc 24 kHz và cắt mẫu nhân vật giữ tần số lấy mẫu cao."""
+    from src.ai_engines.voice_separator import VoiceSeparator
+    from src.ai_engines.speaker_diarization import SpeakerDiarizationCoordinator, CharacterVoiceProfile
+    import soundfile as sf
+
+    sep = VoiceSeparator()
+    # Kiểm tra chữ ký hàm _extract_audio nhận sample_rate
+    assert sep._extract_audio.__code__.co_varnames[3] == "sample_rate"
+
+    # Giả lập quá trình process_video_subtitles với clone_audio_path 24 kHz
+    sr_diar = 16000
+    sr_clone = 24000
+    diar_wav = tmp_path / "diar_16k.wav"
+    clone_wav = tmp_path / "clone_24k.wav"
+
+    d_data = np.ones(sr_diar * 4, dtype=np.float32) * 0.3
+    c_data = np.ones(sr_clone * 4, dtype=np.float32) * 0.3
+    sf.write(str(diar_wav), d_data, sr_diar)
+    sf.write(str(clone_wav), c_data, sr_clone)
+
+    coord = SpeakerDiarizationCoordinator(allow_mock=True)
+    b1 = SubtitleBlock(1, "00:00:00,500", "00:00:03,500", "Xin chào mọi người")
+
+    profiles = coord.process_video_subtitles(
+        video_path=str(diar_wav),
+        blocks=[b1],
+        temp_dir=str(tmp_path),
+        clone_audio_path=str(clone_wav),
+    )
+
+    assert len(profiles) > 0
+    spk_key = list(profiles.keys())[0]
+    sample_file = profiles[spk_key].source_audio_path
+    assert os.path.exists(sample_file)
+    info = sf.info(sample_file)
+    # Tần số lấy mẫu của tệp cắt mẫu phải đạt chuẩn 24 kHz của OmniVoice
+    assert info.samplerate == sr_clone
+
+
+def test_anchor_prompt_f0_gender_alignment_preference():
+    """Kiểm tra bộ tạo mỏ neo chấm điểm ưu tiên mẫu có cao độ F0 khớp với giới tính yêu cầu."""
+    engine = TTSEngine(mode="design", instruct="female, young adult, high pitch")
+    engine.load_model = MagicMock()
+    mock_model = MagicMock()
+
+    sr = 24000
+    t = np.linspace(0, 3.0, int(sr * 3.0), endpoint=False, dtype=np.float32)
+    # Mẫu 1: F0 = 130 Hz (giọng nam, lệch giới tính)
+    male_wave = 0.4 * np.sin(2 * np.pi * 130 * t)
+    # Mẫu 2: F0 = 220 Hz (giọng nữ, chuẩn giới tính)
+    female_wave = 0.4 * np.sin(2 * np.pi * 220 * t)
+
+    mock_model.generate.side_effect = [[male_wave], [female_wave]]
+    mock_prompt = MagicMock()
+    mock_model.create_voice_clone_prompt.return_value = mock_prompt
+    engine.model = mock_model
+
+    with patch("os.path.exists", return_value=False):
+        prompt, wav_path = engine._build_anchor_prompt(
+            key="test_gender_f0",
+            instruct="female, young adult",
+            sample_text="Xin chào",
+            tries=2,
+        )
+
+    assert prompt is not None
+    # Xác nhận tệp wav mỏ neo được ghi từ mẫu giọng nữ đạt điểm cao hơn
+    saved_data, _ = sf.read(wav_path)
+    c_feat = engine._extract_acoustic_features(saved_data, sr)
+    assert c_feat is not None
+    measured_f0 = float(c_feat[0] * 200.0)
+    assert measured_f0 > 180.0
+
+
+def test_synthesize_blocks_forwards_all_clustering_parameters(tmp_path):
+    """Kiểm tra synthesize_blocks truyền đầy đủ exact_speakers và clustering_sensitivity."""
+    engine = TTSEngine(
+        mode="design",
+        multi_speaker_mode="auto_video_cluster",
+        max_speakers=3,
+        exact_speakers=3,
+        clustering_sensitivity="high",
+        enable_ai_vocal_separation=False,
+    )
+    b1 = SubtitleBlock(1, "00:00:01,000", "00:00:03,000", "Chào bạn")
+
+    engine.detect_speakers_from_video = MagicMock(return_value={})
+    engine.load_model = MagicMock()
+    engine.model = MagicMock()
+    engine.model.generate.return_value = [np.zeros(24000, dtype=np.float32)]
+
+    fake_video = str(tmp_path / "fake.mp4")
+    Path(fake_video).write_bytes(b"dummy")
+    out_audio = str(tmp_path / "out.wav")
+
+    with patch("os.path.exists", return_value=True), \
+         patch("src.ai_engines.tts_engine.TTSEngine._has_audio_stream", return_value=False):
+        engine.synthesize_blocks([b1], total_duration=5.0, output_path=out_audio, video_path=fake_video)
+
+    assert engine.detect_speakers_from_video.called
+    kwargs = engine.detect_speakers_from_video.call_args[1]
+    assert kwargs.get("exact_speakers") == 3
+    assert kwargs.get("clustering_sensitivity") == "high"
+    assert kwargs.get("enable_ai_vocal_separation") is False
+
+
+def test_soft_knee_limiter_preserves_unclipped_speech():
+    """Kiểm tra bộ nén soft-knee limiter không dìm nhỏ các câu thoại bình thường khi có một đỉnh âm lượng lớn."""
+    sr = 24000
+    engine = TTSEngine(mode="design")
+    engine.load_model = MagicMock()
+
+    # Tạo câu 1 có biên độ bình thường (0.6) và câu 2 có một đỉnh lớn (1.4)
+    normal_seg = np.ones(sr * 2, dtype=np.float32) * 0.6
+    spiked_seg = np.ones(sr * 2, dtype=np.float32) * 0.6
+    spiked_seg[100:150] = 1.4
+
+    engine.generate_single = MagicMock(side_effect=[normal_seg, spiked_seg])
+    engine._build_anchor_prompt = MagicMock(return_value=(MagicMock(), "fake_anchor.wav"))
+
+    b1 = SubtitleBlock(1, "00:00:00,500", "00:00:02,500", "Câu một")
+    b2 = SubtitleBlock(2, "00:00:03,000", "00:00:05,000", "Câu hai")
+
+    out_file = "test_limiter_out.wav"
+    try:
+        with patch("src.ai_engines.tts_engine.TTSEngine._has_audio_stream", return_value=False):
+            report = engine.synthesize_blocks([b1, b2], total_duration=6.0, output_path=out_file)
+        assert os.path.exists(out_file)
+        data, _ = sf.read(out_file)
+        # Đỉnh cao nhất được nén an toàn <= 0.892
+        assert np.max(np.abs(data)) <= 0.892
+        # Đoạn có thoại của câu một (từ 0.6s đến 2.0s) vẫn giữ biên độ khỏe (không bị tụt thảm hại)
+        speech_slice = data[int(0.6 * sr):int(2.0 * sr)]
+        assert np.mean(np.abs(speech_slice)) > 0.55
+    finally:
+        if os.path.exists(out_file):
+            try:
+                os.remove(out_file)
+            except Exception:
+                pass
+
 
 

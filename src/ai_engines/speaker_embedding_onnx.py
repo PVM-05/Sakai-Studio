@@ -115,14 +115,19 @@ def download_speaker_embedding_model(
     else:
         target_dir = Path(target_dir)
 
+    from src.ai_engines.model_hashes import verify_weight_file
+
     target_dir.mkdir(parents=True, exist_ok=True)
     target_file = target_dir / "campplus.onnx"
     if target_file.is_file() and target_file.stat().st_size > 1000:
-        return str(target_file.resolve())
+        if verify_weight_file(target_file, "campplus.onnx"):
+            return str(target_file.resolve())
+        logger.warning("Tệp mô hình CAM++ không khớp mã băm SHA-256; đang chuẩn bị tải lại.")
 
     alt_file = target_dir / "campplus_cn_en_common_200k.onnx"
     if alt_file.is_file() and alt_file.stat().st_size > 1000:
-        return str(alt_file.resolve())
+        if verify_weight_file(alt_file, "campplus_cn_en_common_200k.onnx"):
+            return str(alt_file.resolve())
 
     try:
         from huggingface_hub import hf_hub_download
@@ -139,7 +144,9 @@ def download_speaker_embedding_model(
             import shutil
 
             shutil.copyfile(str(downloaded_path), str(target_file))
-        return str(target_file.resolve()) if target_file.is_file() else str(downloaded_path.resolve())
+        res_file = target_file if target_file.is_file() else downloaded_path
+        verify_weight_file(res_file, "campplus.onnx")
+        return str(res_file.resolve())
     except Exception as e:
         logger.error(f"Không thể tự động tải mô hình CAM++ ONNX: {e}")
         raise RuntimeError(

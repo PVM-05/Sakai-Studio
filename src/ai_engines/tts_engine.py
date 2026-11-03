@@ -978,6 +978,7 @@ class TTSEngine:
         self.overflow_strategy = "strict_sync" if str(overflow_strategy).strip() == "strict_sync" else "preserve_speech"
         self._cancel_requested: bool = False
         self.last_report: Optional[DubbingReport] = None
+        self.last_diarization_error: str = ""
 
         self.sample_rate = 24000
         self.current_prompt: Optional[VoiceClonePrompt] = None
@@ -1303,14 +1304,23 @@ class TTSEngine:
             if enable_ai_vocal_separation is None
             else bool(enable_ai_vocal_separation)
         )
-        sep_backend = "ai" if use_ai_sep else "scipy"
-        separator = VoiceSeparator(backend=sep_backend)
+        separator = VoiceSeparator(backend="ai" if use_ai_sep else "scipy")
 
         temp_audio_path = os.path.join(
             self.voice_prompt_cache_dir,
             f"temp_vocals_{uuid.uuid4().hex[:8]}.wav"
         )
-        success = separator.separate_from_video(video_path, temp_audio_path)
+        success = False
+        if use_ai_sep:
+            try:
+                success = separator.separate_from_video(video_path, temp_audio_path)
+            except Exception:
+                success = False
+
+        if not success or not os.path.exists(temp_audio_path) or os.path.getsize(temp_audio_path) == 0:
+            # Trích xuất âm thanh gốc chất lượng cao 24 kHz trực tiếp không qua nén dải tần
+            success = separator._extract_audio(video_path, temp_audio_path, sample_rate=24000)
+
         if not success or not os.path.exists(temp_audio_path):
             self.log("Không thể tách giọng nói từ video nguồn.")
             return None
@@ -1525,6 +1535,26 @@ class TTSEngine:
                 if not ok:
                     continue
                 score = float(np.sqrt(np.mean(arr ** 2))) * min(len(arr) / float(self.sample_rate) / 5.0, 1.0)
+                # Kiểm tra F0 đối chiếu với giới tính yêu cầu trong instruct để chống lẫn giọng
+                lowered_ins = target_ins.lower()
+                c_feat = self._extract_acoustic_features(arr, self.sample_rate)
+                if c_feat is not None:
+                    sample_f0 = float(c_feat[0] * 200.0)
+                    if any(w in lowered_ins for w in ("female", "nữ", "woman", "girl")):
+                        if sample_f0 < 165.0:
+                            score *= 0.35
+                        elif sample_f0 >= 185.0:
+                            score *= 1.30
+                    elif any(w in lowered_ins for w in ("child", "trẻ em", "kid", "boy")):
+                        if sample_f0 < 210.0:
+                            score *= 0.30
+                        elif sample_f0 >= 240.0:
+                            score *= 1.40
+                    elif any(w in lowered_ins for w in ("male", "nam", "man")):
+                        if sample_f0 > 190.0:
+                            score *= 0.35
+                        elif sample_f0 <= 165.0:
+                            score *= 1.25
                 if score > best_score:
                     best, best_score = arr, score
             except Exception as e:
@@ -1818,9 +1848,18 @@ class TTSEngine:
         separator = VoiceSeparator()
         temp_vocals = os.path.join(self.voice_prompt_cache_dir, f"diarize_vocals_{uuid.uuid4().hex[:8]}.wav")
         temp_raw_audio = os.path.join(self.voice_prompt_cache_dir, f"diarize_audio_{uuid.uuid4().hex[:8]}.wav")
+        temp_raw_audio_24k = os.path.join(self.voice_prompt_cache_dir, f"raw24k_audio_{uuid.uuid4().hex[:8]}.wav")
         source_audio_for_diarization = ""
+        clone_audio_for_samples = ""
 
         try:
+            # Trích xuất âm thanh gốc 24 kHz chất lượng cao để làm mẫu clone nhân vật
+            try:
+                if separator._extract_audio(video_path, temp_raw_audio_24k, sample_rate=24000) and os.path.isfile(temp_raw_audio_24k):
+                    clone_audio_for_samples = temp_raw_audio_24k
+            except Exception:
+                clone_audio_for_samples = ""
+
             if enable_ai_vocal_separation:
                 try:
                     ok = separator.separate_from_video(video_path, temp_vocals)
@@ -1878,6 +1917,7 @@ class TTSEngine:
                 distance_threshold=distance_threshold,
                 prefer_cuda=use_cuda,
                 temp_dir=self.voice_prompt_cache_dir,
+                clone_audio_path=clone_audio_for_samples or None,
             )
             self.log(f"Nhận diện người nói hoàn tất bằng {coordinator.last_provider}.")
 
@@ -1994,7 +2034,7 @@ class TTSEngine:
             return {}
         finally:
             self._active_diarizer_session = None
-            for temp_path in (temp_vocals, temp_raw_audio):
+            for temp_path in (temp_vocals, temp_raw_audio, temp_raw_audio_24k):
                 if os.path.exists(temp_path):
                     try:
                         os.remove(temp_path)
@@ -2715,10 +2755,22 @@ class TTSEngine:
         if self.multi_speaker_mode == "auto_video_cluster" and video_path and os.path.exists(video_path):
             if has_unassigned_or_unlocked:
                 try:
-                    self.detect_speakers_from_video(video_path, blocks, max_speakers=self.max_speakers)
+                    self.detect_speakers_from_video(
+                        video_path,
+                        blocks,
+                        max_speakers=self.max_speakers,
+                        exact_speakers=getattr(self, "exact_speakers", None),
+                        clustering_sensitivity=getattr(self, "clustering_sensitivity", "standard"),
+                        enable_ai_vocal_separation=getattr(self, "enable_ai_vocal_separation", True),
+                    )
                 except Exception as exc:
                     self.last_diarization_error = str(exc)
                     self.log(f"Cảnh báo: Nhận diện người nói từ video thất bại ({exc}), tiếp tục tổng hợp với cấu hình mặc định.")
+            if self.last_diarization_error:
+                report.timestamp_issues.append({
+                    "type": "diarization_warning",
+                    "message": f"Nhận diện người nói gặp cảnh báo: {self.last_diarization_error}",
+                })
         elif self.multi_speaker_mode == "auto_srt_text":
             if has_unassigned_or_unlocked:
                 try:
@@ -3196,7 +3248,17 @@ class TTSEngine:
         # Chuẩn hóa âm lượng đầu ra an toàn (-1.0 dBFS / đỉnh tối đa 0.891) tránh vỡ tiếng khi ghép video
         max_peak = float(np.max(np.abs(full_audio))) if full_audio.size > 0 else 0.0
         if max_peak > 0.891:
-            full_audio = full_audio * (0.891 / max_peak)
+            # Áp dụng bộ nén soft-knee limiter mượt mà thay vì thu nhỏ tuyến tính toàn dải
+            thresh = 0.85
+            over = np.abs(full_audio) > thresh
+            if np.any(over):
+                scale = np.ones_like(full_audio)
+                diff = np.abs(full_audio[over]) - thresh
+                scale[over] = (thresh + 0.041 * np.tanh(diff / max(1e-4, max_peak - thresh))) / np.abs(full_audio[over])
+                full_audio = full_audio * scale
+            max_p2 = float(np.max(np.abs(full_audio)))
+            if max_p2 > 0.891:
+                full_audio = full_audio * (0.891 / max_p2)
 
         # Cắt bớt khoảng lặng đệm thừa ở đuôi toàn bộ bản thu
         active_indices = np.where(np.abs(full_audio) > 1e-4)[0]
@@ -3421,6 +3483,28 @@ class TTSEngine:
             return os.path.exists(video_out) and os.path.getsize(video_out) > 0
 
         if effective_ducking_mode == "dynamic":
+            # Thử nghiệm hòa trộn ducking động chất lượng cao giữ nguyên stereo 48 kHz bằng sidechaincompress
+            sidechain_ratio = max(2.0, min(10.0, 1.0 / max(0.05, original_volume)))
+            cmd_sidechain = [
+                ffmpeg_bin, "-y",
+                "-i", video_in,
+                "-i", tts_audio_in,
+                "-filter_complex",
+                f"[1:a]asplit=2[sc][tts_main];"
+                f"[0:a][sc]sidechaincompress=threshold=0.08:ratio={sidechain_ratio:.1f}:attack=80:release=350[ducked_bg];"
+                f"[ducked_bg][tts_main]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,alimiter=limit=0.96[outa]",
+                "-map", "0:v", "-map", "[outa]",
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+                "-shortest",
+                video_out,
+            ]
+            try:
+                res_sc = subprocess.run(cmd_sidechain, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                if res_sc.returncode == 0 and os.path.exists(video_out) and os.path.getsize(video_out) > 0:
+                    return True
+            except Exception:
+                pass
+
             temp_bg_wav = f"{video_out}.temp_bg_{uuid.uuid4().hex[:6]}.wav"
             temp_mix_wav = f"{video_out}.temp_mix_{uuid.uuid4().hex[:6]}.wav"
             try:

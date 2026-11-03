@@ -55,6 +55,16 @@ KNOWN_WEIGHT_HASHES: Dict[str, str] = {
         "7df918ac3921d3daf0aae1d219776cf0dc4e4935f035af"
         "81841b40adcf74fdf2"
     ),
+    # Mo hinh CAM++ ONNX nhan dien nguoi noi
+    "campplus.onnx": (
+        "dd1740aa1e1ffa3895f96aef2166b8af2bb2ad09c00769dd275ee36aef6a2a7f"
+    ),
+    "campplus_cn_en_common_200k.onnx": (
+        "dd1740aa1e1ffa3895f96aef2166b8af2bb2ad09c00769dd275ee36aef6a2a7f"
+    ),
+    "campplus_cn_common.onnx": (
+        "dd1740aa1e1ffa3895f96aef2166b8af2bb2ad09c00769dd275ee36aef6a2a7f"
+    ),
 }
 
 
