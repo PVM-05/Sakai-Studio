@@ -1706,7 +1706,8 @@ def test_synthesize_blocks_forwards_all_clustering_parameters(tmp_path):
     engine.detect_speakers_from_video = MagicMock(return_value={})
     engine.load_model = MagicMock()
     engine.model = MagicMock()
-    engine.model.generate.return_value = [np.zeros(24000, dtype=np.float32)]
+    engine.model.generate.return_value = [np.ones(24000, dtype=np.float32) * 0.25]
+    engine._build_anchor_prompt = MagicMock(return_value=(MagicMock(), "fake_anchor.wav"))
 
     fake_video = str(tmp_path / "fake.mp4")
     Path(fake_video).write_bytes(b"dummy")
@@ -1757,6 +1758,81 @@ def test_soft_knee_limiter_preserves_unclipped_speech():
                 os.remove(out_file)
             except Exception:
                 pass
+
+
+def test_unassigned_speaker_inherits_neighbor_before_fallback(tmp_path):
+    """Kiểm tra câu chưa xác định người nói được kế thừa người nói của câu liền trước thay vì chuyển sang giọng ngẫu nhiên."""
+    engine = TTSEngine(auto_extract_ref=False, multi_speaker_mode="multi")
+    engine.load_model = MagicMock()
+    b1 = SubtitleBlock(1, "00:00:00,000", "00:00:02,000", "Câu một của Nam", speaker="Người nói 1")
+    b2 = SubtitleBlock(2, "00:00:02,500", "00:00:04,500", "Câu hai không rõ", speaker="Chưa xác định")
+
+    mock_prompt_1 = MagicMock()
+    engine._speaker_prompt_cache["character_Người nói 1"] = mock_prompt_1
+    engine.speaker_profiles = {"Người nói 1": {"voice_instruct": "male, young adult"}}
+
+    captured_kwargs = []
+    t = np.linspace(0, 1.0, 24000, endpoint=False, dtype=np.float32)
+    sine_audio = (0.25 * np.sin(2.0 * np.pi * 220.0 * t)).astype(np.float32)
+    def mock_gen(text, **kwargs):
+        captured_kwargs.append(kwargs)
+        return sine_audio
+
+    engine.generate_single = MagicMock(side_effect=mock_gen)
+
+    out_wav = str(tmp_path / "test_inherit.wav")
+    with patch("src.ai_engines.tts_engine.TTSEngine._has_audio_stream", return_value=False):
+        report = engine.synthesize_blocks([b1, b2], total_duration=5.0, output_path=out_wav)
+
+    assert report.succeeded_count == 2
+    assert captured_kwargs[1]["override_prompt"] == mock_prompt_1
+
+
+def test_speaker_prefix_detection_rules():
+    """Kiểm tra quy tắc nhận diện tiền tố người nói: viết hoa/tên riêng nhận diện, từ thời gian/chú ý bị bỏ qua."""
+    engine = TTSEngine(auto_extract_ref=False)
+    b1 = SubtitleBlock(1, "00:00:00,000", "00:00:02,000", "[Bác sĩ] Xin chào bạn")
+    b2 = SubtitleBlock(2, "00:00:02,500", "00:00:04,500", "Hôm nay: thời tiết đẹp")
+    b3 = SubtitleBlock(3, "00:00:05,000", "00:00:07,000", "NAM: Đi thôi")
+    b4 = SubtitleBlock(4, "00:00:07,500", "00:00:09,500", "chú ý: cẩn thận đường trơn")
+
+    profiles = engine.detect_speakers_from_srt_text([b1, b2, b3, b4])
+    assert "Bác sĩ" in profiles or "Người nói 1" in profiles
+    assert any("NAM" in p.get("description", "") for p in profiles.values())
+    assert "Hôm nay" not in profiles and "hôm nay" not in profiles
+    assert "Chú ý" not in profiles and "chú ý" not in profiles
+
+
+def test_multilingual_anchor_sample_text():
+    """Kiểm tra mẫu mỏ neo đa ngôn ngữ sinh đúng câu theo ngôn ngữ thiết lập."""
+    engine = TTSEngine(auto_extract_ref=False)
+    engine.language = "en"
+    en_sample = engine._get_anchor_sample_text()
+    assert "hello everyone" in en_sample.lower() or "timbre" in en_sample.lower()
+
+    engine.language = "vi"
+    vi_sample = engine._get_anchor_sample_text()
+    assert len(vi_sample) > 20
+
+    engine.language = "zh"
+    zh_sample = engine._get_anchor_sample_text()
+    assert len(zh_sample) > 5
+
+
+def test_single_clone_fails_early_when_no_audio(tmp_path):
+    """Kiểm tra chế độ clone 1 giọng báo lỗi rõ ràng khi không có tệp âm thanh mẫu."""
+    engine = TTSEngine(auto_extract_ref=False, mode="clone", multi_speaker_mode="single")
+    engine.ref_audio_path = "duong_dan_khong_ton_tai_12345.wav"
+    engine.current_prompt = None
+    engine.load_model = MagicMock()
+
+    b1 = SubtitleBlock(1, "00:00:00,000", "00:00:02,000", "Câu một")
+    out_wav = str(tmp_path / "test_fail.wav")
+    report = engine.synthesize_blocks([b1], total_duration=3.0, output_path=out_wav)
+
+    assert report.status == "failed"
+    assert "Không tìm thấy" in report.message or "không thể" in report.message
+
 
 
 

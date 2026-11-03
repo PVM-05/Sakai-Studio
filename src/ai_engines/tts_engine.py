@@ -288,9 +288,9 @@ def normalize_vietnamese_numbers_and_text(text: str) -> str:
         # Thẻ lạ không được hỗ trợ -> lọc bỏ để tránh TTS đọc thành lời
         return " "
 
-    s = re.sub(r"\[[a-zA-Z0-9_\-]+\]", handle_bracket_tag, cleaned_input)
-    # Lọc bỏ các chú thích biểu cảm trong ngoặc đơn thông dụng của phụ đề: (cười), (khóc), (thở dài)...
-    s = re.sub(r"\((?:cười|khóc|thở dài|hét|nhạc|tiếng cười|vỗ tay|music|applause|laughter|crying|sigh)\)", " ", s, flags=re.IGNORECASE)
+    s = re.sub(r"\[[^\]]+\]", handle_bracket_tag, cleaned_input)
+    # Lọc bỏ các chú thích biểu cảm và hiệu ứng âm thanh trong ngoặc đơn thông dụng của phụ đề
+    s = re.sub(r"\([^)]*(?:cười|khóc|thở dài|hét|nhạc|vỗ tay|music|applause|laughter|crying|sigh)[^)]*\)", " ", s, flags=re.IGNORECASE)
 
     # 2. Xử lý định dạng ngày tháng: 29/10/2026 hoặc 29-10-2026
     def repl_date(m):
@@ -1029,7 +1029,7 @@ class TTSEngine:
             if cache_dir and os.path.exists(cache_dir):
                 try:
                     for f_name in os.listdir(cache_dir):
-                        if any(f_name.startswith(pfx) for pfx in ("anchor_", "perline_voc_", "diarize_")):
+                        if any(f_name.startswith(pfx) for pfx in ("anchor_", "perline_voc_", "diarize_", "raw24k_", "ref_voice_")):
                             try:
                                 os.remove(os.path.join(cache_dir, f_name))
                             except Exception:
@@ -1489,15 +1489,15 @@ class TTSEngine:
         if ck in self._speaker_prompt_cache:
             return self._speaker_prompt_cache[ck], wav_path
 
-        if os.path.exists(pt_path) and os.path.exists(wav_path) and os.path.getsize(wav_path) > 1000:
-            try:
+        try:
+            if os.path.exists(pt_path) and os.path.exists(wav_path) and os.path.getsize(wav_path) > 1000:
                 if hasattr(VoiceClonePrompt, "load"):
                     p = VoiceClonePrompt.load(pt_path)
                     if p is not None:
                         self._speaker_prompt_cache[ck] = p
                         return p, wav_path
-            except Exception:
-                pass
+        except Exception:
+            pass
 
         self.load_model()
         if self.model is None:
@@ -1972,28 +1972,42 @@ class TTSEngine:
                     except Exception as feat_err:
                         self.log(f"Không thể đo đặc trưng âm học của {spk_name}: {feat_err}")
 
+                voice_ins = ""
                 if speaker_f0_list:
                     f0 = float(np.median(speaker_f0_list))
                     if f0 > 245.0:
                         gender = "child"
                         pitch_lvl = "very_high"
+                        voice_ins = "child, high pitch"
                     elif f0 > 175.0:
                         gender = "female"
                         pitch_lvl = "high" if f0 > 210.0 else "moderate"
+                        voice_ins = f"female, young adult, {pitch_lvl} pitch"
                     else:
                         gender = "male"
                         pitch_lvl = "very_low" if f0 < 100.0 else ("low" if f0 < 130.0 else "moderate")
+                        voice_ins = f"male, young adult, {pitch_lvl} pitch"
 
                 prof_data["pitch_hz"] = round(f0, 1)
                 prof_data["gender"] = gender
                 prof_data["pitch_level"] = pitch_lvl
                 prof_data["user_locked"] = False
+                if voice_ins:
+                    prof_data["voice_instruct"] = voice_ins
+                    prof_data["instruct"] = voice_ins
+                    self._speaker_instruct_cache[spk_name] = voice_ins
                 if hasattr(prof, "gender"):
                     prof.gender = gender
                 if hasattr(prof, "pitch_level"):
                     prof.pitch_level = pitch_lvl
                 if hasattr(prof, "user_locked"):
                     prof.user_locked = False
+                if voice_ins and hasattr(prof, "voice_instruct"):
+                    prof.voice_instruct = voice_ins
+                if voice_ins:
+                    for b in blocks:
+                        if getattr(b, "speaker", "") == spk_name and not getattr(b, "is_speaker_locked", False):
+                            b.voice_instruct = voice_ins
 
                 ratio = getattr(prof, "high_confidence_ratio", 1.0)
                 prof_data["high_confidence_ratio"] = float(ratio)
@@ -2063,6 +2077,8 @@ class TTSEngine:
             "lưu ý", "chú ý", "ghi chú", "hướng dẫn", "lời dẫn", "lời thoại",
             "note", "warning", "tip", "info", "tập", "phần", "bài", "trích dẫn",
             "chương", "cảnh", "hồi", "đoạn", "nhạc", "tiếng động",
+            "hôm nay", "ngày mai", "hôm qua", "lúc này", "khi này", "tại đây",
+            "sau đó", "tiếp theo", "ban đầu", "kết quả", "nguyên nhân", "lý do", "ví dụ", "chẳng hạn",
         }
         female_markers = {"nữ", "nu", "female", "woman", "girl", "cô", "chị", "bà", "mẹ", "em", "nàng", "thiếp", "tiểu thư"}
         male_markers = {"nam", "male", "man", "boy", "anh", "ông", "bố", "cha", "chú", "bác", "chàng", "huynh", "trẫm"}
@@ -2109,7 +2125,8 @@ class TTSEngine:
                 is_valid_plain_name = True
                 if m.group(3):
                     words_in_tag = tag_name.split()
-                    if len(words_in_tag) > 4 or not any(c.isalpha() for c in tag_name):
+                    is_title_or_upper = tag_name.isupper() or all(w[0].isupper() for w in words_in_tag if w)
+                    if len(words_in_tag) > 3 or not any(c.isalpha() for c in tag_name) or not is_title_or_upper:
                         is_valid_plain_name = False
 
                 if not is_pure_num_or_ts and not is_ignored_word and not is_non_verbal and is_valid_plain_name:
@@ -2255,7 +2272,8 @@ class TTSEngine:
         Hỗ trợ ghi đè mẫu giọng hoặc thuộc tính thiết kế giọng trên từng câu cho chế độ Đa Nhân Vật.
         """
         self.load_model()
-        text_clean = text.strip()
+        text_clean = re.sub(r"\s*[\r\n]+\s*", " ", text)
+        text_clean = re.sub(r"(^|\s)[-–—]\s+", r"\1", text_clean).strip()
         if not text_clean:
             return np.zeros(0, dtype=np.float32)
 
@@ -2274,7 +2292,7 @@ class TTSEngine:
             "text": text_clean,
             "language": self.language,
             "generation_config": gen_config,
-            "normalize_text": False,
+            "normalize_text": bool(self.normalize_text and self.language not in ("vi", None, "")),
         }
 
         if self.speed != 1.0:
@@ -2608,6 +2626,7 @@ class TTSEngine:
         instruct: Optional[str],
         target_dur: Optional[float],
         method_or_mode: Optional[str] = None,
+        avail_before_next: Optional[float] = None,
     ) -> Optional[str]:
         """Tính đường dẫn tệp WAV lưu tạm (checkpoint) cho từng câu để hỗ trợ tiếp tục khi gián đoạn."""
         if not self.resume_cache_dir:
@@ -2620,12 +2639,28 @@ class TTSEngine:
                 mtime_str = ""
         raw_key = (
             f"{index}|{text}|{speaker}|{method_or_mode or ''}|{ref_path or ''}|{mtime_str}|"
-            f"{instruct or ''}|{target_dur or 0.0:.2f}|{self.mode}|{self.speed:.2f}|"
+            f"{instruct or ''}|{target_dur or 0.0:.2f}|{avail_before_next or 0.0:.2f}|{self.mode}|{self.speed:.2f}|"
             f"{getattr(self, 'guidance_scale', 2.0):.2f}|{getattr(self, 'num_step', 32)}|"
             f"{int(getattr(self, 'denoise', True))}|{getattr(self, 't_shift', 0.5):.2f}|{getattr(self, 'overflow_strategy', 'extend')}"
         )
         digest = hashlib.sha1(raw_key.encode("utf-8", errors="ignore")).hexdigest()[:16]
         return os.path.join(self.resume_cache_dir, f"blk_{index + 1:04d}_{digest}.wav")
+
+    @staticmethod
+    def _compute_character_prompt_key(spk: str, ref_path: Optional[str] = None) -> str:
+        """Tạo khóa bộ nhớ đệm prompt nhân vật bao gồm định danh tệp mẫu và mtime để tránh dùng lại bản cũ khi đổi tệp."""
+        if not spk:
+            return ""
+        mtime_str = ""
+        path_hash = ""
+        if ref_path:
+            path_hash = hashlib.sha1(str(ref_path).encode("utf-8", errors="ignore")).hexdigest()[:6]
+            if os.path.exists(ref_path):
+                try:
+                    mtime_str = f"_{int(os.path.getmtime(ref_path))}"
+                except Exception:
+                    mtime_str = ""
+        return f"character_{spk}_{path_hash}{mtime_str}" if path_hash else f"character_{spk}"
 
     def _prepare_and_lock_character_prompts(self, blocks: List[SubtitleBlock]):
         """
@@ -2659,13 +2694,7 @@ class TTSEngine:
                         ref_path = blk.voice_ref_path
                         break
 
-            mtime_suffix = ""
-            if ref_path and os.path.exists(ref_path):
-                try:
-                    mtime_suffix = f"_{int(os.path.getmtime(ref_path))}"
-                except Exception:
-                    pass
-            char_prompt_key = f"character_{spk}{mtime_suffix}"
+            char_prompt_key = self._compute_character_prompt_key(spk, ref_path)
 
             # 1. Nếu nhân vật chọn phương pháp preset hoặc đã có preset chỉ định rõ
             if method == "preset" and preset_name in VIETNAMESE_VOICE_CATALOG:
@@ -2674,7 +2703,7 @@ class TTSEngine:
 
             # 2. Nếu nhân vật chọn phương pháp clone
             if method == "clone" and ref_path and os.path.exists(ref_path):
-                if char_prompt_key not in self._speaker_prompt_cache and f"character_{spk}" not in self._speaker_prompt_cache:
+                if char_prompt_key not in self._speaker_prompt_cache:
                     prof_ref_text = prof.get("ref_text", "") if isinstance(prof, dict) else getattr(prof, "ref_text", "")
                     prompt = self._get_or_create_prompt_for_audio(
                         ref_path,
@@ -2825,13 +2854,28 @@ class TTSEngine:
                     "Cảnh báo: Không thể tạo mẫu giọng mỏ neo đồng nhất. Chuyển sang chế độ thiết kế giọng trực tiếp từng câu."
                 )
 
-        if self.mode == "clone" and self.current_prompt is None and self.multi_speaker_mode == "single":
+        has_character_profiles = bool(self.speaker_profiles and any(getattr(b, "speaker", "") in self.speaker_profiles for b in blocks))
+        if self.mode == "clone" and self.current_prompt is None and self.multi_speaker_mode == "single" and not has_character_profiles:
             if not self.auto_extract_ref and self.ref_audio_path and os.path.exists(self.ref_audio_path):
                 self.set_reference_voice(self.ref_audio_path, self.ref_text)
             elif self.auto_extract_ref and video_path and os.path.exists(video_path):
                 self.extract_reference_from_video(video_path, enable_ai_vocal_separation=self.enable_ai_vocal_separation)
             elif self.ref_audio_path and os.path.exists(self.ref_audio_path):
                 self.set_reference_voice(self.ref_audio_path, self.ref_text)
+
+            if self.current_prompt is None:
+                report.status = "failed"
+                report.message = "Không tìm thấy tệp âm thanh mẫu hoặc không thể trích xuất mẫu giọng cho chế độ nhân bản giọng đơn lẻ."
+                self.log(report.message)
+                self.last_report = report
+                return report
+
+        fallback_anchor_prompt: Optional[VoiceClonePrompt] = None
+        fallback_anchor_wav: Optional[str] = None
+        if self.multi_speaker_mode == "multi":
+            has_unassigned = any(not getattr(b, "speaker", "") or getattr(b, "speaker", "") == "Chưa xác định" for b in blocks)
+            if has_unassigned:
+                fallback_anchor_prompt, fallback_anchor_wav = self._get_or_create_fallback_anchor()
 
         total_samples = int((max(total_duration, 1.0) + 5.0) * self.sample_rate)
         full_audio = np.zeros(total_samples, dtype=np.float32)
@@ -2933,76 +2977,104 @@ class TTSEngine:
                         report.message = f"Không thể khởi tạo mẫu giọng nhân bản cho chế độ một giọng từ tệp: {self.ref_audio_path or 'chưa có'}"
                         self.last_report = report
                         return report
-            elif override_prompt is None and spk_key:
-                prof = self.speaker_profiles.get(spk_key, {}) if spk_key else {}
-                is_dict = isinstance(prof, dict)
-                prof_method = prof.get("method") if is_dict else getattr(prof, "method", "")
+            elif override_prompt is None:
+                # 2b. Xử lý câu chưa xác định người nói hoặc đa nhân vật
+                if not spk_key or spk_key == "Chưa xác định":
+                    neighbor_spk = None
+                    if i > 0 and getattr(blocks[i - 1], "speaker", "") not in ("", "Chưa xác định"):
+                        neighbor_spk = getattr(blocks[i - 1], "speaker", "")
+                    elif i + 1 < len(blocks) and getattr(blocks[i + 1], "speaker", "") not in ("", "Chưa xác định"):
+                        neighbor_spk = getattr(blocks[i + 1], "speaker", "")
 
-                if prof_method == "preset":
-                    # Xóa prompt nhân bản từ video cũ nếu còn sót
-                    character_prompt_key = f"character_{spk_key}" if spk_key else ""
-                    self._speaker_prompt_cache.pop(character_prompt_key, None)
+                    if neighbor_spk:
+                        n_prof = self.speaker_profiles.get(neighbor_spk, {})
+                        n_dict = isinstance(n_prof, dict)
+                        n_ref = n_prof.get("ref_audio_path", "") or n_prof.get("source_audio_path", "") if n_dict else getattr(n_prof, "source_audio_path", "")
+                        n_char_key = self._compute_character_prompt_key(neighbor_spk, n_ref)
+                        n_prompt = self._speaker_prompt_cache.get(n_char_key) or self._speaker_prompt_cache.get(f"character_{neighbor_spk}")
+                        if n_prompt is not None:
+                            override_prompt = n_prompt
+                            override_ref = n_ref
+                            active_block_mode = "clone"
+                            spk_label = f"{neighbor_spk} (kế thừa)"
+                        else:
+                            override_instruct = (
+                                self._speaker_instruct_cache.get(neighbor_spk, "")
+                                or (n_prof.get("instruct") or n_prof.get("voice_instruct") if n_dict else getattr(n_prof, "voice_instruct", ""))
+                                or DEFAULT_SPEAKER_PRESETS.get(neighbor_spk, {}).get("instruct", "")
+                            )
+                            if override_instruct:
+                                active_block_mode = "design"
+                                spk_label = f"{neighbor_spk} (kế thừa)"
 
-                    ins_cand = (
-                        (self._speaker_instruct_cache.get(spk_key, "") if spk_key else "")
-                        or getattr(blk, "voice_instruct", "")
-                        or (prof.get("instruct") or prof.get("voice_instruct") if is_dict else getattr(prof, "voice_instruct", ""))
-                    )
-                    preset_name = (prof.get("preset_name") if is_dict else getattr(prof, "preset_name", "")) if prof else ""
-                    if not ins_cand and preset_name in VIETNAMESE_VOICE_CATALOG:
-                        ins_cand = VIETNAMESE_VOICE_CATALOG[preset_name]["instruct"]
-                    if not ins_cand and spk_key in DEFAULT_SPEAKER_PRESETS:
-                        ins_cand = DEFAULT_SPEAKER_PRESETS[spk_key]["instruct"]
-                    if not ins_cand and self.instruct:
-                        ins_cand = self.instruct
+                    if override_prompt is None and not override_instruct:
+                        fb_p, fb_w = fallback_anchor_prompt, fallback_anchor_wav
+                        if fb_p is None:
+                            fb_p, fb_w = self._get_or_create_fallback_anchor()
+                        if fb_p is not None:
+                            override_prompt = fb_p
+                            override_ref = fb_w
+                            active_block_mode = "clone"
+                            spk_label = "Giọng mỏ neo dự phòng"
+                        else:
+                            override_instruct = self.instruct or DEFAULT_SPEAKER_PRESETS["Người nói 1"]["instruct"]
+                            active_block_mode = "design"
+                            spk_label = "Thiết kế giọng dự phòng"
+                else:
+                    prof = self.speaker_profiles.get(spk_key, {})
+                    is_dict = isinstance(prof, dict)
+                    prof_method = prof.get("method") if is_dict else getattr(prof, "method", "")
 
-                    sample_text = ANCHOR_SAMPLE_VI
-                    if preset_name in VIETNAMESE_VOICE_CATALOG:
-                        s_vi = VIETNAMESE_VOICE_CATALOG[preset_name].get("sample_vi", "")
-                        if len(s_vi.split()) >= 12:
-                            sample_text = s_vi
+                    if prof_method == "preset":
+                        # Xóa prompt nhân bản từ video cũ nếu còn sót
+                        character_prompt_key = self._compute_character_prompt_key(spk_key)
+                        self._speaker_prompt_cache.pop(character_prompt_key, None)
+                        self._speaker_prompt_cache.pop(f"character_{spk_key}", None)
 
-                    char_prompt, char_wav = self._build_anchor_prompt(
-                        key=f"char_{spk_key}_{preset_name}",
-                        instruct=ins_cand,
-                        sample_text=sample_text,
-                    )
-                    if char_prompt is not None:
-                        active_block_mode = "clone"
-                        override_prompt = char_prompt
-                        override_ref = char_wav
-                        override_instruct = None
-                    else:
+                        ins_cand = (
+                            (self._speaker_instruct_cache.get(spk_key, "") if spk_key else "")
+                            or getattr(blk, "voice_instruct", "")
+                            or (prof.get("instruct") or prof.get("voice_instruct") if is_dict else getattr(prof, "voice_instruct", ""))
+                        )
+                        preset_name = (prof.get("preset_name") if is_dict else getattr(prof, "preset_name", "")) if prof else ""
+                        if not ins_cand and preset_name in VIETNAMESE_VOICE_CATALOG:
+                            ins_cand = VIETNAMESE_VOICE_CATALOG[preset_name]["instruct"]
+                        if not ins_cand and spk_key in DEFAULT_SPEAKER_PRESETS:
+                            ins_cand = DEFAULT_SPEAKER_PRESETS[spk_key]["instruct"]
+                        if not ins_cand and self.instruct:
+                            ins_cand = self.instruct
+
                         active_block_mode = "design"
                         override_ref = None
                         override_prompt = None
                         override_instruct = ins_cand
-                else:
-                    ref_cand = getattr(blk, "voice_ref_path", "") or (prof.get("ref_audio_path", "") or prof.get("source_audio_path", "") if is_dict else getattr(prof, "source_audio_path", ""))
-                    character_prompt_key = f"character_{spk_key}" if spk_key else ""
+                    else:
+                        ref_cand = getattr(blk, "voice_ref_path", "") or (prof.get("ref_audio_path", "") or prof.get("source_audio_path", "") if is_dict else getattr(prof, "source_audio_path", ""))
+                        character_prompt_key = self._compute_character_prompt_key(spk_key, ref_cand)
 
-                    if character_prompt_key and character_prompt_key in self._speaker_prompt_cache:
-                        override_prompt = self._speaker_prompt_cache[character_prompt_key]
-                        override_ref = ref_cand
-                        active_block_mode = "clone"
-                    elif ref_cand and os.path.exists(ref_cand):
-                        prompt_key = character_prompt_key or f"spk_{spk_key}_{ref_cand}"
-                        prof_ref_text = prof.get("ref_text", "") if is_dict else getattr(prof, "ref_text", "")
-                        override_prompt = self._get_or_create_prompt_for_audio(ref_cand, cache_key=prompt_key, ref_text=prof_ref_text or None)
-                        if override_prompt is not None and character_prompt_key:
-                            self._speaker_prompt_cache[character_prompt_key] = override_prompt
-                        override_ref = ref_cand
-                        active_block_mode = "clone"
-                    elif spk_key and spk_key in self._speaker_instruct_cache:
-                        override_instruct = self._speaker_instruct_cache[spk_key]
-                        active_block_mode = "design"
-
-                    # Nếu không có prompt nhân bản (hoặc tạo thất bại), luôn chuyển sang hướng dẫn giọng đã khóa
-                    if override_prompt is None and not override_instruct:
-                        if spk_key and spk_key in self._speaker_instruct_cache:
+                        if character_prompt_key and character_prompt_key in self._speaker_prompt_cache:
+                            override_prompt = self._speaker_prompt_cache[character_prompt_key]
+                            override_ref = ref_cand
+                            active_block_mode = "clone"
+                        elif f"character_{spk_key}" in self._speaker_prompt_cache:
+                            override_prompt = self._speaker_prompt_cache[f"character_{spk_key}"]
+                            override_ref = ref_cand
+                            active_block_mode = "clone"
+                        elif ref_cand and os.path.exists(ref_cand):
+                            prompt_key = character_prompt_key or f"spk_{spk_key}_{ref_cand}"
+                            prof_ref_text = prof.get("ref_text", "") if is_dict else getattr(prof, "ref_text", "")
+                            override_prompt = self._get_or_create_prompt_for_audio(ref_cand, cache_key=prompt_key, ref_text=prof_ref_text or None)
+                            if override_prompt is not None:
+                                self._speaker_prompt_cache[character_prompt_key] = override_prompt
+                                self._speaker_prompt_cache[f"character_{spk_key}"] = override_prompt
+                            override_ref = ref_cand
+                            active_block_mode = "clone"
+                        elif spk_key and spk_key in self._speaker_instruct_cache:
                             override_instruct = self._speaker_instruct_cache[spk_key]
                             active_block_mode = "design"
-                        else:
+
+                        # Nếu không có prompt nhân bản (hoặc tạo thất bại), luôn chuyển sang hướng dẫn giọng đã khóa
+                        if override_prompt is None and not override_instruct:
                             ins_cand = (
                                 getattr(blk, "voice_instruct", "")
                                 or (self._speaker_instruct_cache.get(spk_key, "") if spk_key else "")
@@ -3017,7 +3089,7 @@ class TTSEngine:
                             elif self.instruct:
                                 override_instruct = self.instruct
                                 active_block_mode = "design"
-                            elif spk_key and spk_key != "Chưa xác định":
+                            else:
                                 preset_keys = list(VIETNAMESE_VOICE_CATALOG.keys())
                                 cluster_num = 0
                                 match = re.search(r"\d+", spk_key)
@@ -3026,43 +3098,6 @@ class TTSEngine:
                                 preset_name = preset_keys[cluster_num % len(preset_keys)]
                                 override_instruct = VIETNAMESE_VOICE_CATALOG[preset_name]["instruct"]
                                 active_block_mode = "design"
-                            else:
-                                # spk_key == "Chưa xác định" hoặc rỗng: kế thừa người nói của câu liền trước (hoặc liền sau)
-                                neighbor_spk = None
-                                if i > 0 and getattr(blocks[i - 1], "speaker", "") not in ("", "Chưa xác định"):
-                                    neighbor_spk = getattr(blocks[i - 1], "speaker", "")
-                                elif i + 1 < len(blocks) and getattr(blocks[i + 1], "speaker", "") not in ("", "Chưa xác định"):
-                                    neighbor_spk = getattr(blocks[i + 1], "speaker", "")
-
-                                if neighbor_spk:
-                                    n_prof = self.speaker_profiles.get(neighbor_spk, {})
-                                    n_dict = isinstance(n_prof, dict)
-                                    n_prompt = self._speaker_prompt_cache.get(f"character_{neighbor_spk}")
-                                    if n_prompt is not None:
-                                        override_prompt = n_prompt
-                                        active_block_mode = "clone"
-                                        spk_label = f"{neighbor_spk} (kế thừa)"
-                                    else:
-                                        override_instruct = (
-                                            self._speaker_instruct_cache.get(neighbor_spk, "")
-                                            or (n_prof.get("instruct") or n_prof.get("voice_instruct") if n_dict else getattr(n_prof, "voice_instruct", ""))
-                                            or DEFAULT_SPEAKER_PRESETS.get(neighbor_spk, {}).get("instruct", "")
-                                        )
-                                        if override_instruct:
-                                            active_block_mode = "design"
-                                            spk_label = f"{neighbor_spk} (kế thừa)"
-
-                                if override_prompt is None and not override_instruct:
-                                    fb_p, fb_w = self._get_or_create_fallback_anchor()
-                                    if fb_p is not None:
-                                        override_prompt = fb_p
-                                        override_ref = fb_w
-                                        active_block_mode = "clone"
-                                        spk_label = "Giọng mỏ neo dự phòng"
-                                    else:
-                                        override_instruct = self.instruct or DEFAULT_SPEAKER_PRESETS["Người nói 1"]["instruct"]
-                                        active_block_mode = "design"
-                                        spk_label = "Thiết kế giọng dự phòng"
 
             if active_block_mode == "design":
                 method_desc = f"Thiết kế giọng: {override_instruct[:30]}..." if override_instruct else "Thiết kế giọng"
@@ -3072,8 +3107,10 @@ class TTSEngine:
                 method_desc = "Nhân bản giọng mẫu"
             # Kiểm tra bộ nhớ đệm khôi phục tác vụ từ điểm lưu trước
             cache_spk = "unified" if self.multi_speaker_mode == "single" else spk_key
+            next_start_sec = parse_timestamp_to_seconds(blocks[i + 1].start_time) if i + 1 < len(blocks) else (start_sec + (target_dur or slot_duration))
+            avail_before_next = max(0.0, next_start_sec - start_sec)
             cache_wav_path = self._compute_block_cache_path(
-                i, text_to_speak, cache_spk, override_ref, override_instruct, target_dur, method_or_mode=active_block_mode
+                i, text_to_speak, cache_spk, override_ref, override_instruct, target_dur, method_or_mode=active_block_mode, avail_before_next=avail_before_next
             )
             if cache_wav_path and os.path.exists(cache_wav_path):
                 ok_cache, _, _, _ = validate_audio_file(cache_wav_path)
@@ -3083,7 +3120,7 @@ class TTSEngine:
                         cached_arr = np.mean(cached_arr, axis=1)
                     nominal_sample = int(start_sec * self.sample_rate)
                     if self.overflow_strategy == "preserve_speech":
-                        min_gap = int(0.04 * self.sample_rate)
+                        min_gap = int(0.05 * self.sample_rate)
                         max_drift = int(1.5 * self.sample_rate)
                         start_sample = min(max(nominal_sample, speech_cursor_sample + min_gap), nominal_sample + max_drift)
                     else:
@@ -3196,7 +3233,7 @@ class TTSEngine:
 
                 nominal_sample = int(start_sec * self.sample_rate)
                 if self.overflow_strategy == "preserve_speech":
-                    min_gap = int(0.04 * self.sample_rate)
+                    min_gap = int(0.05 * self.sample_rate)
                     max_drift = int(1.5 * self.sample_rate)
                     start_sample = min(max(nominal_sample, speech_cursor_sample + min_gap), nominal_sample + max_drift)
                 else:
@@ -3357,6 +3394,7 @@ class TTSEngine:
                 for idx_it, it in enumerate(valid_items):
                     emb = embs[idx_it]
                     sim = float(np.dot(emb, centroid))
+                    self.log(f"Độ tương đồng âm sắc câu {it['index'] + 1} của {s_key}: {round(sim, 3)}")
                     if sim < min_sim:
                         self.log(
                             f"Phát hiện câu {it['index'] + 1} có âm sắc lệch chuẩn ({round(sim, 2)} < {min_sim}). "

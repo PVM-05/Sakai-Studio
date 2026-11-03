@@ -1112,7 +1112,8 @@ class SpeakerDiarizationCoordinator:
                 if best_single is not None:
                     merged = best_single
                     merged_clone = best_single_clone
-                    selected_ref_text = best_single_text if len(best_single_text.split()) >= 3 else ""
+                    # Luôn để trống để Whisper tự động nhận diện chính xác trên clip âm thanh mẫu đã cắt
+                    selected_ref_text = ""
                 else:
                     collected: List[np.ndarray] = []
                     collected_clone: List[np.ndarray] = []
