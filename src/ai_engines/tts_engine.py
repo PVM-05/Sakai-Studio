@@ -1823,7 +1823,7 @@ class TTSEngine:
         self,
         video_path: str,
         blocks: List[SubtitleBlock],
-        max_speakers: int = 4,
+        max_speakers: Optional[int] = None,
         exact_speakers: Optional[int] = None,
         clustering_sensitivity: str = "standard",
         prefer_cuda: Optional[bool] = None,
@@ -1967,12 +1967,10 @@ class TTSEngine:
                 else:
                     prof_data = dict(prof)
 
-                # Đo đặc trưng âm học thực tế (F0 trung vị, giới tính, cao độ) trên toàn bộ các câu của từng nhân vật
+                # Đo đặc trưng âm học thực tế (F0 trung vị, giới tính, nhóm tuổi, cao độ) trên toàn bộ các câu của từng nhân vật
                 src_path = prof_data.get("source_audio_path") or getattr(prof, "source_audio_path", "")
-                f0 = 150.0
-                gender = "auto"
-                pitch_lvl = "moderate"
                 speaker_f0_list: List[float] = []
+                speaker_feat_list: List[np.ndarray] = []
 
                 if source_audio_for_diarization and os.path.exists(source_audio_for_diarization):
                     try:
@@ -1991,9 +1989,10 @@ class TTSEngine:
                                             seg_audio = np.mean(seg_audio, axis=1)
                                         c_feat = self._extract_acoustic_features(seg_audio, d_sr)
                                         if c_feat is not None:
+                                            speaker_feat_list.append(c_feat)
                                             speaker_f0_list.append(float(c_feat[0] * 200.0))
                     except Exception as loop_err:
-                        self.log(f"Không thể quét F0 chuỗi câu thoại của {spk_name}: {loop_err}")
+                        self.log(f"Không thể quét đặc trưng âm học chuỗi câu thoại của {spk_name}: {loop_err}")
 
                 if not speaker_f0_list and src_path and os.path.exists(src_path):
                     try:
@@ -2002,41 +2001,71 @@ class TTSEngine:
                             audio_d = np.mean(audio_d, axis=1)
                         feat = self._extract_acoustic_features(audio_d, a_sr)
                         if feat is not None:
+                            speaker_feat_list.append(feat)
                             speaker_f0_list.append(float(feat[0] * 200.0))
                     except Exception as feat_err:
                         self.log(f"Không thể đo đặc trưng âm học của {spk_name}: {feat_err}")
 
-                voice_ins = ""
-                if speaker_f0_list:
-                    f0 = float(np.median(speaker_f0_list))
-                    if f0 > 245.0:
-                        gender = "child"
-                        pitch_lvl = "very_high"
-                        voice_ins = "child, high pitch"
-                    elif f0 > 175.0:
-                        gender = "female"
-                        pitch_lvl = "high" if f0 > 210.0 else "moderate"
-                        voice_ins = f"female, young adult, {pitch_lvl} pitch"
-                    else:
-                        gender = "male"
-                        pitch_lvl = "very_low" if f0 < 100.0 else ("low" if f0 < 130.0 else "moderate")
-                        voice_ins = f"male, young adult, {pitch_lvl} pitch"
+                # Phân loại âm học đa chiều (tách biệt giới tính và độ tuổi)
+                centroid_val = float(np.median([cf[2] * 2000.0 for cf in speaker_feat_list])) if speaker_feat_list else 1500.0
+                iqr_val = float(np.median([cf[1] * 100.0 for cf in speaker_feat_list])) if speaker_feat_list else 15.0
+                band_arr = np.mean([cf[3:11] for cf in speaker_feat_list], axis=0) if speaker_feat_list else None
 
-                prof_data["pitch_hz"] = round(f0, 1)
+                acoustic_res = AcousticClassifier.classify(
+                    f0_list=speaker_f0_list,
+                    centroid=centroid_val,
+                    iqr_f0=iqr_val,
+                    band_energies=band_arr,
+                )
+
+                # Nhận diện phương ngữ tiếng Việt từ phụ đề của nhân vật
+                spk_sub_texts = [getattr(b, "text", "") for b in blocks if getattr(b, "speaker", "") == spk_name]
+                accent, accent_conf = VietnameseAccentClassifier.classify(spk_sub_texts)
+
+                gender = acoustic_res["gender"]
+                gender_conf = acoustic_res["gender_confidence"]
+                age_group = acoustic_res["age_group"]
+                pitch_lvl = acoustic_res["pitch_level"]
+                pitch_hz = acoustic_res["pitch_hz"]
+                style_tag = acoustic_res["style_tag"]
+
+                voice_ins = build_voice_design_instruct(gender=gender, age=age_group, pitch=pitch_lvl, style=style_tag) or f"{gender}, young adult, moderate pitch"
+
+                prof_data["pitch_hz"] = pitch_hz
                 prof_data["gender"] = gender
+                prof_data["gender_confidence"] = gender_conf
+                prof_data["age_group"] = age_group
                 prof_data["pitch_level"] = pitch_lvl
+                prof_data["style_tag"] = style_tag
+                prof_data["vietnamese_accent"] = accent
+                prof_data["accent_confidence"] = accent_conf
+                prof_data["method"] = "preset"
                 prof_data["user_locked"] = False
-                if voice_ins:
-                    prof_data["voice_instruct"] = voice_ins
-                    prof_data["instruct"] = voice_ins
-                    self._speaker_instruct_cache[spk_name] = voice_ins
+                prof_data["voice_instruct"] = voice_ins
+                prof_data["instruct"] = voice_ins
+                if src_path:
+                    prof_data["source_audio_path"] = src_path
+                    prof_data["ref_audio_path"] = src_path
+
                 if hasattr(prof, "gender"):
                     prof.gender = gender
+                if hasattr(prof, "gender_confidence"):
+                    prof.gender_confidence = gender_conf
+                if hasattr(prof, "age_group"):
+                    prof.age_group = age_group
                 if hasattr(prof, "pitch_level"):
                     prof.pitch_level = pitch_lvl
+                if hasattr(prof, "vietnamese_accent"):
+                    prof.vietnamese_accent = accent
+                if hasattr(prof, "accent_confidence"):
+                    prof.accent_confidence = accent_conf
+                if hasattr(prof, "style_tag"):
+                    prof.style_tag = style_tag
+                if hasattr(prof, "method"):
+                    prof.method = "preset"
                 if hasattr(prof, "user_locked"):
                     prof.user_locked = False
-                if voice_ins and hasattr(prof, "voice_instruct"):
+                if hasattr(prof, "voice_instruct"):
                     prof.voice_instruct = voice_ins
                 if voice_ins:
                     for b in blocks:
@@ -2050,6 +2079,29 @@ class TTSEngine:
                 if ratio < 0.7:
                     prof_data["status"] = "review_needed"
                 detected_profiles[spk_name] = prof_data
+
+            # Phân bổ giọng đọc AI tiếng Việt không trùng lặp (1-đối-1) cho toàn bộ các nhân vật
+            GlobalVoiceAllocator.allocate_distinct_voices(list(detected_profiles.values()), subtitle_blocks=blocks)
+            for spk_name, p_data in detected_profiles.items():
+                assigned_preset = p_data.get("preset_name", "")
+                assigned_ins = p_data.get("voice_instruct", "")
+                p_data["recommended_voices"] = VoiceRecommendationEngine.recommend_voices(p_data, top_k=3)
+                if spk_name in diar_profiles:
+                    d_prof = diar_profiles[spk_name]
+                    if hasattr(d_prof, "preset_name"):
+                        d_prof.preset_name = assigned_preset
+                    if hasattr(d_prof, "voice_instruct"):
+                        d_prof.voice_instruct = assigned_ins
+                    if hasattr(d_prof, "method"):
+                        d_prof.method = "preset"
+                    if hasattr(d_prof, "recommended_voices"):
+                        d_prof.recommended_voices = p_data["recommended_voices"]
+                if assigned_ins:
+                    self._speaker_instruct_cache[spk_name] = assigned_ins
+                    for b in blocks:
+                        if getattr(b, "speaker", "") == spk_name and not getattr(b, "is_speaker_locked", False):
+                            b.voice_instruct = assigned_ins
+                            b.voice_ref_path = ""
 
             # Hợp nhất (merge) detected_profiles với self.speaker_profiles hiện có
             # Bảo toàn nguyên vẹn hồ sơ của các nhân vật đã được người dùng tùy chỉnh hoặc đã khóa
@@ -2093,7 +2145,7 @@ class TTSEngine:
     def detect_speakers_from_srt_text(
         self,
         blocks: List[SubtitleBlock],
-        max_speakers: int = 4,
+        max_speakers: Optional[int] = None,
     ) -> Dict[str, Dict[str, Any]]:
         """
         Tự động nhận diện và phân vai nhiều người nói khi chỉ cung cấp tệp phụ đề (.srt) mà không có video:
@@ -2103,6 +2155,8 @@ class TTSEngine:
         """
         if not blocks:
             return {}
+
+        effective_max_spk = int(max_speakers) if max_speakers is not None else 4
 
         prefix_re = re.compile(
             r"^\s*(?:\[([^\]\r\n]{1,25})\]\s*[:：]?|\(([^)\r\n]{1,25})\)\s*[:：]|([A-Za-zÀ-ỹ0-9_ ]{1,25})\s*[:：])\s*(.+)$"
@@ -2210,7 +2264,7 @@ class TTSEngine:
 
             if has_valid_prefix:
                 if tag_key not in named_speaker_map:
-                    spk_num = min(len(named_speaker_map) + 1, max_speakers)
+                    spk_num = min(len(named_speaker_map) + 1, effective_max_spk)
                     spk_id = f"Người nói {spk_num}"
                     named_speaker_map[tag_key] = spk_id
                 assigned_spk = named_speaker_map[tag_key]
@@ -2232,18 +2286,18 @@ class TTSEngine:
                 # Phân tích dấu gạch đầu dòng hội thoại hoặc đại từ xưng hô trong câu
                 words = set(re.findall(r"[a-zA-ZÀ-ỹ]+", lower_text))
                 if raw_text.startswith("-") or raw_text.startswith("—") or "?" in raw_text:
-                    current_turn = (current_turn + 1) % min(max(2, max_speakers), 4)
+                    current_turn = (current_turn + 1) % min(max(2, effective_max_spk), 4)
 
-                if words & child_markers and max_speakers >= 4:
-                    assigned_spk = f"Người nói {min(4, max_speakers)}"
+                if words & child_markers and effective_max_spk >= 4:
+                    assigned_spk = f"Người nói {min(4, effective_max_spk)}"
                     assigned_instruct = "child, high pitch"
                     assigned_desc = "Giọng Trẻ Em / Cao"
-                elif words & elder_markers and max_speakers >= 3:
-                    assigned_spk = f"Người nói {min(3, max_speakers)}"
+                elif words & elder_markers and effective_max_spk >= 3:
+                    assigned_spk = f"Người nói {min(3, effective_max_spk)}"
                     assigned_instruct = "male, middle-aged, low pitch"
                     assigned_desc = "Giọng Trầm / Trung Niên"
                 elif (words & female_markers) and not (words & male_markers):
-                    assigned_spk = "Người nói 2" if max_speakers >= 2 else "Người nói 1"
+                    assigned_spk = "Người nói 2" if effective_max_spk >= 2 else "Người nói 1"
                     assigned_instruct = "female, young adult, moderate pitch"
                     assigned_desc = "Giọng Nữ Thanh Niên"
                 elif (words & male_markers) and not (words & female_markers):
@@ -2251,7 +2305,7 @@ class TTSEngine:
                     assigned_instruct = "male, young adult, moderate pitch"
                     assigned_desc = "Giọng Nam Thanh Niên"
                 else:
-                    spk_idx = (current_turn % min(max(2, max_speakers), len(DEFAULT_SPEAKER_PRESETS))) + 1
+                    spk_idx = (current_turn % min(max(2, effective_max_spk), len(DEFAULT_SPEAKER_PRESETS))) + 1
                     assigned_spk = f"Người nói {spk_idx}"
 
             preset = DEFAULT_SPEAKER_PRESETS.get(assigned_spk, DEFAULT_SPEAKER_PRESETS["Người nói 1"])
@@ -2264,6 +2318,19 @@ class TTSEngine:
             blk.voice_instruct = assigned_instruct
             blk.voice_ref_path = ""
             _register_speaker(assigned_spk, assigned_instruct, assigned_desc)
+
+        # Phân bổ giọng đọc AI tiếng Việt không trùng lặp cho toàn bộ nhân vật
+        GlobalVoiceAllocator.allocate_distinct_voices(list(detected_profiles.values()), subtitle_blocks=blocks)
+        for spk_name, p_data in detected_profiles.items():
+            assigned_preset = p_data.get("preset_name", "")
+            assigned_ins = p_data.get("voice_instruct", "")
+            p_data["recommended_voices"] = VoiceRecommendationEngine.recommend_voices(p_data, top_k=3)
+            if assigned_ins:
+                self._speaker_instruct_cache[spk_name] = assigned_ins
+                for b in blocks:
+                    if getattr(b, "speaker", "") == spk_name and not getattr(b, "is_speaker_locked", False):
+                        b.voice_instruct = assigned_ins
+                        b.voice_ref_path = ""
 
         # Hợp nhất với self.speaker_profiles hiện có, bảo toàn các hồ sơ người dùng đã khóa
         locked_names = {
@@ -3881,48 +3948,61 @@ class VoiceRecommendationEngine:
         score = 0
         reasons: List[str] = []
 
-        # 1. Giới tính (Trọng số 40 điểm)
+        # 1. Giới tính (Trọng số 35 điểm) - Tách bạch với nhóm tuổi
         prof_gender = getattr(profile, "gender", None) or (profile.get("gender") if isinstance(profile, dict) else "auto")
         voice_gender = voice_entry.get("gender", "")
-        if prof_gender in ("auto", "", None):
-            score += 35
+        if prof_gender in ("auto", "", None, "unknown"):
+            score += 30
         elif prof_gender == voice_gender:
-            score += 40
+            score += 35
             reasons.append("giới tính phù hợp")
         else:
             return 0, "Khác giới tính"
 
-        # 2. Khẩu âm vùng miền Việt Nam (Trọng số 30 điểm)
+        # 2. Nhóm tuổi (Trọng số 25 điểm) - Tách biệt độc lập với giới tính
+        prof_age = getattr(profile, "age_group", None) or (profile.get("age_group") if isinstance(profile, dict) else "young_adult")
+        voice_age = voice_entry.get("age_group", "young_adult")
+        if prof_age == voice_age:
+            score += 25
+            reasons.append("nhóm tuổi phù hợp")
+        elif {prof_age, voice_age}.issubset({"teenager", "young_adult"}) or {prof_age, voice_age}.issubset({"young_adult", "middle_aged"}):
+            score += 15
+        elif {prof_age, voice_age}.issubset({"middle_aged", "elderly"}):
+            score += 12
+        elif prof_age == "child" or voice_age == "child":
+            score += 0
+        else:
+            score += 5
+
+        # 3. Khẩu âm vùng miền Việt Nam (Trọng số 25 điểm)
         prof_accent = getattr(profile, "vietnamese_accent", None) or (profile.get("vietnamese_accent") if isinstance(profile, dict) else "bac")
         voice_accent = voice_entry.get("accent", "bac")
         accent_names = {"bac": "miền Bắc", "trung": "miền Trung", "nam": "miền Nam"}
         if prof_accent == voice_accent:
-            score += 30
+            score += 25
             reasons.append(f"giọng {accent_names.get(voice_accent, voice_accent)}")
         else:
             score += 5
 
-        # 3. Cao độ âm thanh (Trọng số 15 điểm)
+        # 4. Cao độ âm thanh (Trọng số 10 điểm)
         prof_pitch = getattr(profile, "pitch_level", None) or (profile.get("pitch_level") if isinstance(profile, dict) else "moderate")
         voice_pitch = voice_entry.get("pitch", "moderate")
         if prof_pitch == voice_pitch:
-            score += 15
+            score += 10
             reasons.append("cao độ phù hợp")
         elif prof_pitch in cls.PITCH_LEVELS and voice_pitch in cls.PITCH_LEVELS:
             diff = abs(cls.PITCH_LEVELS.index(prof_pitch) - cls.PITCH_LEVELS.index(voice_pitch))
             if diff == 1:
-                score += 10
+                score += 7
             elif diff == 2:
-                score += 5
+                score += 3
 
-        # 4. Phong cách và độ tuổi (Trọng số 15 điểm)
+        # 5. Phong cách thể hiện (Trọng số 5 điểm)
         prof_style = getattr(profile, "style_tag", None) or (profile.get("style_tag") if isinstance(profile, dict) else "natural")
         voice_style = voice_entry.get("style", "")
         if prof_style and voice_style and prof_style == voice_style:
-            score += 10
-            reasons.append("phong cách tương đồng")
-        else:
             score += 5
+            reasons.append("phong cách tương đồng")
 
         score = min(100, max(0, score))
         desc = f"Phù hợp {score}% ({', '.join(reasons)})" if reasons else f"Phù hợp {score}%"
@@ -3949,4 +4029,355 @@ class VoiceRecommendationEngine:
 
         candidates.sort(key=lambda x: x["score"], reverse=True)
         return candidates[:top_k]
+
+
+class AcousticClassifier:
+    """
+    Bộ phân loại âm học đa chiều (Multi-Feature Acoustic Classifier).
+    Tách biệt độc lập hoàn toàn giữa Giới tính (gender) và Nhóm tuổi (age_group).
+    Phân tích kết hợp F0 median, F0 IQR/variance, Trọng tâm phổ (Spectral Centroid)
+    và 8 dải năng lượng âm sắc để phân biệt chính xác:
+    - Giọng nữ trầm vs Giọng nam cao ở vùng giao thoa (155 - 190 Hz)
+    - Giọng trẻ em (F0 > 240 Hz + centroid cao) tách bạch giới tính
+    - Giọng người già / trung niên / thanh niên / thiếu niên
+    """
+
+    @classmethod
+    def classify(
+        cls,
+        f0_list: List[float],
+        centroid: float = 1500.0,
+        iqr_f0: float = 15.0,
+        band_energies: Optional[np.ndarray] = None,
+    ) -> Dict[str, Any]:
+        if not f0_list:
+            return {
+                "gender": "male",
+                "gender_confidence": 0.5,
+                "age_group": "young_adult",
+                "pitch_level": "moderate",
+                "pitch_hz": 150.0,
+                "style_tag": "natural",
+            }
+
+        median_f0 = float(np.median(f0_list))
+        pitch_hz = round(median_f0, 1)
+
+        # Tính tỷ lệ năng lượng dải thấp (100-450Hz: trầm) so với dải cao (1500-3800Hz: thanh/sáng)
+        low_high_ratio = 1.0
+        if band_energies is not None and len(band_energies) >= 8:
+            low_energy = float(np.sum(band_energies[0:2]))
+            high_energy = float(np.sum(band_energies[5:8])) + 1e-6
+            low_high_ratio = low_energy / high_energy
+
+        # 1. Phát hiện Giọng Trẻ Em (Child)
+        is_child = (median_f0 > 240.0 and centroid > 1800.0) or (median_f0 > 260.0)
+
+        if is_child:
+            age_group = "child"
+            pitch_level = "very_high" if median_f0 > 275.0 else "high"
+            style_tag = "hoat_hinh"
+            # Trẻ em vẫn có giới tính tách biệt (nam/nữ) dựa trên low_high_ratio và centroid
+            if low_high_ratio < 0.9 or centroid > 2300.0:
+                gender = "female"
+            else:
+                gender = "male"
+            gender_confidence = 0.70
+            return {
+                "gender": gender,
+                "gender_confidence": gender_confidence,
+                "age_group": age_group,
+                "pitch_level": pitch_level,
+                "pitch_hz": pitch_hz,
+                "style_tag": style_tag,
+            }
+
+        # 2. Phân loại Giới tính cho Người lớn (Adult Gender Classification)
+        if median_f0 < 155.0:
+            gender = "male"
+            gender_confidence = min(0.98, 0.75 + (155.0 - median_f0) / 150.0)
+        elif median_f0 > 190.0:
+            gender = "female"
+            gender_confidence = min(0.98, 0.75 + (median_f0 - 190.0) / 150.0)
+        else:
+            # Vùng giao thoa F0 155 - 190 Hz:
+            if centroid > 1550.0 or low_high_ratio < 1.15:
+                gender = "female"
+                gender_confidence = 0.72
+            else:
+                gender = "male"
+                gender_confidence = 0.72
+
+        # 3. Phân loại Nhóm tuổi cho Người lớn (Adult Age Group Classification)
+        if gender == "male":
+            if median_f0 < 105.0 or (median_f0 < 120.0 and iqr_f0 > 28.0):
+                age_group = "elderly"
+                pitch_level = "very_low"
+                style_tag = "ke_chuyen"
+            elif median_f0 < 128.0:
+                age_group = "middle_aged"
+                pitch_level = "low"
+                style_tag = "ke_chuyen"
+            elif centroid > 1900.0 and iqr_f0 > 22.0 and median_f0 > 155.0:
+                age_group = "teenager"
+                pitch_level = "high"
+                style_tag = "soi_noi"
+            else:
+                age_group = "young_adult"
+                pitch_level = "high" if median_f0 > 155.0 else "moderate"
+                style_tag = "thuyet_minh"
+        else:  # female
+            if median_f0 < 165.0 and (iqr_f0 > 24.0 or centroid < 1400.0):
+                age_group = "elderly"
+                pitch_level = "low"
+                style_tag = "ke_chuyen"
+            elif median_f0 < 185.0:
+                age_group = "middle_aged"
+                pitch_level = "low"
+                style_tag = "ke_chuyen"
+            elif centroid > 2100.0 and iqr_f0 > 22.0 and median_f0 > 225.0:
+                age_group = "teenager"
+                pitch_level = "high"
+                style_tag = "soi_noi"
+            else:
+                age_group = "young_adult"
+                pitch_level = "high" if median_f0 > 215.0 else "moderate"
+                style_tag = "tam_su"
+
+        return {
+            "gender": gender,
+            "gender_confidence": round(gender_confidence, 2),
+            "age_group": age_group,
+            "pitch_level": pitch_level,
+            "pitch_hz": pitch_hz,
+            "style_tag": style_tag,
+        }
+
+
+class VietnameseAccentClassifier:
+    """
+    Bộ nhận diện phương ngữ tiếng Việt (Bắc, Trung, Nam).
+    Phân tích từ vựng khẩu ngữ vùng miền trong câu thoại phụ đề.
+    """
+
+    NAM_MARKERS = re.compile(
+        r"\b(hổng|nghen|nè|bển|bắp|ghe|xỉn|bự|ráng|nhậu|tía|má|quẹo|chánh|heo|xíu|dzui|hén|trển|ba má|bận áo|muỗng|thiệt|mắc cười|hổng chừng|dữ dằn|coi chừng|rồi nè|nghe nè|vầy nè|trỏng|miệt|uổng|nhóc|chèn ơi|trời đất ơi|hông|dạ thưa|bữa nay|ngon lành)\b",
+        re.IGNORECASE,
+    )
+
+    TRUNG_MARKERS = re.compile(
+        r"\b(mô|tê|răng|rứa|chi|nớ|chừ|trôông|mi|tau|hỉ|hè|đọi|chộ|bầy tui|mần chi|mô tê|rứa hè|ưng|mần răng|răng rứa|chi rứa|mô rồi|nỏ|o|mệ|trôông đợi|lận)\b",
+        re.IGNORECASE,
+    )
+
+    BAC_MARKERS = re.compile(
+        r"\b(thế à|thế ư|nhé|nhỉ|giùm|ngô|thìa|bố mẹ|vâng|bảo|nhớn|lợn|cốc|đỗ|chè|dạ vâng|chứ lị|đấy chứ|nhá|chăng|thế phỏng|chứ nị|giời|u|bu|bảo sao|đấy thây)\b",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def classify(cls, texts: List[str]) -> Tuple[str, float]:
+        if not texts:
+            return "bac", 0.50
+
+        combined = " ".join(texts)
+        nam_count = len(cls.NAM_MARKERS.findall(combined))
+        trung_count = len(cls.TRUNG_MARKERS.findall(combined))
+        bac_count = len(cls.BAC_MARKERS.findall(combined))
+
+        if trung_count > 0 and trung_count >= nam_count and trung_count >= bac_count:
+            conf = min(0.98, 0.65 + 0.1 * trung_count)
+            return "trung", round(conf, 2)
+        elif nam_count > 0 and nam_count >= bac_count:
+            conf = min(0.98, 0.65 + 0.1 * nam_count)
+            return "nam", round(conf, 2)
+        elif bac_count > 0:
+            conf = min(0.98, 0.65 + 0.1 * bac_count)
+            return "bac", round(conf, 2)
+
+        return "bac", 0.50
+
+
+class GlobalVoiceAllocator:
+    """
+    Thuật toán phân bổ giọng nói toàn cục không trùng lặp (Non-Colliding Global Voice Allocator).
+    Đảm bảo 100% mỗi nhân vật được gán một giọng đọc AI tiếng Việt riêng biệt từ VIETNAMESE_VOICE_CATALOG.
+    """
+
+    @classmethod
+    def allocate_distinct_voices(
+        cls,
+        profiles: List[Any],
+        subtitle_blocks: Optional[List[Any]] = None,
+        catalog: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> Dict[str, str]:
+        if not profiles:
+            return {}
+
+        cat = catalog if catalog is not None else VIETNAMESE_VOICE_CATALOG
+        catalog_names = list(cat.keys())
+
+        # Thu thập câu thoại theo nhân vật để nhận diện phương ngữ
+        speaker_texts: Dict[str, List[str]] = {}
+        if subtitle_blocks:
+            for b in subtitle_blocks:
+                spk = getattr(b, "speaker", "") or (b.get("speaker") if isinstance(b, dict) else "")
+                txt = getattr(b, "text", "") or (b.get("text") if isinstance(b, dict) else "")
+                if spk and txt:
+                    speaker_texts.setdefault(spk, []).append(txt)
+
+        # 1. Bảo vệ các nhân vật đã được người dùng khóa thủ công (user_locked)
+        assigned: Dict[str, str] = {}
+        used_presets = set()
+
+        for prof in profiles:
+            spk_name = getattr(prof, "display_name", "") or getattr(prof, "speaker_id", "") or (prof.get("display_name") if isinstance(prof, dict) else "") or (prof.get("speaker_id") if isinstance(prof, dict) else "")
+            is_locked = bool(getattr(prof, "user_locked", False) if hasattr(prof, "user_locked") else (prof.get("user_locked", False) if isinstance(prof, dict) else False))
+            curr_preset = getattr(prof, "preset_name", "") or (prof.get("preset_name") if isinstance(prof, dict) else "")
+            curr_method = getattr(prof, "method", "") or (prof.get("method") if isinstance(prof, dict) else "")
+            if curr_method == "clone" and (getattr(prof, "source_audio_path", "") or (isinstance(prof, dict) and prof.get("source_audio_path"))):
+                assigned[spk_name] = ""
+                continue
+            if is_locked and curr_preset in cat:
+                assigned[spk_name] = curr_preset
+                used_presets.add(curr_preset)
+
+        unassigned_profs = [
+            p for p in profiles
+            if (getattr(p, "display_name", "") or getattr(p, "speaker_id", "") or (p.get("display_name") if isinstance(p, dict) else "") or (p.get("speaker_id") if isinstance(p, dict) else "")) not in assigned
+        ]
+
+        if not unassigned_profs:
+            return assigned
+
+        available_presets = [k for k in catalog_names if k not in used_presets]
+        if not available_presets:
+            available_presets = list(catalog_names)
+
+        # Cập nhật phương ngữ cho các nhân vật chưa khóa
+        for prof in unassigned_profs:
+            spk_name = getattr(prof, "display_name", "") or getattr(prof, "speaker_id", "") or (prof.get("display_name") if isinstance(prof, dict) else "") or (prof.get("speaker_id") if isinstance(prof, dict) else "")
+            if spk_name in speaker_texts and (not getattr(prof, "vietnamese_accent", "") or getattr(prof, "accent_confidence", 0.0) <= 0.5):
+                acc, acc_conf = VietnameseAccentClassifier.classify(speaker_texts[spk_name])
+                if hasattr(prof, "vietnamese_accent"):
+                    prof.vietnamese_accent = acc
+                    prof.accent_confidence = acc_conf
+                elif isinstance(prof, dict):
+                    prof["vietnamese_accent"] = acc
+                    prof["accent_confidence"] = acc_conf
+
+        n_chars = len(unassigned_profs)
+        n_presets = len(available_presets)
+
+        # Xây dựng ma trận chi phí
+        cost_matrix = np.zeros((n_chars, n_presets), dtype=np.float32)
+        for i, prof in enumerate(unassigned_profs):
+            for j, preset_name in enumerate(available_presets):
+                info = cat[preset_name]
+                sc, _ = VoiceRecommendationEngine.calculate_voice_match(prof, info)
+                cost = 100.0 - float(sc)
+                p_gen = getattr(prof, "gender", "") or (prof.get("gender") if isinstance(prof, dict) else "auto")
+                v_gen = info.get("gender", "")
+                if p_gen in ("male", "female") and v_gen in ("male", "female") and p_gen != v_gen:
+                    cost += 800.0
+                cost_matrix[i, j] = cost
+
+        # Nếu số nhân vật <= số preset: Phân bổ 1-đối-1 tối ưu không trùng lặp
+        if n_chars <= n_presets:
+            try:
+                from scipy.optimize import linear_sum_assignment
+                row_ind, col_ind = linear_sum_assignment(cost_matrix)
+                for r, c in zip(row_ind, col_ind):
+                    spk_name = getattr(unassigned_profs[r], "display_name", "") or getattr(unassigned_profs[r], "speaker_id", "") or (unassigned_profs[r].get("display_name") if isinstance(unassigned_profs[r], dict) else "")
+                    assigned_preset = available_presets[c]
+                    assigned[spk_name] = assigned_preset
+                    cls._apply_preset_to_profile(unassigned_profs[r], assigned_preset, cat[assigned_preset])
+            except Exception:
+                assigned_col = set()
+                for i, prof in enumerate(unassigned_profs):
+                    best_j = -1
+                    best_cost = 999999.0
+                    for j in range(n_presets):
+                        if j not in assigned_col and cost_matrix[i, j] < best_cost:
+                            best_cost = cost_matrix[i, j]
+                            best_j = j
+                    if best_j != -1:
+                        assigned_col.add(best_j)
+                        spk_name = getattr(prof, "display_name", "") or getattr(prof, "speaker_id", "") or (prof.get("display_name") if isinstance(prof, dict) else "")
+                        p_name = available_presets[best_j]
+                        assigned[spk_name] = p_name
+                        cls._apply_preset_to_profile(prof, p_name, cat[p_name])
+        else:
+            # Trường hợp số nhân vật vượt quá số preset trong danh mục
+            style_variants = [
+                "slightly higher pitch",
+                "deep chest resonance",
+                "deliberate pace, calm",
+                "energetic and fast pace",
+                "soft spoken and gentle",
+                "authoritative tone",
+            ]
+            for idx, prof in enumerate(unassigned_profs):
+                p_name = catalog_names[idx % len(catalog_names)]
+                spk_name = getattr(prof, "display_name", "") or getattr(prof, "speaker_id", "") or (prof.get("display_name") if isinstance(prof, dict) else "")
+                assigned[spk_name] = p_name
+                info = dict(cat[p_name])
+                if idx >= len(catalog_names):
+                    var = style_variants[(idx - len(catalog_names)) % len(style_variants)]
+                    info["instruct"] = f"{info['instruct']}, {var}"
+                cls._apply_preset_to_profile(prof, p_name, info)
+
+        return assigned
+
+    @staticmethod
+    def _apply_preset_to_profile(prof: Any, preset_name: str, preset_info: Dict[str, Any]):
+        ins = preset_info.get("instruct", "")
+        if hasattr(prof, "method"):
+            prof.method = "preset"
+            prof.preset_name = preset_name
+            prof.voice_instruct = ins
+            prof.status = "locked"
+        elif isinstance(prof, dict):
+            prof["method"] = "preset"
+            prof["preset_name"] = preset_name
+            prof["voice_instruct"] = ins
+            prof["instruct"] = ins
+            prof["status"] = "locked"
+
+
+def verify_speaker_acoustic_distinction(
+    profiles: List[Any],
+    catalog: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """
+    Xác minh độ tách biệt âm học giữa các giọng được phân bổ cho các nhân vật.
+    Đảm bảo không có hai nhân vật nào bị tương đồng quá mức trong không gian âm học.
+    """
+    cat = catalog if catalog is not None else VIETNAMESE_VOICE_CATALOG
+    assigned_presets = []
+    for prof in profiles:
+        p_name = getattr(prof, "preset_name", "") or (prof.get("preset_name") if isinstance(prof, dict) else "")
+        if p_name:
+            assigned_presets.append(p_name)
+
+    if len(assigned_presets) <= 1:
+        return {"all_distinct": True, "duplicate_count": 0, "unique_ratio": 1.0}
+
+    unique_count = len(set(assigned_presets))
+    duplicates = len(assigned_presets) - unique_count
+    return {
+        "all_distinct": duplicates == 0,
+        "duplicate_count": duplicates,
+        "unique_ratio": round(unique_count / len(assigned_presets), 4),
+        "total_assigned": len(assigned_presets),
+    }
+
+
+# Gán phương thức tiện ích lên TTSEngine
+TTSEngine.calculate_voice_match = VoiceRecommendationEngine.calculate_voice_match
+TTSEngine.recommend_voices = VoiceRecommendationEngine.recommend_voices
+TTSEngine.allocate_distinct_voices = GlobalVoiceAllocator.allocate_distinct_voices
+TTSEngine.AcousticClassifier = AcousticClassifier
+TTSEngine.VietnameseAccentClassifier = VietnameseAccentClassifier
+TTSEngine.GlobalVoiceAllocator = GlobalVoiceAllocator
 

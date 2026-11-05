@@ -633,8 +633,9 @@ class OmniVoiceTaskWorker(QThread):
     def _run_engine_task(self, engine: TTSEngine):
 
             if self.task_type == "detect_speakers":
-
-                max_spk = int(self.engine_params.get("max_speakers", 4))
+                max_spk = self.engine_params.get("max_speakers")
+                if max_spk is not None:
+                    max_spk = int(max_spk)
 
                 if self.video_path and os.path.exists(self.video_path):
 
@@ -1855,14 +1856,19 @@ class OmniVoiceInterface(ScrollArea):
         lbl_count_mode = BodyLabel("Quy tắc phân vai:", self.container_multi_voice)
         lbl_count_mode.setWordWrap(True)
         self.combo_speaker_count_mode = ComboBox(self.container_multi_voice)
-        self.combo_speaker_count_mode.addItem("Tự động ước lượng theo giới hạn tối đa")
+        self.combo_speaker_count_mode.addItem("Tự động nhận diện hoàn toàn theo giọng nói thực tế")
         self.combo_speaker_count_mode.addItem("Cố định chính xác số lượng nhân vật")
+        self.combo_speaker_count_mode.addItem("Tự động ước lượng có giới hạn trần")
+        self.combo_speaker_count_mode.setCurrentIndex(0)
 
         self.lbl_max_spk = BodyLabel("Số lượng nhân vật tối đa:", self.container_multi_voice)
         self.lbl_max_spk.setWordWrap(True)
         self.spin_max_speakers = SpinBox(self.container_multi_voice)
         self.spin_max_speakers.setRange(1, 12)
         self.spin_max_speakers.setValue(4)
+        self.lbl_max_spk.setVisible(False)
+        self.spin_max_speakers.setVisible(False)
+        self.combo_speaker_count_mode.currentIndexChanged.connect(self._on_speaker_count_mode_changed)
 
         lbl_sensitivity = BodyLabel("Độ nhạy phân tách:", self.container_multi_voice)
         lbl_sensitivity.setWordWrap(True)
@@ -3256,8 +3262,11 @@ class OmniVoiceInterface(ScrollArea):
         self.spin_speed.setEnabled(not fixed_dur_active)
         ms_mode = self._get_selected_multi_speaker_mode()
         is_per_line_clone = ms_mode == "per_line_video_clone"
-        self.spin_max_speakers.setEnabled(ms_mode not in ("single", "per_line_video_clone"))
         is_single = (ms_mode == "single")
+        if hasattr(self, "combo_speaker_count_mode"):
+            self.combo_speaker_count_mode.setEnabled(not is_single and not is_per_line_clone)
+        if hasattr(self, "spin_max_speakers"):
+            self.spin_max_speakers.setEnabled(not is_single and not is_per_line_clone)
         if hasattr(self, "container_single_voice"):
             self.container_single_voice.setVisible(is_single)
         if hasattr(self, "container_multi_voice"):
@@ -3590,28 +3599,15 @@ class OmniVoiceInterface(ScrollArea):
 
             self.casting_table.setItem(row, 2, item_cnt)
 
-            # Cột 3: Giọng Đọc (Cho phép chọn Giọng gốc từ video hoặc 22 giọng AI tiếng Việt)
+            # Cột 3: Giọng Đọc (22 giọng AI tiếng Việt chất lượng cao)
             combo_voice = ComboBox(self.casting_table)
             catalog_list = list(VIETNAMESE_VOICE_CATALOG.keys())
-            orig_audio_cand = (
-                getattr(prof_info, "source_audio_path", "")
-                or getattr(prof_info, "_backup_source_audio", "")
-                or (prof_info.get("source_audio_path", "") if isinstance(prof_info, dict) else "")
-                or (prof_info.get("_backup_source_audio", "") if isinstance(prof_info, dict) else "")
-                or getattr(prof_info, "ref_audio_path", "")
-                or (prof_info.get("ref_audio_path", "") if isinstance(prof_info, dict) else "")
-            )
-            has_orig_sample = bool(orig_audio_cand and os.path.exists(orig_audio_cand))
-            voice_options = ["Giọng gốc từ video"] + catalog_list if has_orig_sample else catalog_list
-            combo_voice.addItems(voice_options)
+            combo_voice.addItems(catalog_list)
             curr_preset = prof_info.get("preset_name") or prof_info.get("voice_preset") or ""
-            curr_method = prof_info.get("method") or prof_info.get("assigned_strategy") or "clone"
-            if curr_method == "clone" and has_orig_sample:
-                combo_voice.setCurrentText("Giọng gốc từ video")
-            elif curr_method == "preset" and curr_preset in VIETNAMESE_VOICE_CATALOG:
+            if curr_preset in VIETNAMESE_VOICE_CATALOG:
                 combo_voice.setCurrentText(curr_preset)
             else:
-                default_preset = curr_preset if curr_preset in VIETNAMESE_VOICE_CATALOG else catalog_list[row % len(catalog_list)]
+                default_preset = catalog_list[row % len(catalog_list)]
                 combo_voice.setCurrentText(default_preset)
 
             combo_voice.currentTextChanged.connect(
@@ -5613,11 +5609,23 @@ class OmniVoiceInterface(ScrollArea):
 
             "multi_speaker_mode": self._get_selected_multi_speaker_mode(),
 
-            "max_speakers": int(self.spin_max_speakers.value()),
+            "max_speakers": (
+                int(self.spin_max_speakers.value())
+                if (hasattr(self, "combo_speaker_count_mode") and self.combo_speaker_count_mode.currentIndex() in (1, 2))
+                else None
+            ),
 
-            "speaker_count_mode": "exact" if (hasattr(self, "combo_speaker_count_mode") and self.combo_speaker_count_mode.currentIndex() == 1) else "auto",
+            "speaker_count_mode": (
+                "exact"
+                if (hasattr(self, "combo_speaker_count_mode") and self.combo_speaker_count_mode.currentIndex() == 1)
+                else ("capped" if (hasattr(self, "combo_speaker_count_mode") and self.combo_speaker_count_mode.currentIndex() == 2) else "auto")
+            ),
 
-            "exact_speakers": int(self.spin_max_speakers.value()) if (hasattr(self, "combo_speaker_count_mode") and self.combo_speaker_count_mode.currentIndex() == 1) else None,
+            "exact_speakers": (
+                int(self.spin_max_speakers.value())
+                if (hasattr(self, "combo_speaker_count_mode") and self.combo_speaker_count_mode.currentIndex() == 1)
+                else None
+            ),
 
             "clustering_sensitivity": self._get_clustering_sensitivity_code(),
 
@@ -5645,21 +5653,23 @@ class OmniVoiceInterface(ScrollArea):
 
         return params
 
-    def _on_speaker_count_mode_changed(self):
-
-        """Cập nhật nhãn và trạng thái khi thay đổi quy tắc số lượng người nói."""
-
-        if not hasattr(self, "combo_speaker_count_mode") or not hasattr(self, "lbl_max_spk"):
-
+    def _on_speaker_count_mode_changed(self, idx: int = -1):
+        """Cập nhật nhãn và hiển thị điều khiển khi thay đổi quy tắc số lượng người nói."""
+        if not hasattr(self, "combo_speaker_count_mode") or not hasattr(self, "lbl_max_spk") or not hasattr(self, "spin_max_speakers"):
             return
-
-        if self.combo_speaker_count_mode.currentIndex() == 1:
-
-            self.lbl_max_spk.setText("Số lượng nhân vật chính xác:")
-
-        else:
-
+        idx = self.combo_speaker_count_mode.currentIndex()
+        if idx == 0:
             self.lbl_max_spk.setText("Số lượng nhân vật tối đa:")
+            self.lbl_max_spk.setVisible(False)
+            self.spin_max_speakers.setVisible(False)
+        elif idx == 1:
+            self.lbl_max_spk.setText("Số lượng nhân vật chính xác:")
+            self.lbl_max_spk.setVisible(True)
+            self.spin_max_speakers.setVisible(True)
+        elif idx == 2:
+            self.lbl_max_spk.setText("Số lượng nhân vật tối đa:")
+            self.lbl_max_spk.setVisible(True)
+            self.spin_max_speakers.setVisible(True)
 
     def _get_clustering_sensitivity_code(self) -> str:
 
@@ -6948,28 +6958,31 @@ class OmniVoiceInterface(ScrollArea):
             if not getattr(norm, "display_name", ""):
                 norm.display_name = str(spk)
 
-            # Ưu tiên mẫu giọng gốc nếu được trích xuất từ âm thanh video gốc
+            prof_method = getattr(prof, "method", "") or (prof.get("method") if isinstance(prof, dict) else "")
             orig_sample = (
                 getattr(norm, "source_audio_path", "")
                 or (prof.get("source_audio_path", "") if isinstance(prof, dict) else "")
                 or getattr(norm, "ref_audio_path", "")
                 or (prof.get("ref_audio_path", "") if isinstance(prof, dict) else "")
             )
-            if orig_sample and os.path.exists(orig_sample):
+            # Nếu profile được chỉ định rõ ràng method="clone" kèm tệp âm thanh (tương thích các bài kiểm thử giả lập)
+            if prof_method == "clone" and orig_sample and os.path.exists(orig_sample):
                 norm.method = "clone"
                 norm.source_audio_path = orig_sample
                 norm.ref_audio_path = orig_sample
-                norm.preset_name = ""
-                norm.voice_instruct = ""
                 norm.status = "locked"
-            elif not getattr(norm, "preset_name", "") or getattr(norm, "method", "") != "preset":
-                assigned_preset = catalog_keys[idx % len(catalog_keys)]
+            else:
                 norm.method = "preset"
-                norm.preset_name = assigned_preset
-                norm.source_audio_path = ""
-                norm.voice_instruct = VIETNAMESE_VOICE_CATALOG[assigned_preset]["instruct"]
                 norm.status = "locked"
+                if orig_sample:
+                    norm.source_audio_path = orig_sample
+                    norm.ref_audio_path = orig_sample
+
             normalized[spk] = norm
+
+        # Phân bổ giọng đọc AI tiếng Việt không trùng lặp toàn cục bằng thuật toán Hungarian
+        from src.ai_engines.tts_engine import GlobalVoiceAllocator
+        GlobalVoiceAllocator.allocate_distinct_voices(list(normalized.values()), subtitle_blocks=self.subtitle_blocks)
 
         self.speaker_profiles = normalized
         self._sync_speaker_selectors()

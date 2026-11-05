@@ -411,6 +411,8 @@ def test_single_unified_voice_mode_ui():
     from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
     from src.ai_engines.tts_engine import VIETNAMESE_VOICE_CATALOG
     from src.ai_engines.translator import SubtitleBlock
+    from src.core.config import config
+    config.set(config.mmoTTSMultiSpeakerMode, "single")
 
     interface = OmniVoiceInterface()
     assert hasattr(interface, "chk_single_unified_voice")
@@ -2215,6 +2217,301 @@ def test_subtitle_table_dual_audition_and_filter():
     ui.combo_sub_filter.setCurrentText("Tất cả câu thoại")
     assert ui.sub_table.isRowHidden(0) is False
     assert ui.sub_table.isRowHidden(1) is False
+
+
+def test_gender_and_age_group_decoupling():
+    """Xác minh tách biệt hoàn toàn giữa giới tính và nhóm tuổi, cùng bộ phân loại âm học đa chiều."""
+    from src.ai_engines.tts_engine import AcousticClassifier, VoiceRecommendationEngine, VIETNAMESE_VOICE_CATALOG
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    # 1. Giọng trẻ em (F0 > 240 Hz, centroid cao): age_group='child', gender='female' hoặc 'male'
+    child_f0 = [255.0, 260.0, 268.0, 252.0]
+    res_child = AcousticClassifier.classify(child_f0, centroid=2400.0, iqr_f0=12.0)
+    assert res_child["age_group"] == "child"
+    assert res_child["gender"] in ("female", "male")
+    assert res_child["pitch_level"] in ("high", "very_high")
+    assert res_child["style_tag"] == "hoat_hinh"
+
+    # Kiểm tra gợi ý giọng cho trẻ em: phải khớp với preset Thiếu Nhi / Em Bé với điểm số cao (> 70)
+    prof_child = CharacterVoiceProfile(
+        speaker_id="spk_child",
+        display_name="Bé Na",
+        gender=res_child["gender"],
+        age_group="child",
+        pitch_level=res_child["pitch_level"],
+    )
+    score_child, desc_child = VoiceRecommendationEngine.calculate_voice_match(
+        prof_child,
+        VIETNAMESE_VOICE_CATALOG["Thiếu Nhi Hồn Nhiên - Phim Hoạt Hình"],
+    )
+    assert score_child >= 60
+    assert "nhóm tuổi phù hợp" in desc_child
+
+    # 2. Giọng nữ trầm ở vùng F0 giao thoa (F0 = 168 Hz, centroid cao, formants sáng)
+    female_deep_f0 = [165.0, 170.0, 168.0, 169.0]
+    res_f_deep = AcousticClassifier.classify(female_deep_f0, centroid=1700.0, iqr_f0=14.0)
+    assert res_f_deep["gender"] == "female"
+    assert res_f_deep["age_group"] in ("middle_aged", "young_adult")
+
+    # 3. Giọng nam cao ở vùng F0 giao thoa (F0 = 165 Hz, centroid thấp, dải trầm áp đảo)
+    male_high_f0 = [162.0, 165.0, 168.0, 164.0]
+    # 8 dải năng lượng: dải thấp (0, 1) áp đảo dải cao
+    male_bands = np.array([3.0, 2.5, 1.2, 1.0, 0.8, 0.4, 0.3, 0.2], dtype=np.float32)
+    res_m_high = AcousticClassifier.classify(male_high_f0, centroid=1100.0, iqr_f0=14.0, band_energies=male_bands)
+    assert res_m_high["gender"] == "male"
+    assert res_m_high["age_group"] in ("young_adult", "teenager")
+
+    # 4. Giọng nam rất trầm / người cao tuổi (F0 = 98 Hz)
+    res_elder = AcousticClassifier.classify([95.0, 98.0, 102.0], centroid=950.0, iqr_f0=15.0)
+    assert res_elder["gender"] == "male"
+    assert res_elder["age_group"] == "elderly"
+    assert res_elder["pitch_level"] == "very_low"
+
+
+def test_vietnamese_accent_classification():
+    """Xác minh bộ nhận diện phương ngữ tiếng Việt (Bắc, Trung, Nam) qua từ vựng phụ đề."""
+    from src.ai_engines.tts_engine import VietnameseAccentClassifier
+
+    # Miền Nam
+    south_subs = [
+        "Anh đi đâu hổng nói cho tía má hay nè, làm tui lo quá nghen",
+        "Con cá bự ghê, ăn xỉn luôn đó nha",
+    ]
+    acc_s, conf_s = VietnameseAccentClassifier.classify(south_subs)
+    assert acc_s == "nam"
+    assert conf_s >= 0.70
+
+    # Miền Trung
+    central_subs = [
+        "Mô tê răng rứa, mi mần chi mà chừ mới về rứa hè",
+        "Cái đọi ni đẹp quá chi rứa",
+    ]
+    acc_c, conf_c = VietnameseAccentClassifier.classify(central_subs)
+    assert acc_c == "trung"
+    assert conf_c >= 0.70
+
+    # Miền Bắc
+    north_subs = [
+        "Bố mẹ bảo thế à, thế thì để con lấy thìa ăn chè nhé",
+        "Dạ vâng, hôm nay trời đẹp nhỉ",
+    ]
+    acc_n, conf_n = VietnameseAccentClassifier.classify(north_subs)
+    assert acc_n == "bac"
+    assert conf_n >= 0.70
+
+    # Câu thông thường không có từ khẩu ngữ đặc trưng -> Mặc định miền Bắc chuẩn 0.50
+    plain_subs = ["Hôm nay là một ngày thật tuyệt vời để bắt đầu công việc mới."]
+    acc_p, conf_p = VietnameseAccentClassifier.classify(plain_subs)
+    assert acc_p == "bac"
+    assert conf_p == 0.50
+
+
+def test_global_voice_allocator_non_colliding():
+    """Xác minh thuật toán GlobalVoiceAllocator đảm bảo 100% không có 2 nhân vật nào bị trùng giọng."""
+    from src.ai_engines.tts_engine import GlobalVoiceAllocator, VIETNAMESE_VOICE_CATALOG, verify_speaker_acoustic_distinction
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+    from src.ai_engines.translator import SubtitleBlock
+
+    # 4 nhân vật có đặc tính âm học khác nhau:
+    # Nhân vật 1: Nam trầm miền Nam
+    p1 = CharacterVoiceProfile(speaker_id="spk_1", display_name="Bác Ba Phi", gender="male", age_group="middle_aged", pitch_level="low", vietnamese_accent="nam", accent_confidence=0.8)
+    # Nhân vật 2: Nữ thanh niên miền Bắc
+    p2 = CharacterVoiceProfile(speaker_id="spk_2", display_name="Cô Thắm", gender="female", age_group="young_adult", pitch_level="high", vietnamese_accent="bac", accent_confidence=0.8)
+    # Nhân vật 3: Trẻ em miền Bắc
+    p3 = CharacterVoiceProfile(speaker_id="spk_3", display_name="Bé Bo", gender="female", age_group="child", pitch_level="high", vietnamese_accent="bac", accent_confidence=0.7)
+    # Nhân vật 4: Nữ trầm miền Trung
+    p4 = CharacterVoiceProfile(speaker_id="spk_4", display_name="Mệ Huế", gender="female", age_group="middle_aged", pitch_level="low", vietnamese_accent="trung", accent_confidence=0.9)
+
+    profiles = [p1, p2, p3, p4]
+    allocations = GlobalVoiceAllocator.allocate_distinct_voices(profiles)
+
+    # 1. Xác nhận 4 nhân vật được gán 4 giọng hoàn toàn KHÁC NHAU
+    assigned_presets = list(allocations.values())
+    assert len(assigned_presets) == 4
+    assert len(set(assigned_presets)) == 4, "Tồn tại giọng bị trùng lặp giữa các nhân vật!"
+
+    # 2. Xác nhận tính tối ưu: Bé Bo (trẻ em) được gán đúng giọng thiếu nhi
+    assert "Thiếu Nhi" in allocations["Bé Bo"] or "Em Bé" in allocations["Bé Bo"]
+
+    # 3. Xác nhận Mệ Huế (miền Trung) được gán đúng giọng Nữ Trầm Truyền Cảm (accent=trung)
+    assert allocations["Mệ Huế"] == "Nữ Trầm Truyền Cảm - Đọc Truyện Đêm Khuya"
+
+    # 4. Xác nhận kiểm tra độ tách biệt âm học báo cáo thành công không trùng lặp
+    dist_rep = verify_speaker_acoustic_distinction(profiles)
+    assert dist_rep["all_distinct"] is True
+    assert dist_rep["duplicate_count"] == 0
+
+
+def test_extract_chunk_f0_accuracy():
+    """Xác minh hàm extract_chunk_f0 tính toán chính xác cao độ F0 từ âm thanh."""
+    from src.ai_engines.speaker_diarization import extract_chunk_f0
+
+    sr = 16000
+    t = np.linspace(0, 1.0, sr, endpoint=False)
+
+    # 1. Âm 120 Hz (giọng nam)
+    audio_120 = (0.5 * np.sin(2 * np.pi * 120.0 * t)).astype(np.float32)
+    f0_male = extract_chunk_f0(audio_120, sr)
+    assert f0_male is not None
+    assert abs(f0_male - 120.0) < 5.0, f"Kỳ vọng ~120 Hz nhưng đo được {f0_male}"
+
+    # 2. Âm 220 Hz (giọng nữ)
+    audio_220 = (0.5 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
+    f0_female = extract_chunk_f0(audio_220, sr)
+    assert f0_female is not None
+    assert abs(f0_female - 220.0) < 5.0, f"Kỳ vọng ~220 Hz nhưng đo được {f0_female}"
+
+    # 3. Khoảng lặng / âm rất nhỏ
+    silence = np.zeros(sr, dtype=np.float32)
+    assert extract_chunk_f0(silence, sr) is None
+
+
+def test_autonomous_speaker_count_single_speaker_never_split():
+    """Xác minh video 1 người nói (thuyết minh, độc thoại) không bao giờ bị tách nhầm thành nhiều người nói."""
+    from src.ai_engines.speaker_diarization import (
+        estimate_optimal_clusters,
+        agglomerative_cluster_embeddings,
+    )
+
+    rng = np.random.default_rng(123)
+    dim = 192
+    center = rng.normal(0, 1, dim)
+    center /= np.linalg.norm(center)
+
+    # 12 câu thoại của 1 người nói duy nhất với độ biến thiên tự nhiên (có câu cảm xúc d ~ 0.40)
+    samples = []
+    for _ in range(12):
+        pert = rng.normal(0, 0.12, dim)
+        v = center + pert
+        samples.append(v / np.linalg.norm(v))
+    embs = np.array(samples, dtype=np.float32)
+
+    # Tự động ước lượng K mà không có bất kỳ cấu hình nào từ người dùng
+    k_est = estimate_optimal_clusters(embs, threshold=0.40)
+    assert k_est == 1, f"Kỳ vọng 1 người nói nhưng thuật toán đoán {k_est}"
+
+    labels = agglomerative_cluster_embeddings(embs, threshold=0.40)
+    assert len(np.unique(labels)) == 1, "Một người nói bị phân mảnh thành nhiều cụm!"
+    assert np.all(labels == 0)
+
+
+def test_autonomous_speaker_count_five_speakers_without_max_limit():
+    """Xác minh tự động phát hiện chính xác 5 nhân vật mà không bị giới hạn trần 4 người nói."""
+    from src.ai_engines.speaker_diarization import (
+        estimate_optimal_clusters,
+        agglomerative_cluster_embeddings,
+    )
+
+    rng = np.random.default_rng(456)
+    dim = 192
+
+    # Tạo 5 tâm cụm trực giao/tách biệt rõ
+    centers = []
+    for _ in range(5):
+        c = rng.normal(0, 1, dim)
+        for prev_c in centers:
+            c -= np.dot(c, prev_c) * prev_c
+        c /= np.linalg.norm(c)
+        centers.append(c)
+
+    all_embs = []
+    for c in centers:
+        for _ in range(4):
+            v = c + rng.normal(0, 0.04, dim)
+            all_embs.append(v / np.linalg.norm(v))
+    embeddings = np.array(all_embs, dtype=np.float32)
+
+    # Không chỉ định max_k (chế độ tự động hoàn toàn)
+    k_est = estimate_optimal_clusters(embeddings, max_k=None, threshold=0.40)
+    assert k_est == 5, f"Kỳ vọng phát hiện đúng 5 nhân vật nhưng ra {k_est}"
+
+    labels = agglomerative_cluster_embeddings(embeddings, max_k=None, threshold=0.40)
+    assert len(np.unique(labels)) == 5, f"Kỳ vọng 5 cụm nhưng thu được {len(np.unique(labels))}"
+
+
+def test_f0_assisted_distance_prevents_gender_merging():
+    """Xác minh khoảng cách F0 ngăn chặn việc gộp nhầm nhân vật nam và nữ khi vector đặc trưng ở vùng ranh giới."""
+    from src.ai_engines.speaker_diarization import (
+        estimate_optimal_clusters,
+        agglomerative_cluster_embeddings,
+    )
+
+    rng = np.random.default_rng(789)
+    dim = 192
+
+    # Hai tâm cụm ở cự ly ranh giới (cosine distance ~ 0.35)
+    c1 = rng.normal(0, 1, dim)
+    c1 /= np.linalg.norm(c1)
+    c2 = c1 + rng.normal(0, 0.60, dim)
+    c2 /= np.linalg.norm(c2)
+
+    # 4 câu thoại của người nam (F0 ~ 110 Hz) và 4 câu của người nữ (F0 ~ 220 Hz)
+    embs = []
+    f0s = []
+    for _ in range(4):
+        v = c1 + rng.normal(0, 0.03, dim)
+        embs.append(v / np.linalg.norm(v))
+        f0s.append(110.0)
+    for _ in range(4):
+        v = c2 + rng.normal(0, 0.03, dim)
+        embs.append(v / np.linalg.norm(v))
+        f0s.append(220.0)
+
+    embeddings = np.array(embs, dtype=np.float32)
+
+    # Có F0 hỗ trợ: tách biệt hoàn toàn 2 người nói
+    k_est = estimate_optimal_clusters(embeddings, threshold=0.40, sample_f0s=f0s)
+    assert k_est == 2, f"Kỳ vọng 2 người nói nhưng ra {k_est}"
+
+    labels = agglomerative_cluster_embeddings(embeddings, threshold=0.40, sample_f0s=f0s)
+    assert len(np.unique(labels)) == 2
+    assert labels[0] != labels[4]
+
+
+def test_ui_speaker_count_mode_toggle_and_param_collection():
+    """Xác minh giao diện người dùng chuyển đổi chế độ số lượng nhân vật và thu thập tham số chính xác."""
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(sys.argv if sys.argv else [""])
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    ui = OmniVoiceInterface()
+
+    # Mặc định: Tự động nhận diện hoàn toàn theo giọng nói thực tế (idx = 0)
+    assert ui.combo_speaker_count_mode.currentIndex() == 0
+    assert ui.lbl_max_spk.isHidden() is True
+    assert ui.spin_max_speakers.isHidden() is True
+
+    params = ui._collect_engine_params()
+    assert params["speaker_count_mode"] == "auto"
+    assert params["max_speakers"] is None
+    assert params["exact_speakers"] is None
+
+    # Chuyển sang: Cố định chính xác số lượng nhân vật (idx = 1)
+    ui.combo_speaker_count_mode.setCurrentIndex(1)
+    assert ui.lbl_max_spk.isHidden() is False
+    assert ui.spin_max_speakers.isHidden() is False
+    assert "chính xác" in ui.lbl_max_spk.text()
+    ui.spin_max_speakers.setValue(3)
+
+    params = ui._collect_engine_params()
+    assert params["speaker_count_mode"] == "exact"
+    assert params["max_speakers"] == 3
+    assert params["exact_speakers"] == 3
+
+    # Chuyển sang: Tự động ước lượng có giới hạn trần (idx = 2)
+    ui.combo_speaker_count_mode.setCurrentIndex(2)
+    assert ui.lbl_max_spk.isHidden() is False
+    assert ui.spin_max_speakers.isHidden() is False
+    assert "tối đa" in ui.lbl_max_spk.text()
+    ui.spin_max_speakers.setValue(5)
+
+    params = ui._collect_engine_params()
+    assert params["speaker_count_mode"] == "capped"
+    assert params["max_speakers"] == 5
+    assert params["exact_speakers"] is None
+
+
 
 
 

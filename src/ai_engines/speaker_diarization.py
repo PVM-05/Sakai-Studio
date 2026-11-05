@@ -46,18 +46,22 @@ class CharacterVoiceProfile:
     utterance_count: int = 0
     total_duration: float = 0.0
     source_audio_path: str = ""
-    method: str = "clone"  # Phương thức clone hoặc preset
+    method: str = "preset"  # Mặc định sử dụng giọng AI tiếng Việt có sẵn
     preset_name: str = ""
     voice_instruct: str = "male, young adult, moderate pitch"
     status: str = "locked"  # locked, review_needed, unassigned
     custom_audio_path: str = ""
     high_confidence_ratio: float = 1.0
     voice_clone_prompt_path: str = ""
-    vietnamese_accent: str = "bac"
-    gender: str = "auto"
-    pitch_level: str = "moderate"
+    vietnamese_accent: str = "bac"  # bac, trung, nam
+    accent_confidence: float = 0.5
+    gender: str = "auto"  # male, female, auto, unknown
+    gender_confidence: float = 0.5
+    age_group: str = "young_adult"  # child, teenager, young_adult, middle_aged, elderly
+    pitch_level: str = "moderate"  # very_low, low, moderate, high, very_high
     style_tag: str = "natural"
     recommended_voices: List[Dict[str, Any]] = field(default_factory=list)
+    acoustic_features: Dict[str, Any] = field(default_factory=dict)
     error_message: str = ""
     ref_text: str = ""
     user_locked: bool = False
@@ -130,10 +134,14 @@ class CharacterVoiceProfile:
             "high_confidence_ratio": self.high_confidence_ratio,
             "voice_clone_prompt_path": self.voice_clone_prompt_path,
             "vietnamese_accent": self.vietnamese_accent,
+            "accent_confidence": self.accent_confidence,
             "gender": self.gender,
+            "gender_confidence": self.gender_confidence,
+            "age_group": self.age_group,
             "pitch_level": self.pitch_level,
             "style_tag": self.style_tag,
             "recommended_voices": list(self.recommended_voices) if self.recommended_voices else [],
+            "acoustic_features": dict(self.acoustic_features) if self.acoustic_features else {},
             "error_message": self.error_message,
             "ref_text": self.ref_text,
             "user_locked": self.user_locked,
@@ -204,10 +212,14 @@ class CharacterVoiceProfile:
             high_confidence_ratio=float(data.get("high_confidence_ratio", 1.0) if data.get("high_confidence_ratio") is not None else 1.0),
             voice_clone_prompt_path=str(data.get("voice_clone_prompt_path") or ""),
             vietnamese_accent=str(data.get("vietnamese_accent") or "bac"),
+            accent_confidence=float(data.get("accent_confidence", 0.5) if data.get("accent_confidence") is not None else 0.5),
             gender=str(data.get("gender") or "auto"),
+            gender_confidence=float(data.get("gender_confidence", 0.5) if data.get("gender_confidence") is not None else 0.5),
+            age_group=str(data.get("age_group") or "young_adult"),
             pitch_level=str(data.get("pitch_level") or "moderate"),
             style_tag=str(data.get("style_tag") or "natural"),
             recommended_voices=list(data.get("recommended_voices") or []),
+            acoustic_features=dict(data.get("acoustic_features") or {}),
             error_message=str(data.get("error_message") or ""),
             ref_text=str(data.get("ref_text") or ""),
             user_locked=bool(data.get("user_locked", False)),
@@ -299,17 +311,98 @@ def _normalized_choice_probabilities(weights: np.ndarray) -> Optional[np.ndarray
     return probs
 
 
-def estimate_optimal_clusters_eigengap(
+def extract_chunk_f0(chunk: np.ndarray, sample_rate: int) -> Optional[float]:
+    """
+    Trích xuất cao độ F0 trung vị (Hz) của đoạn âm thanh bằng hàm tự tương quan chuẩn hóa (MACF).
+    Phạm vi nhận diện từ 65 Hz (giọng nam trầm sâu) đến 420 Hz (giọng nữ/trẻ em).
+    Trả về None nếu đoạn âm thanh là khoảng lặng hoặc không có tính chu kỳ thanh âm (unvoiced).
+    """
+    if chunk is None or len(chunk) == 0 or sample_rate <= 0:
+        return None
+    data = np.asarray(chunk, dtype=np.float32)
+    if data.ndim > 1:
+        data = np.mean(data, axis=1)
+
+    data = data - float(np.mean(data))
+    energy = float(np.mean(data ** 2))
+    if energy < 1e-5:
+        return None
+
+    min_lag = max(1, int(sample_rate / 420.0))
+    max_lag = min(len(data) // 2, int(sample_rate / 65.0))
+    if max_lag <= min_lag:
+        return None
+
+    frame_len = max(max_lag * 2, int(sample_rate * 0.040))
+    hop_len = int(sample_rate * 0.020)
+    if len(data) < frame_len:
+        frame_len = len(data)
+        hop_len = frame_len
+
+    n_frames = max(1, (len(data) - frame_len) // hop_len + 1)
+    frame_f0s = []
+
+    for f_idx in range(n_frames):
+        st = f_idx * hop_len
+        frame = data[st : st + frame_len]
+        if len(frame) < max_lag * 2:
+            break
+        frame_energy = float(np.sum(frame ** 2))
+        if frame_energy < 1e-5:
+            continue
+
+        window = np.hanning(len(frame))
+        win_frame = frame * window
+
+        fft_len = 1 << (len(win_frame) * 2 - 1).bit_length()
+        spec = np.fft.rfft(win_frame, n=fft_len)
+        corr = np.fft.irfft(spec * np.conj(spec), n=fft_len)[: max_lag + 1]
+
+        r0 = float(corr[0]) if corr[0] > 1e-12 else 1e-12
+        norm_corr = corr / r0
+
+        search_slice = norm_corr[min_lag : max_lag + 1]
+        if len(search_slice) == 0:
+            continue
+
+        peak_idx = int(np.argmax(search_slice))
+        peak_val = float(search_slice[peak_idx])
+
+        if peak_val >= 0.30:
+            best_lag = float(min_lag + peak_idx)
+            if 0 < peak_idx < len(search_slice) - 1:
+                alpha = float(search_slice[peak_idx - 1])
+                beta = peak_val
+                gamma = float(search_slice[peak_idx + 1])
+                denom = alpha - 2.0 * beta + gamma
+                if abs(denom) > 1e-12:
+                    delta = 0.5 * (alpha - gamma) / denom
+                    best_lag = best_lag + delta
+
+            f0 = float(sample_rate / max(best_lag, 1e-6))
+            if 65.0 <= f0 <= 420.0:
+                frame_f0s.append(f0)
+
+    if not frame_f0s:
+        return None
+    return float(np.median(frame_f0s))
+
+
+def estimate_optimal_clusters(
     embeddings: np.ndarray,
     min_k: int = 1,
-    max_k: int = 12,
+    max_k: Optional[int] = None,
     threshold: float = 0.40,
+    sample_f0s: Optional[List[Optional[float]]] = None,
+    sample_durations: Optional[List[float]] = None,
 ) -> int:
     """
-    Ước lượng số lượng cụm người nói tối ưu dựa trên phân tích trị riêng (Eigengap analysis)
-    của ma trận Laplacian chuẩn hóa từ ma trận tương đồng cosin.
-    
-    Tự động phát hiện số lượng người nói thực tế của video mà không cần người dùng chỉ định.
+    Tự động ước lượng số lượng cụm nhân vật tối ưu dựa trên phân tích đa tiêu chí:
+    1. Kiểm tra nhanh đơn người nói qua phân vị khoảng cách cosin.
+    2. Cắt cây phân cấp thứ bậc (AHC) tự nhiên theo ngưỡng khoảng cách.
+    3. Phân tích bước nhảy trị riêng (Eigengap) trên ma trận Affinity lũy thừa 4 và Laplacian chuẩn hóa.
+    4. Hiệu chỉnh khoảng cách âm học dựa trên độ chênh lệch cao độ F0 (ngăn gộp nhầm nam/nữ).
+    5. Đánh giá chất lượng phân cụm bằng hệ số phân tách Silhouette.
     """
     n_samples = embeddings.shape[0]
     if n_samples <= 1:
@@ -319,52 +412,182 @@ def estimate_optimal_clusters_eigengap(
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     norm_embs = embeddings / np.maximum(norms, 1e-12)
 
-    # Ma trận tương đồng cosin
+    # Ma trận khoảng cách cosin N x N
     sim_matrix = np.dot(norm_embs, norm_embs.T)
     dist_matrix = np.maximum(0.0, 1.0 - sim_matrix)
     np.fill_diagonal(dist_matrix, 0.0)
 
+    # Hiệu chỉnh khoảng cách âm học bằng F0 (nếu có dữ liệu F0 của các đoạn thoại)
+    # Nếu hai câu thoại có F0 chênh lệch > 75 Hz (ví dụ nam ~110 Hz vs nữ ~220 Hz), cộng phạt khoảng cách
+    if sample_f0s is not None and len(sample_f0s) == n_samples:
+        for i in range(n_samples):
+            f0_i = sample_f0s[i]
+            if f0_i is None or f0_i <= 0.0:
+                continue
+            for j in range(i + 1, n_samples):
+                f0_j = sample_f0s[j]
+                if f0_j is None or f0_j <= 0.0:
+                    continue
+                if abs(f0_i - f0_j) > 75.0:
+                    dist_matrix[i, j] = min(1.0, dist_matrix[i, j] + 0.25)
+                    dist_matrix[j, i] = dist_matrix[i, j]
+                    sim_matrix[i, j] = max(0.0, 1.0 - dist_matrix[i, j])
+                    sim_matrix[j, i] = sim_matrix[i, j]
+
     if n_samples == 2:
         return 2 if dist_matrix[0, 1] > threshold else 1
 
-    max_dist = float(np.max(dist_matrix))
-    mean_dist = float(np.mean(dist_matrix[np.triu_indices(n_samples, k=1)]))
-    if max_dist < threshold * 0.90 and mean_dist < 0.25:
+    upper_tri = np.triu_indices(n_samples, k=1)
+    tri_dists = dist_matrix[upper_tri]
+    mean_dist = float(np.mean(tri_dists))
+    p90_dist = float(np.percentile(tri_dists, 90))
+
+    # Kiểm tra nhanh đơn người nói: nếu 90% khoảng cách nhỏ hơn ngưỡng và khoảng cách trung bình thấp
+    if p90_dist < threshold * 0.95 and mean_dist < 0.28:
         return 1
 
-    # Xây dựng ma trận Affinity tương đồng
-    affinity = np.maximum(0.0, sim_matrix)
+    effective_max_k = min(n_samples, max_k) if max_k is not None else min(n_samples, 24)
+    upper_k = min(effective_max_k, n_samples - 1)
+    if upper_k < 2:
+        return 2 if float(np.max(dist_matrix)) > threshold else 1
+
+    # 1. Ứng viên từ AHC cắt tự nhiên theo ngưỡng khoảng cách
+    from scipy.spatial.distance import squareform
+    from scipy.cluster.hierarchy import linkage, fcluster
+
+    condensed_dist = squareform(dist_matrix, checks=False)
+    Z = linkage(condensed_dist, method="average")
+    ahc_labels = fcluster(Z, t=threshold, criterion="distance") - 1
+    k_ahc = int(len(np.unique(ahc_labels)))
+    k_ahc = max(min_k, min(k_ahc, upper_k))
+
+    # 2. Ứng viên từ phân tích Eigengap trên ma trận Affinity sắc nét (Sharpened Affinity)
+    # Lũy thừa 4 để triệt tiêu các liên kết yếu xuyên cụm (< 0.50), khuếch đại liên kết nội cụm (> 0.80)
+    affinity = np.maximum(0.0, sim_matrix) ** 4.0
+    affinity[dist_matrix > threshold * 1.15] = 0.0
     np.fill_diagonal(affinity, 1.0)
+    affinity = 0.5 * (affinity + affinity.T)
 
     deg = np.sum(affinity, axis=1)
     deg_inv_sqrt = 1.0 / np.sqrt(np.maximum(deg, 1e-12))
     laplacian = np.eye(n_samples) - (deg_inv_sqrt[:, None] * affinity * deg_inv_sqrt[None, :])
 
+    k_eigen = 1
+    gaps: List[Tuple[int, float]] = []
+    sorted_gaps: List[Tuple[int, float]] = []
     try:
         eigenvals = np.linalg.eigvalsh(laplacian)
+        for k in range(1, upper_k + 1):
+            gap = float(eigenvals[k] - eigenvals[k - 1])
+            gaps.append((k, gap))
+        if gaps:
+            # Sắp xếp gap giảm dần để lấy các đỉnh trị riêng rõ nhất
+            sorted_gaps = sorted(gaps, key=lambda x: x[1], reverse=True)
+            k_eigen = sorted_gaps[0][0]
     except Exception:
+        k_eigen = k_ahc
+
+    # 3. Tập hợp các ứng viên tiềm năng để đánh giá Silhouette
+    candidate_ks = set([1, k_ahc, k_eigen])
+    if sorted_gaps:
+        for k_g, _ in sorted_gaps[:2]:
+            if min_k <= k_g <= upper_k:
+                candidate_ks.add(k_g)
+    candidate_list = sorted([k for k in candidate_ks if min_k <= k <= upper_k or k == 1])
+
+    def _calc_mean_silhouette(lbls: np.ndarray) -> float:
+        unique_l = np.unique(lbls)
+        if len(unique_l) <= 1:
+            return 0.0
+        scores = []
+        for idx in range(n_samples):
+            own = lbls[idx]
+            same_mask = (lbls == own)
+            same_mask[idx] = False
+            if not np.any(same_mask):
+                scores.append(0.0)
+                continue
+            a = float(np.mean(dist_matrix[idx, same_mask]))
+            b = float("inf")
+            for other in unique_l:
+                if other == own:
+                    continue
+                diff_mask = (lbls == other)
+                if np.any(diff_mask):
+                    d = float(np.mean(dist_matrix[idx, diff_mask]))
+                    if d < b:
+                        b = d
+            denom = max(a, b, 1e-6)
+            scores.append((b - a) / denom)
+        return float(np.mean(scores)) if scores else 0.0
+
+    # Đánh giá chất lượng từng ứng viên K >= 2
+    best_k = 1
+    best_score = -1.0
+    has_valid_multi = False
+
+    for k in candidate_list:
+        if k <= 1:
+            continue
+        try:
+            cand_labels = fcluster(Z, t=k, criterion="maxclust") - 1
+            sil = _calc_mean_silhouette(cand_labels)
+            if sil < 0.15:
+                # Phân tách quá mờ nhạt, có thể là 1 người nói bị cắt gượng ép
+                continue
+
+            # Kiểm tra khoảng cách giữa các tâm cụm ứng viên
+            centers = []
+            for c_i in np.unique(cand_labels):
+                c_pts = norm_embs[cand_labels == c_i]
+                c_mean = np.mean(c_pts, axis=0)
+                centers.append(c_mean / np.maximum(np.linalg.norm(c_mean), 1e-12))
+
+            min_c_dist = float("inf")
+            for i_c in range(len(centers)):
+                for j_c in range(i_c + 1, len(centers)):
+                    d_c = 1.0 - float(np.dot(centers[i_c], centers[j_c]))
+                    if d_c < min_c_dist:
+                        min_c_dist = d_c
+
+            if min_c_dist < 0.22:
+                # Có ít nhất 2 cụm quá sát nhau -> Không đủ tin cậy để tách thành 2 người nói
+                continue
+
+            # Điểm tổng hợp cho ứng viên K
+            gap_weight = 0.0
+            for k_g, g_val in gaps:
+                if k_g == k:
+                    gap_weight = max(0.0, g_val)
+                    break
+
+            comp_score = 0.60 * sil + 0.25 * gap_weight + (0.15 if k == k_ahc else 0.0)
+            has_valid_multi = True
+            if comp_score > best_score:
+                best_score = comp_score
+                best_k = k
+        except Exception:
+            continue
+
+    if not has_valid_multi:
         return 1
 
-    upper_k = min(max_k, n_samples - 1)
-    if upper_k < 2:
-        return 2 if max_dist > threshold else 1
+    return int(max(min_k, min(best_k, effective_max_k)))
 
-    gaps = []
-    for k in range(1, upper_k + 1):
-        gap = float(eigenvals[k] - eigenvals[k - 1])
-        gaps.append((k, gap))
 
-    best_k = 1
-    max_gap = -1.0
-    for k, gap in gaps:
-        if k == 1 and max_dist > threshold * 1.05 and upper_k >= 2:
-            continue
-        if gap > max_gap:
-            max_gap = gap
-            best_k = k
-
-    best_k = max(min_k, min(best_k, max_k, n_samples))
-    return int(best_k)
+def estimate_optimal_clusters_eigengap(
+    embeddings: np.ndarray,
+    min_k: int = 1,
+    max_k: int = 12,
+    threshold: float = 0.40,
+) -> int:
+    """Tương thích ngược: ủy quyền cho estimate_optimal_clusters."""
+    return estimate_optimal_clusters(
+        embeddings=embeddings,
+        min_k=min_k,
+        max_k=max_k,
+        threshold=threshold,
+    )
 
 
 def agglomerative_cluster_embeddings(
@@ -372,13 +595,15 @@ def agglomerative_cluster_embeddings(
     threshold: float = 0.40,
     exact_k: Optional[int] = None,
     min_k: int = 1,
-    max_k: int = 6,
+    max_k: Optional[int] = None,
+    sample_f0s: Optional[List[Optional[float]]] = None,
 ) -> np.ndarray:
     """
     Phân cụm thứ bậc tích lũy (Agglomerative Hierarchical Clustering) theo khoảng cách cosin
     và liên kết trung bình (Average Linkage).
     
-    Hỗ trợ chế độ chỉ định chính xác số cụm (exact_k) hoặc tự động dừng theo ngưỡng khoảng cách (threshold).
+    Hỗ trợ chế độ tự động hoàn toàn ước lượng số lượng người nói thực tế, hoặc cố định exact_k.
+    Kết hợp hậu xử lý gộp cụm quá sát nhau (Centroid Post-Merge Pruning) và kiểm tra Silhouette.
     """
     n_samples = embeddings.shape[0]
     if n_samples == 0:
@@ -395,18 +620,32 @@ def agglomerative_cluster_embeddings(
     dist_matrix = np.maximum(0.0, 1.0 - sim_matrix)
     np.fill_diagonal(dist_matrix, 0.0)
 
-    # Khởi tạo mỗi mẫu là một cụm riêng biệt
-    clusters: List[List[int]] = [[i] for i in range(n_samples)]
+    # Hiệu chỉnh khoảng cách bằng F0 nếu có
+    if sample_f0s is not None and len(sample_f0s) == n_samples:
+        for i in range(n_samples):
+            f0_i = sample_f0s[i]
+            if f0_i is None or f0_i <= 0.0:
+                continue
+            for j in range(i + 1, n_samples):
+                f0_j = sample_f0s[j]
+                if f0_j is None or f0_j <= 0.0:
+                    continue
+                if abs(f0_i - f0_j) > 75.0:
+                    dist_matrix[i, j] = min(1.0, dist_matrix[i, j] + 0.25)
+                    dist_matrix[j, i] = dist_matrix[i, j]
 
     target_k = None
     if exact_k is not None:
         target_k = max(1, min(int(exact_k), n_samples))
     elif n_samples >= 2:
-        target_k = estimate_optimal_clusters_eigengap(
-            norm_embs, min_k=min_k, max_k=max_k, threshold=threshold
+        target_k = estimate_optimal_clusters(
+            norm_embs, min_k=min_k, max_k=max_k, threshold=threshold, sample_f0s=sample_f0s
         )
 
-    effective_max_k = max(1, min(int(max_k), n_samples))
+    if target_k == 1:
+        return np.zeros(n_samples, dtype=np.int32)
+
+    effective_max_k = min(n_samples, max_k) if max_k is not None else min(n_samples, 24)
 
     try:
         from scipy.spatial.distance import squareform
@@ -458,9 +697,39 @@ def agglomerative_cluster_embeddings(
             clusters[merge_i].extend(clusters[merge_j])
             clusters.pop(merge_j)
 
+    # Centroid Post-Merge Pruning: Nếu ở chế độ tự động và có >= 2 cụm,
+    # gộp các tâm cụm cách nhau < 0.28 (tránh chia cắt nhân tạo 1 người)
+    if exact_k is None and len(clusters) > 1:
+        merged_any = True
+        while merged_any and len(clusters) > 1:
+            merged_any = False
+            centroids = []
+            for c in clusters:
+                c_embs = norm_embs[c]
+                c_vec = np.mean(c_embs, axis=0)
+                centroids.append(c_vec / np.maximum(np.linalg.norm(c_vec), 1e-12))
+
+            min_dist = float("inf")
+            c_pair = (-1, -1)
+            for i in range(len(clusters)):
+                for j in range(i + 1, len(clusters)):
+                    d = 1.0 - float(np.dot(centroids[i], centroids[j]))
+                    if sample_f0s is not None:
+                        f0s_i = [sample_f0s[m] for m in clusters[i] if sample_f0s[m] is not None]
+                        f0s_j = [sample_f0s[m] for m in clusters[j] if sample_f0s[m] is not None]
+                        if f0s_i and f0s_j and abs(float(np.median(f0s_i)) - float(np.median(f0s_j))) > 75.0:
+                            continue
+                    if d < min_dist:
+                        min_dist = d
+                        c_pair = (i, j)
+
+            if c_pair[0] >= 0 and min_dist < 0.28:
+                clusters[c_pair[0]].extend(clusters[c_pair[1]])
+                clusters.pop(c_pair[1])
+                merged_any = True
+
     # Nếu ở chế độ tự động (không chỉ định exact_k) và đã gom thành nhiều cụm (>= 2):
     # Kiểm tra hệ số Silhouette để xác thực xem dữ liệu có thực sự tách biệt thành nhiều người nói hay không.
-    # Nếu hệ số phân tách Silhouette < 0.20, các mẫu chỉ là một đám mây âm thanh phân tán của 1 người nói duy nhất.
     if exact_k is None and len(clusters) > 1 and n_samples >= 3:
         temp_labels = np.zeros(n_samples, dtype=np.int32)
         for c_idx, c_members in enumerate(clusters):
@@ -489,8 +758,8 @@ def agglomerative_cluster_embeddings(
             sil_scores.append((b_val - a_val) / denom)
 
         mean_sil = float(np.mean(sil_scores)) if sil_scores else -1.0
-        # Nếu hệ số Silhouette cực thấp (< 0.10), các cụm chỉ là phân mảnh nhân tạo của 1 người nói duy nhất.
-        if mean_sil < 0.10:
+        # Nếu hệ số Silhouette cực thấp (< 0.12), các cụm chỉ là phân mảnh nhân tạo của 1 người nói duy nhất.
+        if mean_sil < 0.12:
             clusters = [[i for i in range(n_samples)]]
 
     # Sắp xếp các cụm theo chỉ số phần tử xuất hiện đầu tiên để nhãn ổn định
@@ -506,14 +775,16 @@ def agglomerative_cluster_embeddings(
 def cosine_cluster_embeddings(
     embeddings: np.ndarray,
     valid_indices: List[int],
-    max_speakers: int = 6,
+    max_speakers: Optional[int] = None,
     exact_speakers: Optional[int] = None,
     distance_threshold: float = 0.40,
     sample_durations: Optional[List[float]] = None,
+    sample_f0s: Optional[List[Optional[float]]] = None,
 ) -> Tuple[np.ndarray, List[str], List[float]]:
     """
     Phân cụm các vector đặc trưng theo khoảng cách cosin và xếp hạng 3 mức độ tin cậy.
-    Sử dụng thuật toán Phân cụm Thứ bậc (AHC) kết hợp cơ chế mẫu nòng cốt (Anchor Segments).
+    Sử dụng thuật toán Phân cụm Thứ bậc (AHC) kết hợp cơ chế mẫu nòng cốt (Anchor Segments)
+    và hiệu chuẩn âm học F0.
     Trả về bộ ba (labels, confidence_levels, confidence_scores).
     """
     n_samples = embeddings.shape[0]
@@ -531,7 +802,7 @@ def cosine_cluster_embeddings(
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     norm_embs = embeddings / np.maximum(norms, 1e-12)
 
-    # 1. Cơ chế mẫu nòng cốt (Anchor-based): Lọc các câu thoại >= 0.8s
+    # 1. Cơ chế mẫu nòng cốt (Anchor-based): Lọc các câu thoại >= 0.35s
     anchor_indices: List[int] = []
     if sample_durations is not None and len(sample_durations) == n_samples:
         anchor_indices = [idx for idx, d in enumerate(sample_durations) if d >= 0.35]
@@ -542,19 +813,27 @@ def cosine_cluster_embeddings(
     # Nếu có đủ mẫu nòng cốt và có một số mẫu ngắn cần gán
     if len(anchor_indices) >= 2 and len(anchor_indices) < n_samples:
         anchor_embs = norm_embs[anchor_indices]
+        anchor_f0s = [sample_f0s[i] for i in anchor_indices] if sample_f0s is not None else None
         anchor_labels = agglomerative_cluster_embeddings(
             anchor_embs,
             threshold=distance_threshold,
             exact_k=exact_speakers,
             max_k=max_speakers,
+            sample_f0s=anchor_f0s,
         )
 
         unique_k = np.unique(anchor_labels)
         cluster_centers: Dict[int, np.ndarray] = {}
+        cluster_median_f0s: Dict[int, Optional[float]] = {}
         for c_i in unique_k:
             members = anchor_embs[anchor_labels == c_i]
             c_vec = np.mean(members, axis=0)
             cluster_centers[c_i] = c_vec / np.maximum(np.linalg.norm(c_vec), 1e-12)
+            if anchor_f0s is not None:
+                c_f0_vals = [anchor_f0s[pos] for pos, lbl in enumerate(anchor_labels) if lbl == c_i and anchor_f0s[pos] is not None]
+                cluster_median_f0s[c_i] = float(np.median(c_f0_vals)) if c_f0_vals else None
+            else:
+                cluster_median_f0s[c_i] = None
 
         # Gán nhãn cho toàn bộ n_samples
         best_labels = np.zeros(n_samples, dtype=np.int32)
@@ -563,7 +842,14 @@ def cosine_cluster_embeddings(
 
         non_anchor = [idx for idx in range(n_samples) if idx not in anchor_indices]
         for idx in non_anchor:
-            dists = [1.0 - float(np.dot(norm_embs[idx], cluster_centers[c_i])) for c_i in unique_k]
+            f0_val = sample_f0s[idx] if sample_f0s is not None and idx < len(sample_f0s) else None
+            dists = []
+            for c_i in unique_k:
+                d = 1.0 - float(np.dot(norm_embs[idx], cluster_centers[c_i]))
+                c_f0 = cluster_median_f0s.get(c_i)
+                if f0_val is not None and c_f0 is not None and abs(f0_val - c_f0) > 75.0:
+                    d += 0.25
+                dists.append(d)
             min_dist_idx = int(np.argmin(dists))
             min_dist = dists[min_dist_idx]
             # Từ chối gán khi khoảng cách cosin vượt quá ngưỡng cho phép
@@ -578,6 +864,7 @@ def cosine_cluster_embeddings(
             threshold=distance_threshold,
             exact_k=exact_speakers,
             max_k=max_speakers,
+            sample_f0s=sample_f0s,
         )
 
     # Tính toán tâm cụm cho các cụm hợp lệ (loại trừ nhãn -1 bị từ chối)
@@ -797,7 +1084,7 @@ class SpeakerDiarizationCoordinator:
         self,
         video_path: str,
         blocks: List[Any],
-        max_speakers: int = 4,
+        max_speakers: Optional[int] = None,
         exact_speakers: Optional[int] = None,
         distance_threshold: float = 0.40,
         prefer_cuda: Optional[bool] = None,
@@ -899,6 +1186,7 @@ class SpeakerDiarizationCoordinator:
         clone_audio_chunks: List[Optional[np.ndarray]] = []
         valid_indices: List[int] = []
         sample_durations: List[float] = []
+        sample_f0s: List[Optional[float]] = []
 
         # Tiền tính toán mốc thời gian của tất cả các câu để kẹp biên an toàn
         parsed_times = [
@@ -964,6 +1252,7 @@ class SpeakerDiarizationCoordinator:
                 continue
 
             audio_chunks.append(chunk.astype(np.float32, copy=False))
+            sample_f0s.append(extract_chunk_f0(chunk, sr))
             if clone_data is not None:
                 c_start_f = max(0, int(padded_start * clone_sr))
                 c_end_f = min(len(clone_data), int(padded_end * clone_sr))
@@ -1004,6 +1293,7 @@ class SpeakerDiarizationCoordinator:
                 exact_speakers=exact_speakers,
                 distance_threshold=distance_threshold,
                 sample_durations=sample_durations,
+                sample_f0s=sample_f0s,
             )
 
             # Tránh xung đột tên người nói với các câu đã được khóa
@@ -1035,7 +1325,7 @@ class SpeakerDiarizationCoordinator:
                     profile = CharacterVoiceProfile(
                         speaker_id=f"spk_{max_existing_num + cluster_id}",
                         display_name=speaker_name,
-                        method="clone",
+                        method="preset",
                         utterance_count=0,
                         total_duration=0.0,
                         status="locked",
