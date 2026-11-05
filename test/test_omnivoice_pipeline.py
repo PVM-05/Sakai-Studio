@@ -2785,6 +2785,8 @@ def test_download_speaker_embedding_model_uses_existing_or_downloads(tmp_path, m
     from pathlib import Path
     from src.ai_engines.speaker_embedding_onnx import download_speaker_embedding_model
 
+    monkeypatch.setattr("src.ai_engines.model_hashes.verify_weight_file", lambda *a, **kw: True)
+
     # Trường hợp 1: Tệp đã tồn tại
     fake_model = tmp_path / "campplus.onnx"
     fake_model.write_bytes(b"dummy onnx content" * 100)

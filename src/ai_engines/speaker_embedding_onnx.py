@@ -109,6 +109,14 @@ def download_speaker_embedding_model(
     progress_callback: Optional[Any] = None,
 ) -> str:
     """Tự động tải mô hình nhận diện người nói CAM++ ONNX (~27 MB) từ HuggingFace."""
+    from src.ai_engines.model_hashes import verify_weight_file
+
+    # Nếu không chỉ định thư mục đích cụ thể, ưu tiên kiểm tra xem mô hình đã tồn tại ở các đường dẫn chuẩn chưa
+    if target_dir is None:
+        resolved = resolve_speaker_model_path()
+        if resolved and Path(resolved).is_file() and verify_weight_file(Path(resolved), "campplus.onnx"):
+            return resolved
+
     if target_dir is None:
         project_root = Path(__file__).resolve().parents[2]
         target_dir = project_root / "models" / "speaker_embedding"
@@ -116,8 +124,6 @@ def download_speaker_embedding_model(
         target_dir = Path(target_dir)
         if target_dir.suffix.lower() == ".onnx" or (target_dir.is_file() and not target_dir.is_dir()):
             target_dir = target_dir.parent
-
-    from src.ai_engines.model_hashes import verify_weight_file
 
     target_dir.mkdir(parents=True, exist_ok=True)
     target_file = target_dir / "campplus.onnx"
@@ -147,9 +153,14 @@ def download_speaker_embedding_model(
 
             shutil.copyfile(str(downloaded_path), str(target_file))
         res_file = target_file if target_file.is_file() else downloaded_path
-        verified = verify_weight_file(res_file, "campplus.onnx") or verify_weight_file(res_file, "campplus_cn_en_common_200k.onnx")
+        verified = (
+            verify_weight_file(res_file, "campplus.onnx")
+            or verify_weight_file(res_file, "campplus_cn_en_common_200k.onnx")
+        )
         if not verified:
-            logger.warning(f"Cảnh báo: Tệp mô hình tải về ({res_file.name}) không khớp mã băm SHA-256 đã biết.")
+            raise RuntimeError(
+                f"Tệp mô hình nhận diện người nói CAM++ vừa tải về ({res_file.name}) không khớp mã băm SHA-256 đã xác minh."
+            )
         return str(res_file.resolve())
     except Exception as e:
         logger.error(f"Không thể tự động tải mô hình CAM++ ONNX: {e}")

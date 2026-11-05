@@ -1180,7 +1180,7 @@ class OmniVoiceInterface(ScrollArea):
         if mime and hasattr(mime, 'hasUrls') and mime.hasUrls():
             for url in mime.urls():
                 p = os.path.abspath(os.path.normpath(url.toLocalFile())) if url.toLocalFile() else ""
-                if p and (is_video_file(p) or p.lower().endswith(('.srt', '.vtt', '.ass', '.txt', '.wav', '.mp3', '.pt'))):
+                if p and (is_video_file(p) or p.lower().endswith(('.srt', '.vtt', '.ass', '.wav', '.mp3', '.m4a', '.flac', '.pt'))):
                     event.acceptProposedAction()
                     return
         super().dragEnterEvent(event)
@@ -1190,7 +1190,7 @@ class OmniVoiceInterface(ScrollArea):
         if mime and hasattr(mime, 'hasUrls') and mime.hasUrls():
             for url in mime.urls():
                 p = os.path.abspath(os.path.normpath(url.toLocalFile())) if url.toLocalFile() else ""
-                if p and (is_video_file(p) or p.lower().endswith(('.srt', '.vtt', '.ass', '.txt', '.wav', '.mp3', '.pt'))):
+                if p and (is_video_file(p) or p.lower().endswith(('.srt', '.vtt', '.ass', '.wav', '.mp3', '.m4a', '.flac', '.pt'))):
                     event.acceptProposedAction()
                     return
         super().dragMoveEvent(event)
@@ -1201,40 +1201,52 @@ class OmniVoiceInterface(ScrollArea):
             sub_file = None
             vid_file = None
             audio_file = None
+            prompt_file = None
             for url in mime.urls():
                 p = os.path.abspath(os.path.normpath(url.toLocalFile())) if url.toLocalFile() else ""
                 if not p or not os.path.exists(p):
                     continue
-                if p.lower().endswith(('.srt', '.vtt', '.ass', '.txt')) and not sub_file:
+                if p.lower().endswith(('.srt', '.vtt', '.ass')) and not sub_file:
                     sub_file = p
                 elif is_video_file(p) and not vid_file:
                     vid_file = p
-                elif p.lower().endswith(('.wav', '.mp3', '.pt')) and not audio_file:
+                elif p.lower().endswith('.pt') and not prompt_file:
+                    prompt_file = p
+                elif p.lower().endswith(('.wav', '.mp3', '.m4a', '.flac')) and not audio_file:
                     audio_file = p
 
             handled = False
-            if sub_file or vid_file:
-                if sub_file:
-                    self._load_subtitle_file_internal(sub_file)
-                if vid_file:
-                    self.current_video_path = vid_file
-                    if hasattr(self, '_update_sub_video_status_label'):
-                        self._update_sub_video_status_label()
-                    if hasattr(self, '_update_subtitle_action_buttons'):
-                        self._update_subtitle_action_buttons()
-                    InfoBar.success("Đã nạp video nguồn", os.path.basename(vid_file), parent=self, duration=2500)
-                self._update_step_navigation_states()
+            if sub_file:
+                self._load_subtitle_file_internal(sub_file)
+                handled = True
+            if vid_file:
+                self.current_video_path = vid_file
+                if hasattr(self, '_update_sub_video_status_label'):
+                    self._update_sub_video_status_label()
+                if hasattr(self, '_update_subtitle_action_buttons'):
+                    self._update_subtitle_action_buttons()
+                InfoBar.success("Đã nạp video nguồn", os.path.basename(vid_file), parent=self, duration=2500)
+                handled = True
+            if prompt_file:
+                self.current_ref_audio_path = prompt_file
+                if hasattr(self, 'lbl_ref_status'):
+                    self.lbl_ref_status.setText(f"Tệp đặc trưng giọng đã mã hóa đang nạp: {os.path.basename(prompt_file)}")
+                self._save_ui_to_config()
+                self._update_control_states()
+                InfoBar.success("Đã nạp mẫu giọng đã mã hóa", os.path.basename(prompt_file), parent=self, duration=2500)
                 handled = True
             elif audio_file:
                 self.current_ref_audio_path = audio_file
                 if hasattr(self, 'lbl_ref_status'):
                     self.lbl_ref_status.setText(f"Tệp âm thanh mẫu đang nạp: {os.path.basename(audio_file)}")
-                if hasattr(self, '_update_control_states'):
-                    self._update_control_states()
+                self._save_ui_to_config()
+                self._update_control_states()
                 InfoBar.success("Đã nạp mẫu giọng", os.path.basename(audio_file), parent=self, duration=2500)
                 handled = True
 
             if handled:
+                self._update_step_navigation_states()
+                self._update_identify_button_state()
                 event.acceptProposedAction()
                 return
         super().dropEvent(event)
@@ -1430,66 +1442,19 @@ class OmniVoiceInterface(ScrollArea):
         sub_file_btn_row.addWidget(self.lbl_sub_video_info, 1)
 
         sub_file_layout.addLayout(sub_file_btn_row)
-
-        # Hàng nút nhận diện chính ở Bước 1
-
-        detect_action_row = QHBoxLayout()
-
-        detect_action_row.setSpacing(10)
-
-        self.btn_identify_characters = PrimaryPushButton("Nhận Diện Nhân Vật Từ Video + SRT", sub_file_card)
-
-        self.btn_identify_characters.setIcon(FluentIcon.PEOPLE)
-
-        self.btn_identify_characters.setEnabled(False)
-
-        self.btn_identify_characters.setMinimumHeight(36)
-
-        self.lbl_detect_source_hint = CaptionLabel("Nạp tệp SRT và video để bắt đầu nhận diện nhân vật.", sub_file_card)
-
-        self.lbl_detect_source_hint.setWordWrap(True)
-
-        detect_action_row.addWidget(self.btn_identify_characters)
-
-        detect_action_row.addWidget(self.lbl_detect_source_hint, 1)
-
-        sub_file_layout.addLayout(detect_action_row)
-
         p0_layout.addWidget(sub_file_card)
 
-        # Khối chế độ một giọng đọc đồng nhất hoặc phân vai đa nhân vật
-        voice_mode_card = CardWidget(self.page_step_0)
-        voice_mode_layout = QVBoxLayout(voice_mode_card)
-        voice_mode_layout.setContentsMargins(18, 14, 18, 14)
-        voice_mode_layout.setSpacing(10)
-
-        voice_mode_layout.addWidget(SubtitleLabel("Chế Độ Giọng Đọc Phụ Đề", voice_mode_card))
-
-        self.chk_single_unified_voice = CheckBox("Sử dụng một giọng đọc đồng nhất cho toàn bộ tệp phụ đề", voice_mode_card)
+        # Các thuộc tính tương thích ngược cho kiểm thử tự động
+        self.btn_identify_characters = PushButton("Nhận Diện Nhân Vật Từ Video + SRT", self)
+        self.btn_identify_characters.setVisible(False)
+        self.lbl_detect_source_hint = CaptionLabel("Nạp tệp SRT và video để bắt đầu nhận diện nhân vật.", self)
+        self.lbl_detect_source_hint.setWordWrap(True)
+        self.lbl_detect_source_hint.setVisible(False)
+        self.chk_single_unified_voice = CheckBox("Sử dụng một giọng đọc đồng nhất cho toàn bộ tệp phụ đề", self)
         self.chk_single_unified_voice.setChecked(True)
-        self.chk_single_unified_voice.setStyleSheet("font-weight: bold; font-size: 14px;")
-        voice_mode_layout.addWidget(self.chk_single_unified_voice)
-
-        single_voice_row = QHBoxLayout()
-        single_voice_row.setSpacing(10)
-        lbl_unified = BodyLabel("Giọng đọc tiếng Việt:", voice_mode_card)
-        lbl_unified.setWordWrap(True)
-        self.combo_single_unified_preset = ComboBox(voice_mode_card)
-        self.combo_single_unified_preset.addItems(list(VIETNAMESE_VOICE_CATALOG.keys()))
-        self.combo_single_unified_preset.setMinimumWidth(320)
-
-        self.btn_preview_single_unified = PushButton("Nghe Thử Giọng Này", voice_mode_card)
-        self.btn_preview_single_unified.setIcon(FluentIcon.VOLUME)
-
-        single_voice_row.addWidget(lbl_unified)
-        single_voice_row.addWidget(self.combo_single_unified_preset, 1)
-        single_voice_row.addWidget(self.btn_preview_single_unified)
-        voice_mode_layout.addLayout(single_voice_row)
-
-        p0_layout.addWidget(voice_mode_card)
+        self.chk_single_unified_voice.setVisible(False)
 
         # Nút chuyển đổi thu gọn thiết lập giọng mặc định (mặc định đóng để giảm rối mắt)
-
         self.btn_toggle_default_voice_settings = PushButton("Tùy Chọn Giọng Mặc Định Dự Phòng", self.page_step_0)
 
         self.btn_toggle_default_voice_settings.setIcon(FluentIcon.CHEVRON_RIGHT_MED)
@@ -1830,200 +1795,173 @@ class OmniVoiceInterface(ScrollArea):
 
         diarize_top_row.setSpacing(8)
 
-        lbl_multi_mode = BodyLabel("Chế độ giọng phụ đề:", diarize_card)
-
+        lbl_multi_mode = BodyLabel("Phương pháp lồng tiếng:", diarize_card)
         lbl_multi_mode.setStyleSheet("font-weight: bold;")
-
         lbl_multi_mode.setWordWrap(True)
 
         self.combo_multi_speaker_mode = ComboBox(diarize_card)
-
         for label_vn, _ in MULTI_SPEAKER_MODE_ITEMS:
-
             self.combo_multi_speaker_mode.addItem(label_vn)
-
         self.combo_multi_speaker_mode.setMinimumWidth(260)
 
-        self.btn_auto_detect_speakers = PrimaryPushButton("Tự Động Nhận Diện Nhiều Người Nói", diarize_card)
-
+        self.btn_auto_detect_speakers = PrimaryPushButton("Tự Động Nhận Diện Nhân Vật", diarize_card)
         self.btn_auto_detect_speakers.setIcon(FluentIcon.PEOPLE)
-
         self.btn_auto_detect_speakers.setEnabled(False)
+        self.btn_auto_detect_speakers.setMinimumHeight(36)
 
         diarize_top_row.addWidget(lbl_multi_mode)
-
         diarize_top_row.addWidget(self.combo_multi_speaker_mode, 1)
-
         diarize_top_row.addWidget(self.btn_auto_detect_speakers)
-
         diarize_layout.addLayout(diarize_top_row)
 
+        # Khối cài đặt chế độ một giọng đọc đồng nhất
+        self.container_single_voice = QWidget(diarize_card)
+        single_voice_layout = QVBoxLayout(self.container_single_voice)
+        single_voice_layout.setContentsMargins(0, 4, 0, 4)
+        single_voice_layout.setSpacing(8)
+
+        single_voice_row = QHBoxLayout()
+        single_voice_row.setSpacing(10)
+        lbl_unified = BodyLabel("Giọng đọc tiếng Việt:", self.container_single_voice)
+        lbl_unified.setWordWrap(True)
+        self.combo_single_unified_preset = ComboBox(self.container_single_voice)
+        self.combo_single_unified_preset.addItems(list(VIETNAMESE_VOICE_CATALOG.keys()))
+        self.combo_single_unified_preset.setMinimumWidth(320)
+
+        self.btn_preview_single_unified = PushButton("Nghe Thử Giọng Này", self.container_single_voice)
+        self.btn_preview_single_unified.setIcon(FluentIcon.VOLUME)
+
+        single_voice_row.addWidget(lbl_unified)
+        single_voice_row.addWidget(self.combo_single_unified_preset, 1)
+        single_voice_row.addWidget(self.btn_preview_single_unified)
+        single_voice_layout.addLayout(single_voice_row)
+
+        self.lbl_single_unified_hint = CaptionLabel(
+            "Áp dụng một giọng đọc mỏ neo đồng nhất cho toàn bộ tệp phụ đề. Tên nhân vật và dữ liệu phân vai gốc được bảo toàn nguyên vẹn khi bạn chuyển đổi giữa các phương pháp.",
+            self.container_single_voice,
+        )
+        self.lbl_single_unified_hint.setWordWrap(True)
+        single_voice_layout.addWidget(self.lbl_single_unified_hint)
+        diarize_layout.addWidget(self.container_single_voice)
+
+        # Khối cài đặt phân vai đa nhân vật
+        self.container_multi_voice = QWidget(diarize_card)
+        multi_voice_layout = QVBoxLayout(self.container_multi_voice)
+        multi_voice_layout.setContentsMargins(0, 4, 0, 4)
+        multi_voice_layout.setSpacing(10)
+
         diarize_clustering_row = QHBoxLayout()
-
         diarize_clustering_row.setSpacing(8)
-
-        lbl_count_mode = BodyLabel("Quy tắc phân vai:", diarize_card)
-
+        lbl_count_mode = BodyLabel("Quy tắc phân vai:", self.container_multi_voice)
         lbl_count_mode.setWordWrap(True)
-
-        self.combo_speaker_count_mode = ComboBox(diarize_card)
-
+        self.combo_speaker_count_mode = ComboBox(self.container_multi_voice)
         self.combo_speaker_count_mode.addItem("Tự động ước lượng theo giới hạn tối đa")
-
         self.combo_speaker_count_mode.addItem("Cố định chính xác số lượng nhân vật")
 
-        self.lbl_max_spk = BodyLabel("Số lượng nhân vật tối đa:", diarize_card)
-
+        self.lbl_max_spk = BodyLabel("Số lượng nhân vật tối đa:", self.container_multi_voice)
         self.lbl_max_spk.setWordWrap(True)
-
-        self.spin_max_speakers = SpinBox(diarize_card)
-
+        self.spin_max_speakers = SpinBox(self.container_multi_voice)
         self.spin_max_speakers.setRange(1, 12)
-
         self.spin_max_speakers.setValue(4)
 
-        lbl_sensitivity = BodyLabel("Độ nhạy phân tách:", diarize_card)
-
+        lbl_sensitivity = BodyLabel("Độ nhạy phân tách:", self.container_multi_voice)
         lbl_sensitivity.setWordWrap(True)
-
-        self.combo_clustering_sensitivity = ComboBox(diarize_card)
-
+        self.combo_clustering_sensitivity = ComboBox(self.container_multi_voice)
         self.combo_clustering_sensitivity.addItem("Độ nhạy cân bằng")
-
         self.combo_clustering_sensitivity.addItem("Độ nhạy cao — Phân tách chi tiết")
-
         self.combo_clustering_sensitivity.addItem("Độ nhạy thấp — Ưu tiên gộp nhóm")
 
         diarize_clustering_row.addWidget(lbl_count_mode)
-
         diarize_clustering_row.addWidget(self.combo_speaker_count_mode, 1)
-
         diarize_clustering_row.addWidget(self.lbl_max_spk)
-
         diarize_clustering_row.addWidget(self.spin_max_speakers)
-
         diarize_clustering_row.addWidget(lbl_sensitivity)
-
         diarize_clustering_row.addWidget(self.combo_clustering_sensitivity, 1)
-
-        diarize_layout.addLayout(diarize_clustering_row)
+        multi_voice_layout.addLayout(diarize_clustering_row)
 
         diarize_options_row = QHBoxLayout()
         diarize_options_row.setSpacing(8)
-        self.chk_ai_vocal_separation = CheckBox("Tách sạch nhạc nền bằng trí tuệ nhân tạo", diarize_card)
+        self.chk_ai_vocal_separation = CheckBox("Tách sạch nhạc nền bằng trí tuệ nhân tạo", self.container_multi_voice)
         self.chk_ai_vocal_separation.setChecked(True)
         self.chk_ai_vocal_separation.setToolTip("Triệt tiêu bài hát, nhạc nền và tạp âm môi trường trước khi trích xuất giọng nói")
         diarize_options_row.addWidget(self.chk_ai_vocal_separation)
         diarize_options_row.addStretch(1)
-        diarize_layout.addLayout(diarize_options_row)
+        multi_voice_layout.addLayout(diarize_options_row)
 
         spk_assign_row1 = QHBoxLayout()
-
         spk_assign_row1.setSpacing(8)
-
-        spk_assign_row1.addWidget(BodyLabel("Nhân vật:", diarize_card))
-
-        self.combo_target_speaker = ComboBox(diarize_card)
-
+        spk_assign_row1.addWidget(BodyLabel("Nhân vật:", self.container_multi_voice))
+        self.combo_target_speaker = ComboBox(self.container_multi_voice)
         self.combo_target_speaker.addItems([f"Người nói {i}" for i in range(1, 7)])
 
-        self.combo_speaker_voice_preset = ComboBox(diarize_card)
-
+        self.combo_speaker_voice_preset = ComboBox(self.container_multi_voice)
         self.combo_speaker_voice_preset.addItems(list(SPEAKER_VOICE_PRESETS.keys()))
 
-        self.btn_preview_speaker_preset_vi = PushButton("Nghe Thử Giọng Nhân Vật", diarize_card)
-
+        self.btn_preview_speaker_preset_vi = PushButton("Nghe Thử Giọng Nhân Vật", self.container_multi_voice)
         self.btn_preview_speaker_preset_vi.setIcon(FluentIcon.VOLUME)
 
         spk_assign_row1.addWidget(self.combo_target_speaker)
-
         spk_assign_row1.addWidget(self.combo_speaker_voice_preset, 1)
-
         spk_assign_row1.addWidget(self.btn_preview_speaker_preset_vi)
-
-        diarize_layout.addLayout(spk_assign_row1)
+        multi_voice_layout.addLayout(spk_assign_row1)
 
         spk_assign_row2 = QHBoxLayout()
-
         spk_assign_row2.setSpacing(8)
-
-        self.btn_apply_preset_to_speaker = PushButton("Áp Dụng Thiết Kế Giọng Cho Nhân Vật", diarize_card)
-
+        self.btn_apply_preset_to_speaker = PushButton("Áp Dụng Thiết Kế Giọng Cho Nhân Vật", self.container_multi_voice)
         self.btn_apply_preset_to_speaker.setIcon(FluentIcon.ACCEPT)
-
-        self.btn_pick_audio_for_speaker = PushButton("Chọn Tệp Giọng Mẫu Cho Nhân Vật", diarize_card)
-
+        self.btn_pick_audio_for_speaker = PushButton("Chọn Tệp Giọng Mẫu Cho Nhân Vật", self.container_multi_voice)
         self.btn_pick_audio_for_speaker.setIcon(FluentIcon.MUSIC)
-
-        self.btn_assign_speaker_to_rows = PushButton("Gán Nhân Vật Vào Câu Đang Chọn", diarize_card)
-
+        self.btn_assign_speaker_to_rows = PushButton("Gán Nhân Vật Vào Câu Đang Chọn", self.container_multi_voice)
         self.btn_assign_speaker_to_rows.setIcon(FluentIcon.EDIT)
-
-        self.btn_reset_speaker_voice = PushButton("Tạo Lại Mẫu Giọng", diarize_card)
-
+        self.btn_reset_speaker_voice = PushButton("Tạo Lại Mẫu Giọng", self.container_multi_voice)
         self.btn_reset_speaker_voice.setIcon(FluentIcon.SYNC)
 
         spk_assign_row2.addWidget(self.btn_apply_preset_to_speaker)
-
         spk_assign_row2.addWidget(self.btn_pick_audio_for_speaker)
-
         spk_assign_row2.addWidget(self.btn_assign_speaker_to_rows)
-
         spk_assign_row2.addWidget(self.btn_reset_speaker_voice)
-
-        diarize_layout.addLayout(spk_assign_row2)
+        multi_voice_layout.addLayout(spk_assign_row2)
 
         self.lbl_speaker_summary = CaptionLabel(
-
-            "Mẹo: Bấm Tự Động Nhận Diện Nhiều Người Nói để hệ thống tự tách giọng từng nhân vật từ video hoặc phân vai hội thoại từ tệp phụ đề.",
-
-            diarize_card,
-
+            "Mẹo: Bấm Tự Động Nhận Diện Nhân Vật để hệ thống tự tách giọng từng nhân vật từ video hoặc phân vai hội thoại từ tệp phụ đề.",
+            self.container_multi_voice,
         )
-
         self.lbl_speaker_summary.setWordWrap(True)
+        multi_voice_layout.addWidget(self.lbl_speaker_summary)
 
-        diarize_layout.addWidget(self.lbl_speaker_summary)
+        diarize_layout.addWidget(self.container_multi_voice)
+
+        # Cài đặt hiển thị mặc định theo phương pháp đang chọn
+        is_single_init = (self._get_selected_multi_speaker_mode() == "single")
+        self.container_single_voice.setVisible(is_single_init)
+        self.container_multi_voice.setVisible(not is_single_init)
 
         p1_layout.addWidget(diarize_card)
 
         casting_card = CardWidget(self.page_step_1)
-
         casting_layout = QVBoxLayout(casting_card)
-
         casting_layout.setContentsMargins(14, 12, 14, 12)
-
         casting_layout.setSpacing(8)
 
         casting_header_row = QHBoxLayout()
-
         casting_header_row.addWidget(SubtitleLabel("Bảng Phân Vai Và Giọng Đọc Nhân Vật", casting_card))
-
         casting_header_row.addStretch(1)
 
-        self.btn_reanalyze_speakers = PrimaryPushButton("Tự Động Phân Tích Lại", casting_card)
-
-        self.btn_reanalyze_speakers.setIcon(FluentIcon.SYNC)
-
         self.btn_more_actions = DropDownPushButton("Thao Tác Khác", casting_card)
-
         self.btn_more_actions.setIcon(FluentIcon.MORE)
-
         self._init_more_actions_menu()
 
         self.btn_reset_all_voices = PushButton("Đặt Lại Về Giọng Gốc", casting_card)
         self.btn_reset_all_voices.setToolTip("Khôi phục toàn bộ nhân vật về mẫu giọng gốc trích xuất từ video")
-
         self.btn_reset_all_voices.setIcon(FluentIcon.DELETE)
 
         self.btn_audition_all_speakers = PushButton("Nghe Thử Toàn Bộ Nhân Vật", casting_card)
-
         self.btn_audition_all_speakers.setIcon(FluentIcon.VOLUME)
 
-        casting_header_row.addWidget(self.btn_reanalyze_speakers)
+        # Bí danh điều phối cho nút nhận diện nhân vật duy nhất
+        self.btn_reanalyze_speakers = self.btn_auto_detect_speakers
 
         casting_header_row.addWidget(self.btn_more_actions)
-
         casting_layout.addLayout(casting_header_row)
 
         self.lbl_diarization_summary = CaptionLabel("Chưa phân tích — bấm nhận diện để bắt đầu.", casting_card)
@@ -2139,7 +2077,7 @@ class OmniVoiceInterface(ScrollArea):
 
         self.char_scroll.setWidget(self.char_cards_container)
 
-        self.char_scroll.setFixedHeight(230)
+        self.char_scroll.setFixedHeight(260)
 
         char_card_layout.addWidget(self.char_scroll)
 
@@ -2166,13 +2104,10 @@ class OmniVoiceInterface(ScrollArea):
         self.combo_sub_filter = ComboBox(sub_page_card)
 
         self.combo_sub_filter.addItems([
-
             "Tất cả câu thoại",
-
+            "Chỉ hiện dòng cần duyệt",
             "Độ tin cậy cao",
-
             "Cần rà soát",
-
             "Chưa xác định",
             "Đã khóa",
         ])
@@ -2252,7 +2187,7 @@ class OmniVoiceInterface(ScrollArea):
             "Nghe Gốc",
             "Nội Dung Thoại",
         ])
-        self.sub_table.setColumnWidth(0, 50)
+        self.sub_table.setColumnWidth(0, 65)
         self.sub_table.setColumnWidth(1, 95)
         self.sub_table.setColumnWidth(2, 95)
         self.sub_table.setColumnWidth(3, 140)
@@ -2563,20 +2498,23 @@ class OmniVoiceInterface(ScrollArea):
         adv_layout.setSpacing(8)
 
         adv_header_row = QHBoxLayout()
-
         adv_header_row.addWidget(SubtitleLabel("Phần Cứng Nhận Diện Và Tham Số Nâng Cao", adv_card))
-
         adv_header_row.addStretch(1)
 
-        self.btn_toggle_adv = PushButton("Thu Gọn / Mở Rộng", adv_card)
+        self.btn_reset_adv_defaults = PushButton("Đặt Lại Mặc Định", adv_card)
+        self.btn_reset_adv_defaults.setIcon(FluentIcon.SYNC)
+        self.btn_reset_adv_defaults.setToolTip("Khôi phục toàn bộ tham số kỹ thuật khuếch tán và chia đoạn về giá trị mặc định tối ưu")
+        self.btn_reset_adv_defaults.clicked.connect(self._reset_advanced_parameters_to_default)
 
+        self.btn_toggle_adv = PushButton("Thu Gọn / Mở Rộng", adv_card)
         self.btn_toggle_adv.setIcon(FluentIcon.CHEVRON_RIGHT)
 
+        adv_header_row.addWidget(self.btn_reset_adv_defaults)
         adv_header_row.addWidget(self.btn_toggle_adv)
-
         adv_layout.addLayout(adv_header_row)
 
         self.adv_content_widget = QWidget(adv_card)
+        self.adv_content_widget.setVisible(False)
 
         adv_content_layout = QVBoxLayout(self.adv_content_widget)
 
@@ -3000,6 +2938,7 @@ class OmniVoiceInterface(ScrollArea):
         self.btn_identify_characters.clicked.connect(self._run_auto_detect_speakers)
 
         self.combo_multi_speaker_mode.currentIndexChanged.connect(self._update_control_states)
+        self.combo_multi_speaker_mode.currentIndexChanged.connect(self._on_multi_speaker_mode_ui_changed)
 
         self.combo_speaker_count_mode.currentIndexChanged.connect(self._on_speaker_count_mode_changed)
 
@@ -3308,141 +3247,84 @@ class OmniVoiceInterface(ScrollArea):
         return "single"
 
     def _update_control_states(self):
-
         """Tự động khóa các điều khiển thủ công khi tính năng tự động tương ứng được bật."""
-
         has_ref = bool(self.current_ref_audio_path and os.path.exists(self.current_ref_audio_path))
-
         self.btn_play_ref_audio.setEnabled(has_ref and not self.current_ref_audio_path.lower().endswith(".pt"))
-
         self.btn_transcribe_ref.setEnabled(has_ref and not self.current_ref_audio_path.lower().endswith(".pt"))
-
         self.btn_save_prompt_pt.setEnabled(has_ref)
-
         fixed_dur_active = self.spin_duration.value() > 0.0
-
         self.spin_speed.setEnabled(not fixed_dur_active)
-
         ms_mode = self._get_selected_multi_speaker_mode()
-
         is_per_line_clone = ms_mode == "per_line_video_clone"
-
         self.spin_max_speakers.setEnabled(ms_mode not in ("single", "per_line_video_clone"))
+        is_single = (ms_mode == "single")
+        if hasattr(self, "container_single_voice"):
+            self.container_single_voice.setVisible(is_single)
+        if hasattr(self, "container_multi_voice"):
+            self.container_multi_voice.setVisible(not is_single)
 
     # =========================================================================
-
     # QUY TRÌNH ĐIỀU HƯỚNG 5 BƯỚC & QUẢN LÝ BẢNG NHÂN VẬT
-
     # =========================================================================
 
     def _can_switch_to_step(self, target_idx: int) -> bool:
-
         """Kiểm tra điều kiện chuyển sang bước mục tiêu."""
-
         if target_idx == 0:
-
             return True
-
         if target_idx == 1:
-
             # Cho phép chuyển sang Bước 2 nếu có phụ đề, hoặc có video, hoặc đã có nhân vật
-
             if not self.subtitle_blocks and not self.current_video_path and not self.speaker_profiles:
-
                 InfoBar.warning(
-
                     title="Chưa có dữ liệu nguồn",
-
                     content="Vui lòng nạp tệp phụ đề hoặc tệp video ở Bước 1 trước khi quản lý nhân vật.",
-
                     parent=self,
-
                     duration=3000,
-
                 )
-
                 return False
-
             return True
-
         if target_idx in (2, 4):
-
             if not self.subtitle_blocks:
-
                 InfoBar.warning(
-
                     title="Chưa nạp phụ đề",
-
                     content="Vui lòng nạp tệp phụ đề ở Bước 1 trước khi tiếp tục.",
-
                     parent=self,
-
                     duration=3000,
-
                 )
-
                 return False
-
             return True
-
         if target_idx == 3:
-
             # Bước 4: Phòng thu và cân chỉnh âm thanh luôn sẵn sàng
-
             return True
-
         return True
 
     def _update_step_navigation_states(self):
-
         """Cập nhật hiển thị màu sắc và trạng thái của các nút bước trong thanh điều hướng."""
-
         has_subs = len(self.subtitle_blocks) > 0
-
         has_video = bool(self.current_video_path and os.path.exists(self.current_video_path))
-
         has_cast = len(self.speaker_profiles) > 0
+        ms_mode = self._get_selected_multi_speaker_mode()
 
         for idx, btn in enumerate(self.step_buttons):
-
             if not self._is_valid_widget(btn):
-
                 continue
-
             if idx == self.current_step_index:
-
                 btn.setStyleSheet("font-weight: bold; background-color: #0078D4; color: white; border-radius: 6px;")
-
             else:
-
                 is_completed = False
-
                 if idx == 0 and (has_subs or has_video):
-
                     is_completed = True
-
-                elif idx == 1 and has_cast:
-
+                elif idx == 1 and (has_cast or ms_mode == "single"):
                     is_completed = True
-
                 elif idx == 2 and has_subs:
-
                     is_completed = True
-
-                elif idx == 3 and (has_subs or getattr(self, "last_generated_audio_path", None)):
-
+                elif idx == 3 and getattr(self, "last_generated_audio_path", None):
                     is_completed = True
-
                 elif idx == 4 and getattr(self, "last_exported_video_path", None):
-
                     is_completed = True
 
                 if is_completed:
-
                     btn.setStyleSheet("color: #107C41; font-weight: 500;")
-
                 else:
-
                     btn.setStyleSheet("")
 
     def _on_step_button_clicked(self, step_idx: int):
@@ -4376,32 +4258,32 @@ class OmniVoiceInterface(ScrollArea):
         selected = filter_text or self.combo_sub_filter.currentText()
 
         for row in range(self.sub_table.rowCount()):
-
             if row >= len(self.subtitle_blocks):
-
                 continue
 
             blk = self.subtitle_blocks[row]
-
             conf = getattr(blk, "confidence_level", "high")
+            is_locked = getattr(blk, "is_speaker_locked", False)
+            spk_val = getattr(blk, "speaker", "")
 
-            if selected == "Độ tin cậy cao":
+            needs_review = (
+                not is_locked
+                and (
+                    conf in ("review_needed", "unassigned", "")
+                    or not spk_val
+                    or spk_val in ("Chưa xác định", "unassigned")
+                )
+            )
 
-                self.sub_table.setRowHidden(row, conf != "high")
-
-            elif selected == "Cần rà soát":
-
-                self.sub_table.setRowHidden(row, conf != "review_needed")
-
+            if selected in ("Chỉ hiện dòng cần duyệt", "Cần rà soát"):
+                self.sub_table.setRowHidden(row, not needs_review)
+            elif selected == "Độ tin cậy cao":
+                self.sub_table.setRowHidden(row, conf != "high" or not is_locked)
             elif selected == "Chưa xác định":
-
-                self.sub_table.setRowHidden(row, conf != "unassigned")
-
+                self.sub_table.setRowHidden(row, conf != "unassigned" and spk_val not in ("", "Chưa xác định"))
             elif selected == "Đã khóa":
-                is_locked = getattr(blk, "is_speaker_locked", False)
                 self.sub_table.setRowHidden(row, not is_locked)
             else:
-
                 self.sub_table.setRowHidden(row, False)
 
     def _is_valid_widget(self, widget: Any) -> bool:
@@ -4704,12 +4586,35 @@ class OmniVoiceInterface(ScrollArea):
             card_layout.addLayout(row1)
 
             # Dòng 2: Loại giọng & Mô tả chi tiết
-
             lbl_type = CaptionLabel(f"{type_text} · {detail_text}", card)
-
             lbl_type.setWordWrap(True)
-
             card_layout.addWidget(lbl_type)
+
+            # Dòng 2.5: Thống kê chi tiết nhân vật (Số câu thoại, tổng thời lượng, cao độ F0)
+            matching_blocks = [blk for blk in self.subtitle_blocks if getattr(blk, "speaker", "").strip() == spk_name]
+            line_count = len(matching_blocks)
+            total_speech_sec = 0.0
+            for b in matching_blocks:
+                try:
+                    s_sec = parse_timestamp_to_seconds(b.start_time)
+                    e_sec = parse_timestamp_to_seconds(b.end_time)
+                    if e_sec > s_sec:
+                        total_speech_sec += (e_sec - s_sec)
+                except Exception:
+                    pass
+
+            raw_f0 = prof.get("f0_mean") or prof.get("pitch_hz") if is_dict else getattr(prof, "f0_mean", None)
+            if raw_f0 and isinstance(raw_f0, (int, float)) and raw_f0 > 40:
+                f0_hz = int(round(float(raw_f0)))
+                pitch_tag = "giọng trầm" if f0_hz < 165 else ("giọng cao" if f0_hz > 215 else "giọng trung")
+                f0_display = f"Cao độ: ~{f0_hz} Hz ({pitch_tag})"
+            else:
+                f0_display = "Cao độ: Tự nhiên"
+
+            lbl_stats = CaptionLabel(f"{line_count} câu · {total_speech_sec:.1f} giây · {f0_display}", card)
+            lbl_stats.setStyleSheet("color: #777777;")
+            lbl_stats.setWordWrap(True)
+            card_layout.addWidget(lbl_stats)
 
             # Dòng 3: Nút Nghe Thử Giọng Lồng Tiếng & Nút Nghe Mẫu Gốc (nếu có tệp mẫu)
 
@@ -4906,67 +4811,46 @@ class OmniVoiceInterface(ScrollArea):
 
         )
 
-    def _audition_character_voice(self, spk_name: str, btn: Optional[PushButton] = None):
-
-        """Nghe thử giọng nhân vật bằng cách tổng hợp câu thoại đầu tiên của nhân vật trong video."""
-
+    def _audition_character_voice(
+        self,
+        spk_name: str,
+        btn: Optional[Any] = None,
+        custom_text: Optional[str] = None,
+    ):
+        """Nghe thử giọng nhân vật bằng cách tổng hợp câu thoại (câu đầu tiên hoặc câu được chỉ định)."""
         # 1. Nếu hệ thống đang bận chạy tác vụ ngầm, từ chối ngay mà không khóa nút
-
         if self._worker and self._worker.isRunning():
-
             InfoBar.warning(
-
                 "Đang bận",
-
                 "Hệ thống đang xử lý tác vụ trước đó, vui lòng đợi...",
-
                 parent=self,
-
                 duration=2500,
-
             )
-
             return
 
         # 2. Nếu đang phát chính nhân vật này, bấm lại để dừng phát
-
         if (
-
             btn is not None
-
             and getattr(self, "_active_audition_button", None) == btn
-
             and self._media_player.playbackState() == QMediaPlayer.PlayingState
-
         ):
-
             self._media_player.stop()
-
             self._reset_audition_button()
-
             return
 
-        # 3. Tìm câu thoại đầu tiên có văn bản của nhân vật
-
-        first_line = ""
-
+        # 3. Tìm câu thoại để đọc
+        first_line = (custom_text or "").strip()
         target_blk = None
 
-        for blk in self.subtitle_blocks:
-
-            spk = (getattr(blk, "speaker", "") or "").strip()
-
-            if spk == spk_name:
-
-                txt = (blk.translated_text if blk.translated_text else blk.text or "").strip()
-
-                if txt:
-
-                    first_line = txt
-
-                    target_blk = blk
-
-                    break
+        if not first_line:
+            for blk in self.subtitle_blocks:
+                spk = (getattr(blk, "speaker", "") or "").strip()
+                if spk == spk_name:
+                    txt = (blk.translated_text if blk.translated_text else blk.text or "").strip()
+                    if txt:
+                        first_line = txt
+                        target_blk = blk
+                        break
 
         if not first_line:
             has_multiple_speakers = len(getattr(self, "speaker_profiles", {})) > 1
@@ -5119,21 +5003,38 @@ class OmniVoiceInterface(ScrollArea):
         line_hash = hashlib.md5(first_line.encode("utf-8")).hexdigest()[:8]
         out_wav = os.path.join(out_dir, f"audition_{safe_spk}_{line_hash}.wav")
 
+        if os.path.exists(out_wav) and os.path.getsize(out_wav) > 1000:
+            if btn is not None and self._is_valid_widget(btn):
+                self._active_audition_button = btn
+                try:
+                    btn.setText("Đang phát...")
+                    btn.setIcon(FluentIcon.PAUSE)
+                    btn.setEnabled(True)
+                except Exception:
+                    pass
+            self._play_audio_file(out_wav)
+            return
+
         self._launch_worker(
-
             "character_audition",
-
             text=first_line,
-
             output_path=out_wav,
-
             override_ref_audio=ref_audio if method == "clone" else "",
-
             override_instruct=voice_ins if method == "preset" else "",
-
             override_ref_text=ref_text if method == "clone" else "",
-
         )
+
+    def _audition_subtitle_row(self, row: int, btn: Any):
+        """Nghe thử giọng đọc lồng tiếng được gán cho câu phụ đề tại dòng row."""
+        if row < 0 or row >= len(self.subtitle_blocks):
+            return
+        blk = self.subtitle_blocks[row]
+        txt = (blk.translated_text if blk.translated_text else blk.text or "").strip()
+        if not txt:
+            InfoBar.warning("Thiếu nội dung", "Câu thoại này không có văn bản để đọc.", parent=self, duration=2500)
+            return
+        spk = (getattr(blk, "speaker", "") or "").strip() or "Người nói 1"
+        self._audition_character_voice(spk, btn=btn, custom_text=txt)
 
     def _preview_character_voice(self, spk_name: str):
 
@@ -5174,39 +5075,47 @@ class OmniVoiceInterface(ScrollArea):
             )
 
     def _toggle_advanced_settings(self):
-
         """Đóng mở nhóm thiết lập phần cứng và tham số nâng cao."""
-
         if not hasattr(self, "adv_content_widget"):
-
             return
 
         vis = not self.adv_content_widget.isVisible()
-
         self.adv_content_widget.setVisible(vis)
-
         if hasattr(self, "btn_toggle_adv"):
-
             self.btn_toggle_adv.setIcon(FluentIcon.CHEVRON_DOWN if vis else FluentIcon.CHEVRON_RIGHT)
 
+    def _reset_advanced_parameters_to_default(self):
+        """Khôi phục các tham số kỹ thuật khuếch tán và chia đoạn về giá trị mặc định tối ưu."""
+        if hasattr(self, "spin_num_step"):
+            self.spin_num_step.setValue(32)
+        if hasattr(self, "spin_guidance"):
+            self.spin_guidance.setValue(2.0)
+        if hasattr(self, "spin_t_shift"):
+            self.spin_t_shift.setValue(0.10)
+        if hasattr(self, "spin_layer_penalty"):
+            self.spin_layer_penalty.setValue(5.0)
+        if hasattr(self, "spin_pos_temp"):
+            self.spin_pos_temp.setValue(5.0)
+        if hasattr(self, "spin_cls_temp"):
+            self.spin_cls_temp.setValue(0.0)
+        if hasattr(self, "spin_chunk_dur"):
+            self.spin_chunk_dur.setValue(15.0)
+        if hasattr(self, "spin_chunk_thresh"):
+            self.spin_chunk_thresh.setValue(30.0)
+        if hasattr(self, "spin_pad_dur"):
+            self.spin_pad_dur.setValue(0.10)
+        if hasattr(self, "spin_fade_dur"):
+            self.spin_fade_dur.setValue(0.10)
+        InfoBar.success("Đã đặt lại", "Đã khôi phục toàn bộ tham số kỹ thuật nâng cao về mặc định.", parent=self, duration=2500)
+
     def _init_more_actions_menu(self):
-
         """Khởi tạo menu lệnh gom nhóm các thao tác hàng loạt cho Quản lý nhân vật."""
-
         if not hasattr(self, "btn_more_actions"):
-
             return
-
         menu = RoundMenu(parent=self.btn_more_actions)
-
-        menu.addAction(Action(FluentIcon.SYNC, "Tự Động Phân Tích Lại", triggered=self._run_auto_detect_speakers))
-
         menu.addAction(Action(FluentIcon.VOLUME, "Nghe Thử Toàn Bộ Nhân Vật", triggered=self._audition_all_speakers))
-
         menu.addAction(Action(FluentIcon.EDIT, "Gán Nhân Vật Vào Câu Đang Chọn", triggered=self._assign_target_speaker_to_selected_rows))
-
         menu.addAction(Action(FluentIcon.DELETE, "Đặt Lại Toàn Bộ Giọng", triggered=lambda: self._handle_reset_all_voices_with_confirmation(None)))
-
         self.btn_more_actions.setMenu(menu)
 
     def _handle_reset_all_voices_with_confirmation(self, confirmed: Optional[bool] = None) -> bool:
@@ -5714,7 +5623,7 @@ class OmniVoiceInterface(ScrollArea):
 
             "ai_vocal_separation": self.chk_ai_vocal_separation.isChecked() if hasattr(self, "chk_ai_vocal_separation") else True,
 
-            "speaker_profiles": dict(self.speaker_profiles),
+            "speaker_profiles": copy.deepcopy(self.speaker_profiles),
 
             "ducking_mode": "dynamic" if self.combo_ducking_mode.currentIndex() == 0 else "fixed",
 
@@ -5722,7 +5631,8 @@ class OmniVoiceInterface(ScrollArea):
 
         }
 
-        if hasattr(self, "chk_single_unified_voice") and self.chk_single_unified_voice.isChecked():
+        ms_mode = self._get_selected_multi_speaker_mode()
+        if ms_mode == "single" or (hasattr(self, "chk_single_unified_voice") and self.chk_single_unified_voice.isChecked()):
             params["multi_speaker_mode"] = "single"
             params["mode"] = "design"
             params["ref_audio_path"] = None
@@ -5731,35 +5641,7 @@ class OmniVoiceInterface(ScrollArea):
             preset_name = self.combo_single_unified_preset.currentText().strip() if hasattr(self, "combo_single_unified_preset") else ""
             if preset_name in VIETNAMESE_VOICE_CATALOG:
                 params["instruct"] = VIETNAMESE_VOICE_CATALOG[preset_name]["instruct"]
-            if params.get("speaker_profiles"):
-                for spk_key, prof in params["speaker_profiles"].items():
-                    if isinstance(prof, dict):
-                        prof["method"] = "preset"
-                        prof["preset_name"] = preset_name
-                        prof["voice_instruct"] = params.get("instruct", "")
-                        prof["instruct"] = params.get("instruct", "")
-                        prof["source_audio_path"] = ""
-                        prof["ref_audio_path"] = ""
-                        prof["custom_audio_path"] = ""
-                        prof["voice_clone_prompt_path"] = ""
-                        prof["ref_text"] = ""
-                        prof["status"] = "locked"
-                    elif hasattr(prof, "method"):
-                        prof.method = "preset"
-                        prof.preset_name = preset_name
-                        prof.voice_instruct = params.get("instruct", "")
-                        if hasattr(prof, "instruct"):
-                            prof.instruct = params.get("instruct", "")
-                        prof.source_audio_path = ""
-                        if hasattr(prof, "ref_audio_path"):
-                            prof.ref_audio_path = ""
-                        if hasattr(prof, "custom_audio_path"):
-                            prof.custom_audio_path = ""
-                        if hasattr(prof, "voice_clone_prompt_path"):
-                            prof.voice_clone_prompt_path = ""
-                        if hasattr(prof, "ref_text"):
-                            prof.ref_text = ""
-                        prof.status = "locked"
+                params["preset_name"] = preset_name
 
         return params
 
@@ -5916,57 +5798,66 @@ class OmniVoiceInterface(ScrollArea):
 
     def _on_single_unified_voice_changed(self, state=None):
         is_single = self.chk_single_unified_voice.isChecked()
-        self.combo_single_unified_preset.setEnabled(is_single)
-        self.btn_preview_single_unified.setEnabled(is_single)
+        if hasattr(self, "combo_single_unified_preset"):
+            self.combo_single_unified_preset.setEnabled(is_single)
+        if hasattr(self, "btn_preview_single_unified"):
+            self.btn_preview_single_unified.setEnabled(is_single)
+        if hasattr(self, "combo_multi_speaker_mode"):
+            if is_single and self.combo_multi_speaker_mode.currentIndex() != 0:
+                self.combo_multi_speaker_mode.setCurrentIndex(0)
+            elif not is_single and self.combo_multi_speaker_mode.currentIndex() == 0:
+                has_video = is_valid_media_file(self.current_video_path)
+                self.combo_multi_speaker_mode.setCurrentIndex(1 if has_video else 3)
+        self._on_multi_speaker_mode_ui_changed()
+
+    def _on_multi_speaker_mode_ui_changed(self, idx: int = -1):
+        """Cập nhật hiển thị giao diện phù hợp với phương pháp lồng tiếng đang chọn."""
+        is_single = (self._get_selected_multi_speaker_mode() == "single")
+        if hasattr(self, "chk_single_unified_voice"):
+            self.chk_single_unified_voice.blockSignals(True)
+            self.chk_single_unified_voice.setChecked(is_single)
+            self.chk_single_unified_voice.blockSignals(False)
+        if hasattr(self, "container_single_voice"):
+            self.container_single_voice.setVisible(is_single)
+        if hasattr(self, "container_multi_voice"):
+            self.container_multi_voice.setVisible(not is_single)
+        if hasattr(self, "lbl_diarization_summary"):
+            if is_single:
+                preset_name = self.combo_single_unified_preset.currentText().strip() if hasattr(self, "combo_single_unified_preset") else ""
+                self.lbl_diarization_summary.setText(
+                    f"Chế độ một giọng đọc đồng nhất đang bật ({preset_name}). Dữ liệu phân vai gốc được bảo toàn."
+                )
+            elif self.speaker_profiles:
+                self.lbl_diarization_summary.setText(
+                    f"Đã phân vai {len(self.speaker_profiles)} nhân vật. Bạn có thể tùy chỉnh giọng đọc cho từng nhân vật."
+                )
+            else:
+                self.lbl_diarization_summary.setText("Chưa phân tích — bấm nhận diện để bắt đầu.")
+        self._update_control_states()
         self._update_identify_button_state()
-        if is_single:
-            self._apply_unified_voice_to_all_subtitles()
+        self._update_step_navigation_states()
 
     def _on_unified_preset_changed(self, preset_name: str):
-        if hasattr(self, "chk_single_unified_voice") and self.chk_single_unified_voice.isChecked():
-            self._apply_unified_voice_to_all_subtitles()
+        if hasattr(self, "lbl_diarization_summary") and self._get_selected_multi_speaker_mode() == "single":
+            self.lbl_diarization_summary.setText(
+                f"Chế độ một giọng đọc đồng nhất đang bật ({preset_name}). Dữ liệu phân vai gốc được bảo toàn."
+            )
 
     def _apply_unified_voice_to_all_subtitles(self):
+        """
+        Cập nhật hiển thị cho chế độ một giọng đọc đồng nhất.
+        Bảo toàn 100% dữ liệu gốc: tuyệt đối không ghi đè blk.speaker, blk.voice_ref_path,
+        blk.voice_instruct và không can thiệp xóa speaker_profiles.
+        """
         if not hasattr(self, "combo_single_unified_preset"):
             return
         preset_name = self.combo_single_unified_preset.currentText().strip()
         if not preset_name or preset_name not in VIETNAMESE_VOICE_CATALOG:
             return
-        instruct = VIETNAMESE_VOICE_CATALOG[preset_name]["instruct"]
-        for blk in self.subtitle_blocks:
-            blk.voice_instruct = instruct
-            blk.voice_ref_path = ""
-            blk.speaker = preset_name
-            blk.is_speaker_locked = True
-        if self.speaker_profiles:
-            for spk_key, prof in self.speaker_profiles.items():
-                if isinstance(prof, dict):
-                    prof["method"] = "preset"
-                    prof["preset_name"] = preset_name
-                    prof["voice_instruct"] = instruct
-                    prof["instruct"] = instruct
-                    prof["source_audio_path"] = ""
-                    prof["ref_audio_path"] = ""
-                    prof["custom_audio_path"] = ""
-                    prof["voice_clone_prompt_path"] = ""
-                    prof["ref_text"] = ""
-                    prof["status"] = "locked"
-                elif hasattr(prof, "method"):
-                    prof.method = "preset"
-                    prof.preset_name = preset_name
-                    prof.voice_instruct = instruct
-                    if hasattr(prof, "instruct"):
-                        prof.instruct = instruct
-                    prof.source_audio_path = ""
-                    if hasattr(prof, "ref_audio_path"):
-                        prof.ref_audio_path = ""
-                    if hasattr(prof, "custom_audio_path"):
-                        prof.custom_audio_path = ""
-                    if hasattr(prof, "voice_clone_prompt_path"):
-                        prof.voice_clone_prompt_path = ""
-                    if hasattr(prof, "ref_text"):
-                        prof.ref_text = ""
-                    prof.status = "locked"
+        if hasattr(self, "lbl_diarization_summary"):
+            self.lbl_diarization_summary.setText(
+                f"Chế độ một giọng đọc đồng nhất đang bật ({preset_name}). Dữ liệu phân vai gốc được bảo toàn."
+            )
         if hasattr(self, "sub_table"):
             self._populate_subtitle_table()
         if hasattr(self, "casting_table"):
@@ -6309,10 +6200,6 @@ class OmniVoiceInterface(ScrollArea):
             ]
 
             self._populate_subtitle_table()
-
-            if hasattr(self, "chk_single_unified_voice") and self.chk_single_unified_voice.isChecked():
-                self._apply_unified_voice_to_all_subtitles()
-
             self._update_casting_table()
 
         elif self.current_subtitle_path:
@@ -6324,10 +6211,6 @@ class OmniVoiceInterface(ScrollArea):
             self.subtitle_blocks = []
 
             self._populate_subtitle_table()
-
-            if hasattr(self, "chk_single_unified_voice") and self.chk_single_unified_voice.isChecked():
-                self._apply_unified_voice_to_all_subtitles()
-
             self._update_casting_table()
 
         self._update_sub_video_status_label()
@@ -6393,9 +6276,6 @@ class OmniVoiceInterface(ScrollArea):
             )
 
             self._populate_subtitle_table()
-
-            if hasattr(self, "chk_single_unified_voice") and self.chk_single_unified_voice.isChecked():
-                self._apply_unified_voice_to_all_subtitles()
 
             self._update_casting_table()
 
@@ -6507,43 +6387,64 @@ class OmniVoiceInterface(ScrollArea):
 
     def _update_identify_button_state(self):
         """Cập nhật trạng thái nút nhận diện nhân vật và nhãn gợi ý theo nguồn đã nạp."""
+        has_subs = len(self.subtitle_blocks) > 0
+        has_video = is_valid_media_file(self.current_video_path)
+        is_busy = bool(self._worker and self._worker.isRunning())
+        has_profiles = bool(self.speaker_profiles)
+
+        # Cập nhật nút nhận diện chính tại Bước 2
+        if hasattr(self, "btn_auto_detect_speakers"):
+            self.btn_auto_detect_speakers.setEnabled((has_subs or has_video) and not is_busy)
+            if has_profiles:
+                self.btn_auto_detect_speakers.setText("Phân Tích Lại Nhân Vật")
+                self.btn_auto_detect_speakers.setIcon(FluentIcon.SYNC)
+            else:
+                self.btn_auto_detect_speakers.setText("Tự Động Nhận Diện Nhân Vật")
+                self.btn_auto_detect_speakers.setIcon(FluentIcon.PEOPLE)
+
+        if hasattr(self, "btn_reanalyze_speakers") and self.btn_reanalyze_speakers is not self.btn_auto_detect_speakers:
+            self.btn_reanalyze_speakers.setEnabled((has_subs or has_video) and not is_busy)
+
+        # Cập nhật thuộc tính tương thích ngược cho kiểm thử tự động
         if not hasattr(self, "btn_identify_characters"):
             return
 
         if hasattr(self, "chk_single_unified_voice") and self.chk_single_unified_voice.isChecked():
             self.btn_identify_characters.setEnabled(False)
-            self.lbl_detect_source_hint.setText(
-                "Đang chọn chế độ một giọng đọc đồng nhất cho toàn bộ tệp phụ đề. Bạn có thể chuyển thẳng sang Bước 3 hoặc Bước 5."
-            )
+            if hasattr(self, "lbl_detect_source_hint"):
+                self.lbl_detect_source_hint.setText(
+                    "Đang chọn chế độ một giọng đọc đồng nhất cho toàn bộ tệp phụ đề. Bạn có thể chuyển thẳng sang Bước 3 hoặc Bước 5."
+                )
             return
 
-        has_subs = len(self.subtitle_blocks) > 0
-        has_video = is_valid_media_file(self.current_video_path)
-
         if has_subs and has_video:
-            self.btn_identify_characters.setEnabled(True)
-            dur_info = check_media_and_srt_duration(self.current_video_path, self.subtitle_blocks)
-            if dur_info.get("is_mismatch"):
-                self.lbl_detect_source_hint.setText(dur_info["message"])
-            else:
-                self.lbl_detect_source_hint.setText(
-                    "Sẵn sàng nhận diện người nói từ âm thanh video gốc và mốc thời gian phụ đề."
-                )
+            self.btn_identify_characters.setEnabled(not is_busy)
+            if hasattr(self, "lbl_detect_source_hint"):
+                dur_info = check_media_and_srt_duration(self.current_video_path, self.subtitle_blocks)
+                if dur_info.get("is_mismatch"):
+                    self.lbl_detect_source_hint.setText(dur_info["message"])
+                else:
+                    self.lbl_detect_source_hint.setText(
+                        "Sẵn sàng nhận diện người nói từ âm thanh video gốc và mốc thời gian phụ đề."
+                    )
         elif not has_subs and has_video:
-            self.btn_identify_characters.setEnabled(True)
-            self.lbl_detect_source_hint.setText(
-                "Sẵn sàng nhận diện trực tiếp từ video: hệ thống sẽ tự động phát hiện các đoạn giọng nói và phân vai nhân vật."
-            )
+            self.btn_identify_characters.setEnabled(not is_busy)
+            if hasattr(self, "lbl_detect_source_hint"):
+                self.lbl_detect_source_hint.setText(
+                    "Sẵn sàng nhận diện trực tiếp từ video: hệ thống sẽ tự động phát hiện các đoạn giọng nói và phân vai nhân vật."
+                )
         elif has_subs and not has_video:
             self.btn_identify_characters.setEnabled(False)
-            self.lbl_detect_source_hint.setText(
-                "Chỉ có tệp phụ đề SRT — hãy thêm tệp video hợp lệ để nhận diện giọng nói thực, hoặc dùng 'Tự Động Phân Tích Lại' ở Bước 2 để phân vai theo văn bản."
-            )
+            if hasattr(self, "lbl_detect_source_hint"):
+                self.lbl_detect_source_hint.setText(
+                    "Chỉ có tệp phụ đề SRT — hãy thêm tệp video hợp lệ để nhận diện giọng nói thực, hoặc dùng 'Tự Động Phân Tích Lại' ở Bước 2 để phân vai theo văn bản."
+                )
         else:
             self.btn_identify_characters.setEnabled(False)
-            self.lbl_detect_source_hint.setText(
-                "Nạp tệp video hoặc phụ đề để bắt đầu nhận diện nhân vật."
-            )
+            if hasattr(self, "lbl_detect_source_hint"):
+                self.lbl_detect_source_hint.setText(
+                    "Nạp tệp video hoặc phụ đề để bắt đầu nhận diện nhân vật."
+                )
 
     @staticmethod
 
@@ -6605,6 +6506,18 @@ class OmniVoiceInterface(ScrollArea):
             item_stt = QTableWidgetItem(str(blk.index))
             item_stt.setFlags(item_stt.flags() & ~Qt.ItemIsEditable)
             item_stt.setBackground(row_bg)
+            if is_locked:
+                item_stt.setIcon(FluentIcon.ACCEPT.qicon())
+                item_stt.setToolTip("Câu thoại đã được duyệt và khóa phân vai")
+            elif conf == "review_needed":
+                item_stt.setIcon(FluentIcon.INFO.qicon())
+                item_stt.setToolTip("Câu thoại cần rà soát lại người nói")
+            elif conf in ("unassigned", "") or not spk_val or spk_val in ("Chưa xác định", "unassigned"):
+                item_stt.setIcon(FluentIcon.HELP.qicon())
+                item_stt.setToolTip("Câu thoại chưa xác định người nói")
+            else:
+                item_stt.setIcon(FluentIcon.COMPLETED.qicon())
+                item_stt.setToolTip("Độ tin cậy cao")
             self.sub_table.setItem(row, 0, item_stt)
 
             item_start = QTableWidgetItem(str(blk.start_time))
@@ -7173,9 +7086,10 @@ class OmniVoiceInterface(ScrollArea):
         ]
 
         if summary_parts:
-
             self.lbl_speaker_summary.setText("Kết quả phân vai: " + " | ".join(summary_parts))
 
+        self._update_identify_button_state()
+        self._update_step_navigation_states()
         self._switch_to_step(1)
 
     def _apply_preset_to_target_speaker(self):
@@ -7640,9 +7554,6 @@ class OmniVoiceInterface(ScrollArea):
 
             return
 
-        if hasattr(self, "chk_single_unified_voice") and self.chk_single_unified_voice.isChecked():
-            self._apply_unified_voice_to_all_subtitles()
-
         issues = self._run_pre_export_quality_check()
 
         if any(item.get("severity") == "error" for item in issues):
@@ -7700,9 +7611,6 @@ class OmniVoiceInterface(ScrollArea):
             InfoBar.warning("Thiếu dữ liệu", "Cần có danh sách phụ đề và video nguồn để xuất video lồng tiếng.", parent=self, duration=3500)
 
             return
-
-        if hasattr(self, "chk_single_unified_voice") and self.chk_single_unified_voice.isChecked():
-            self._apply_unified_voice_to_all_subtitles()
 
         issues = self._run_pre_export_quality_check()
 
@@ -8055,9 +7963,6 @@ class OmniVoiceInterface(ScrollArea):
         self.lbl_status.setText("Đang thực thi trên GPU NVIDIA...")
 
         self._set_task_running_state(True)
-
-        if hasattr(self, "chk_single_unified_voice") and self.chk_single_unified_voice.isChecked():
-            self._apply_unified_voice_to_all_subtitles()
 
         isolated_blocks = copy.deepcopy(subtitle_blocks) if subtitle_blocks is not None else None
 

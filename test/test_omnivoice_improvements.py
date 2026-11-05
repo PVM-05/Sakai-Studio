@@ -862,37 +862,34 @@ def test_pre_export_check_is_read_only_and_unified_voice_syncs_profiles():
     assert ui.subtitle_blocks[0].voice_ref_path == "old.wav"
     assert ui.subtitle_blocks[0].speaker == "Chưa phân vai"
 
-    # 2. Bước áp dụng chủ đích phải đồng bộ toàn diện cả phụ đề và mọi kiểu hồ sơ nhân vật
+    # 2. Bước chọn chế độ một giọng đọc phải BẢO TOÀN toàn diện cả phụ đề và mọi kiểu hồ sơ nhân vật gốc
     ui._apply_unified_voice_to_all_subtitles()
-    assert ui.subtitle_blocks[0].voice_instruct == expected_instruct
-    assert ui.subtitle_blocks[0].voice_ref_path == ""
-    assert ui.subtitle_blocks[0].speaker == chosen_preset
-    assert ui.subtitle_blocks[0].is_speaker_locked is True
+    assert ui.subtitle_blocks[0].speaker == "Chưa phân vai"
+    assert ui.subtitle_blocks[0].voice_ref_path == "old.wav"
+    assert ui.subtitle_blocks[0].is_speaker_locked is False
 
-    # Kiểm tra đồng bộ hồ sơ nhân vật dạng đối tượng
-    assert obj_prof.method == "preset"
-    assert obj_prof.preset_name == chosen_preset
-    assert obj_prof.voice_instruct == expected_instruct
-    assert obj_prof.source_audio_path == ""
-    assert getattr(obj_prof, "custom_audio_path", "") == ""
-    assert getattr(obj_prof, "voice_clone_prompt_path", "") == ""
-    assert getattr(obj_prof, "ref_text", "") == ""
-    assert obj_prof.status == "locked"
+    # Kiểm tra hồ sơ nhân vật dạng đối tượng không bị xóa đè
+    assert obj_prof.method == "clone"
+    assert obj_prof.source_audio_path == "old_obj.wav"
+    assert getattr(obj_prof, "custom_audio_path", "") == "custom_obj.wav"
+    assert getattr(obj_prof, "voice_clone_prompt_path", "") == "prompt_obj.pt"
 
-    # Kiểm tra đồng bộ hồ sơ nhân vật dạng từ điển
-    assert dict_prof["method"] == "preset"
-    assert dict_prof["preset_name"] == chosen_preset
-    assert dict_prof["voice_instruct"] == expected_instruct
-    assert dict_prof["instruct"] == expected_instruct
-    assert dict_prof["source_audio_path"] == ""
-    assert dict_prof["ref_audio_path"] == ""
-    assert dict_prof["custom_audio_path"] == ""
-    assert dict_prof["voice_clone_prompt_path"] == ""
-    assert dict_prof["ref_text"] == ""
-    assert dict_prof["status"] == "locked"
+    # Kiểm tra hồ sơ nhân vật dạng từ điển không bị xóa đè
+    assert dict_prof["method"] == "clone"
+    assert dict_prof["source_audio_path"] == "old_dict.wav"
+    assert dict_prof["ref_audio_path"] == "old_dict.wav"
+    assert dict_prof["custom_audio_path"] == "custom_dict.wav"
 
-    # 3. Tham số thu thập phải phản ánh đúng chế độ design, instruct và đồng bộ profile
+    # Thu thập tham số tổng hợp phải chuyển sang chế độ single và áp dụng instruct mỏ neo
     params = ui._collect_engine_params()
+    assert params["multi_speaker_mode"] == "single"
+    assert params["mode"] == "design"
+    assert params["instruct"] == expected_instruct
+    assert params["preset_name"] == chosen_preset
+    assert dict_prof["ref_text"] == "Mẫu cũ"
+    assert dict_prof["status"] == "review_needed"
+
+    # 3. Tham số thu thập phải phản ánh đúng chế độ design, instruct và mỏ neo
     assert params["multi_speaker_mode"] == "single"
     assert params["mode"] == "design"
     assert params["instruct"] == expected_instruct
@@ -1978,6 +1975,247 @@ def test_synthesize_blocks_single_auto_mode_builds_anchor_prompt(tmp_path):
         assert c.get("override_mode") == "clone"
         assert c.get("override_prompt") is mock_prompt
         assert c.get("override_ref_audio") == anchor_wav
+
+
+def test_switching_between_single_and_multi_speaker_mode_preserves_identities():
+    """Xác minh chuyển đổi giữa chế độ một giọng và đa nhân vật bảo toàn 100% dữ liệu gốc."""
+    _ensure_qapp()
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.translator import SubtitleBlock
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    ui = OmniVoiceInterface()
+    b1 = SubtitleBlock(1, "00:00:01,000", "00:00:02,000", "Câu một", speaker="Người nói 1", voice_ref_path="char1.wav")
+    b2 = SubtitleBlock(2, "00:00:02,500", "00:00:03,500", "Câu hai", speaker="Người nói 2", voice_ref_path="char2.wav")
+    ui.subtitle_blocks = [b1, b2]
+
+    p1 = CharacterVoiceProfile(speaker_id="spk_1", display_name="Người nói 1", method="clone", source_audio_path="char1.wav")
+    p2 = CharacterVoiceProfile(speaker_id="spk_2", display_name="Người nói 2", method="clone", source_audio_path="char2.wav")
+    ui.speaker_profiles = {"Người nói 1": p1, "Người nói 2": p2}
+
+    # Chọn chế độ một giọng đồng nhất
+    ui.combo_multi_speaker_mode.setCurrentIndex(0)
+    assert ui._get_selected_multi_speaker_mode() == "single"
+    assert not ui.container_single_voice.isHidden()
+    assert ui.container_multi_voice.isHidden()
+
+    # Dữ liệu phụ đề và hồ sơ nhân vật KHÔNG bị ghi đè
+    assert ui.subtitle_blocks[0].speaker == "Người nói 1"
+    assert ui.subtitle_blocks[0].voice_ref_path == "char1.wav"
+    assert ui.subtitle_blocks[1].speaker == "Người nói 2"
+    assert ui.subtitle_blocks[1].voice_ref_path == "char2.wav"
+    assert ui.speaker_profiles["Người nói 1"].source_audio_path == "char1.wav"
+
+    # Chuyển lại chế độ đa nhân vật
+    ui.combo_multi_speaker_mode.setCurrentIndex(1)
+    assert ui._get_selected_multi_speaker_mode() == "auto_video_cluster"
+    assert ui.container_single_voice.isHidden()
+    assert not ui.container_multi_voice.isHidden()
+
+    # Dữ liệu phân vai vẫn còn nguyên vẹn 100%
+    assert ui.subtitle_blocks[0].speaker == "Người nói 1"
+    assert ui.subtitle_blocks[0].voice_ref_path == "char1.wav"
+    assert ui.subtitle_blocks[1].speaker == "Người nói 2"
+    assert ui.subtitle_blocks[1].voice_ref_path == "char2.wav"
+    assert len(ui.speaker_profiles) == 2
+
+
+def test_drag_and_drop_pt_vs_audio_file(tmp_path):
+    """Xác minh kéo thả tệp .pt được nhận diện là đặc trưng giọng đã mã hóa, không phải tệp WAV."""
+    _ensure_qapp()
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from PySide6.QtCore import QMimeData, QUrl
+    from PySide6.QtGui import QDropEvent
+    from PySide6.QtCore import QPointF, Qt
+
+    ui = OmniVoiceInterface()
+    pt_file = str(tmp_path / "voice_prompt.pt")
+    with open(pt_file, "wb") as f:
+        f.write(b"mock_prompt_bytes")
+
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(pt_file)])
+    event = QDropEvent(QPointF(10, 10), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+
+    ui.dropEvent(event)
+    assert ui.current_ref_audio_path == pt_file
+    assert "đã mã hóa" in ui.lbl_ref_status.text()
+    assert ui.btn_play_ref_audio.isEnabled() is False
+
+    # Kéo thả tệp WAV thông thường
+    wav_file = str(tmp_path / "sample.wav")
+    with open(wav_file, "wb") as f:
+        f.write(b"mock_wav_bytes")
+
+    mime_wav = QMimeData()
+    mime_wav.setUrls([QUrl.fromLocalFile(wav_file)])
+    event_wav = QDropEvent(QPointF(10, 10), Qt.CopyAction, mime_wav, Qt.LeftButton, Qt.NoModifier)
+
+    ui.dropEvent(event_wav)
+    assert ui.current_ref_audio_path == wav_file
+    assert "Tệp âm thanh mẫu đang nạp" in ui.lbl_ref_status.text()
+    assert ui.btn_play_ref_audio.isEnabled() is True
+
+
+def test_master_detection_button_dynamic_state_and_label(tmp_path):
+    """Xác minh nút nhận diện chính tại Bước 2 chuyển đổi nhãn và trạng thái chính xác."""
+    _ensure_qapp()
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.translator import SubtitleBlock
+
+    ui = OmniVoiceInterface()
+    ui.current_video_path = ""
+    ui.subtitle_blocks = []
+    ui.speaker_profiles = {}
+    ui._update_identify_button_state()
+
+    # Chưa có dữ liệu: nút bị khóa
+    assert ui.btn_auto_detect_speakers.isEnabled() is False
+    assert ui.btn_auto_detect_speakers.text() == "Tự Động Nhận Diện Nhân Vật"
+
+    # Có phụ đề: nút mở khóa
+    ui.subtitle_blocks = [SubtitleBlock(1, "00:00:01,000", "00:00:02,000", "Chào")]
+    ui._update_identify_button_state()
+    assert ui.btn_auto_detect_speakers.isEnabled() is True
+    assert ui.btn_auto_detect_speakers.text() == "Tự Động Nhận Diện Nhân Vật"
+
+    # Đã có nhân vật phân vai: nút đổi nhãn thành Phân Tích Lại Nhân Vật
+    ui.speaker_profiles = {"Người nói 1": {"speaker_id": "spk_1"}}
+    ui._update_identify_button_state()
+    assert ui.btn_auto_detect_speakers.isEnabled() is True
+    assert ui.btn_auto_detect_speakers.text() == "Phân Tích Lại Nhân Vật"
+
+
+def test_dubbing_report_quality_scoring_and_to_dict():
+    """Xác minh các chỉ số chất lượng mới trong DubbingReport và phương thức to_dict."""
+    from src.ai_engines.tts_engine import DubbingReport
+
+    report = DubbingReport(
+        status="success",
+        total_blocks=10,
+        succeeded_count=10,
+        failed_count=0,
+        stretched_count=2,
+        inconsistent_retried_count=1,
+        speaker_consistency_score=0.92,
+        fallback_count=0,
+    )
+    # Tính compressed_ratio và quality_score
+    total_ok = max(1, report.succeeded_count)
+    report.compressed_ratio = round(float(report.stretched_count) / float(total_ok), 4)
+    calc_score = 100.0 - min(30.0, report.compressed_ratio * 30.0) - min(20.0, max(0.0, (1.0 - report.speaker_consistency_score) * 40.0))
+    report.quality_score = round(calc_score, 1)
+
+    assert report.compressed_ratio == 0.2
+    assert report.quality_score > 85.0
+    d = report.to_dict()
+    assert isinstance(d, dict)
+    assert d["speaker_consistency_score"] == 0.92
+    assert d["compressed_ratio"] == 0.2
+    assert d["quality_score"] == report.quality_score
+    assert d["fallback_count"] == 0
+
+
+def test_speaker_profiles_project_persistence(tmp_path):
+    """Xác minh lưu và tải hồ sơ phân vai dự án dạng JSON với đầy đủ thuộc tính và user_locked."""
+    from src.ai_engines.tts_engine import TTSEngine
+
+    engine = TTSEngine(allow_mock=True)
+    engine.speaker_profiles = {
+        "Người nói 1": {
+            "name": "Người nói 1",
+            "method": "preset",
+            "preset_name": "Nam Trầm",
+            "voice_instruct": "male, calm",
+            "source_audio_path": "",
+            "ref_text": "",
+            "user_locked": True,
+            "description": "Nhân vật chính",
+        },
+        "Người nói 2": {
+            "name": "Người nói 2",
+            "method": "clone",
+            "preset_name": "",
+            "voice_instruct": "",
+            "source_audio_path": "sample.wav",
+            "ref_text": "Chào bạn",
+            "user_locked": False,
+            "description": "Nhân vật phụ",
+        },
+    }
+
+    json_path = str(tmp_path / "project_profiles.json")
+    assert engine.save_speaker_profiles(json_path) is True
+    assert Path(json_path).is_file()
+
+    # Tạo engine mới và tải lại
+    engine2 = TTSEngine(allow_mock=True)
+    engine2.speaker_profiles = {
+        "Người nói 1": {
+            "name": "Người nói 1",
+            "method": "clone",
+            "user_locked": True,  # Người dùng đã khóa ở session mới
+        }
+    }
+    loaded = engine2.load_speaker_profiles(json_path, merge=True)
+    assert "Người nói 1" in loaded
+    assert "Người nói 2" in loaded
+    # user_locked của Người nói 1 được bảo vệ
+    assert loaded["Người nói 1"]["method"] == "clone"
+    assert loaded["Người nói 2"]["user_locked"] is False
+
+
+def test_advanced_parameters_reset_to_default():
+    """Xác minh nút đặt lại mặc định và trạng thái thu gọn mặc định của tham số nâng cao."""
+    _ensure_qapp()
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+
+    ui = OmniVoiceInterface()
+    # Khối nội dung kỹ thuật ban đầu phải thu gọn
+    assert not ui.adv_content_widget.isVisible()
+
+    # Thay đổi tham số
+    ui.spin_num_step.setValue(12)
+    ui.spin_guidance.setValue(3.5)
+    ui.spin_t_shift.setValue(0.5)
+
+    # Đặt lại mặc định
+    ui._reset_advanced_parameters_to_default()
+    assert ui.spin_num_step.value() == 32
+    assert ui.spin_guidance.value() == 2.0
+    assert ui.spin_t_shift.value() == 0.10
+
+
+def test_subtitle_table_dual_audition_and_filter():
+    """Xác minh bảng phụ đề có nút nghe gốc, nút nghe thử câu đang chọn và bộ lọc chỉ hiện dòng cần duyệt."""
+    _ensure_qapp()
+    from src.desktop.ui.omnivoice_interface import OmniVoiceInterface
+    from src.ai_engines.translator import SubtitleBlock
+    from PySide6.QtWidgets import QPushButton
+
+    ui = OmniVoiceInterface()
+    ui.subtitle_blocks = [
+        SubtitleBlock(1, "00:00:01,000", "00:00:02,000", "Chào bạn", speaker="Người nói 1", is_speaker_locked=True),
+        SubtitleBlock(2, "00:00:02,500", "00:00:04,000", "Cần kiểm tra câu này", speaker="", confidence_level="review_needed"),
+    ]
+    ui._populate_subtitle_table()
+
+    # Kiểm tra ô cột 5 có nút nghe gốc QPushButton
+    btn_listen = ui.sub_table.cellWidget(0, 5)
+    assert isinstance(btn_listen, QPushButton)
+    assert hasattr(ui, "btn_preview_selected_row")
+    assert ui.btn_preview_selected_row.text() == "Nghe Thử Câu Đang Chọn"
+
+    # Kiểm tra bộ lọc "Chỉ hiện dòng cần duyệt"
+    ui.combo_sub_filter.setCurrentText("Chỉ hiện dòng cần duyệt")
+    assert ui.sub_table.isRowHidden(0) is True  # Đã khóa -> ẩn
+    assert ui.sub_table.isRowHidden(1) is False  # Cần kiểm tra -> hiện
+
+    # Chuyển về "Tất cả câu thoại"
+    ui.combo_sub_filter.setCurrentText("Tất cả câu thoại")
+    assert ui.sub_table.isRowHidden(0) is False
+    assert ui.sub_table.isRowHidden(1) is False
+
 
 
 
