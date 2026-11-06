@@ -635,7 +635,17 @@ class OmniVoiceTaskWorker(QThread):
             if self.task_type == "detect_speakers":
                 max_spk = self.engine_params.get("max_speakers")
                 if max_spk is not None:
-                    max_spk = int(max_spk)
+                    try:
+                        max_spk = int(max_spk)
+                    except (TypeError, ValueError):
+                        max_spk = None
+
+                exact_spk = self.engine_params.get("exact_speakers", None)
+                if exact_spk is not None:
+                    try:
+                        exact_spk = int(exact_spk)
+                    except (TypeError, ValueError):
+                        exact_spk = None
 
                 if self.video_path and os.path.exists(self.video_path):
 

@@ -205,7 +205,7 @@ class VoiceSeparator:
         logger.info(f"Voice separation using backend: {backend}")
 
         try:
-            if backend == "ai":
+            if backend in ("ai", "hpss"):
                 ai_sep = AIVoiceSeparator()
                 return ai_sep.separate_vocals(audio_input, output_path)
             elif backend == "demucs":
@@ -277,17 +277,18 @@ class VoiceSeparator:
         if self.backend != "auto":
             return self.backend
 
-        # Ưu tiên: ai (Harmonic/ONNX) > demucs > scipy > ffmpeg
-        try:
-            import scipy.signal  # noqa: F401
-            return "ai"
-        except ImportError:
-            pass
-
+        # Ưu tiên Demucs nếu có torch và demucs để tách giọng sạch nhạc nền tốt nhất
         try:
             import demucs  # noqa: F401
             import torch  # noqa: F401
             return "demucs"
+        except ImportError:
+            pass
+
+        # Tiếp theo là bộ lọc tách giọng quang phổ thông qua scipy
+        try:
+            import scipy.signal  # noqa: F401
+            return "ai"
         except ImportError:
             pass
 

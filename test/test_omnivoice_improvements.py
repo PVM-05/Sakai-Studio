@@ -938,25 +938,25 @@ def test_synthesize_blocks_model_generate_exact_kwargs_and_translated_text():
         report = engine.synthesize_blocks(blocks, total_duration=6.0, output_path=tmp_out)
         assert report.status == "success"
 
-        # 4 lượt thử mỏ neo (4 seeds) + 3 lượt sinh khối câu thoại = 7 lượt gọi đến model.generate()
-        assert mock_model.generate.call_count == 7
+        # 6 lượt thử mỏ neo (6 seeds) + 3 lượt sinh khối câu thoại = 9 lượt gọi đến model.generate()
+        assert mock_model.generate.call_count == 9
         calls = mock_model.generate.call_args_list
 
-        # Lượt 0..3: Thử nghiệm tạo mẫu mỏ neo
-        for c in calls[:4]:
+        # Lượt 0..5: Thử nghiệm tạo mẫu mỏ neo
+        for c in calls[:6]:
             assert c.kwargs.get("instruct") == expected_instruct
 
-        # Lượt 4: Phải đọc translated_text "Lời dịch tiếng Việt một" với prompt mỏ neo đồng nhất
-        assert calls[4].kwargs.get("text") == "Lời dịch tiếng Việt một"
-        assert calls[4].kwargs.get("voice_clone_prompt") is mock_prompt
-
-        # Lượt 5: Phải đọc text gốc "Lời thoại gốc không có bản dịch" với prompt mỏ neo đồng nhất
-        assert calls[5].kwargs.get("text") == "Lời thoại gốc không có bản dịch"
-        assert calls[5].kwargs.get("voice_clone_prompt") is mock_prompt
-
-        # Lượt 6: Phải lùi về text gốc "Lời thoại với bản dịch khoảng trắng" với prompt mỏ neo đồng nhất
-        assert calls[6].kwargs.get("text") == "Lời thoại với bản dịch khoảng trắng"
+        # Lượt 6: Phải đọc translated_text "Lời dịch tiếng Việt một" với prompt mỏ neo đồng nhất
+        assert calls[6].kwargs.get("text") == "Lời dịch tiếng Việt một"
         assert calls[6].kwargs.get("voice_clone_prompt") is mock_prompt
+
+        # Lượt 7: Phải đọc text gốc "Lời thoại gốc không có bản dịch" với prompt mỏ neo đồng nhất
+        assert calls[7].kwargs.get("text") == "Lời thoại gốc không có bản dịch"
+        assert calls[7].kwargs.get("voice_clone_prompt") is mock_prompt
+
+        # Lượt 8: Phải lùi về text gốc "Lời thoại với bản dịch khoảng trắng" với prompt mỏ neo đồng nhất
+        assert calls[8].kwargs.get("text") == "Lời thoại với bản dịch khoảng trắng"
+        assert calls[8].kwargs.get("voice_clone_prompt") is mock_prompt
     finally:
         if os.path.exists(tmp_out):
             os.remove(tmp_out)
@@ -998,10 +998,10 @@ def test_synthesize_blocks_nameless_and_none_speaker_exact_preset_kwargs():
     try:
         report = engine.synthesize_blocks(blocks, total_duration=5.0, output_path=tmp_out)
         assert report.status == "success"
-        # 4 lượt thử mỏ neo + 2 lượt sinh câu thoại = 6 lượt gọi
-        assert mock_model.generate.call_count == 6
+        # 6 lượt thử mỏ neo + 2 lượt sinh câu thoại = 8 lượt gọi
+        assert mock_model.generate.call_count == 8
 
-        for call in mock_model.generate.call_args_list[4:]:
+        for call in mock_model.generate.call_args_list[6:]:
             assert call.kwargs.get("voice_clone_prompt") is mock_prompt
     finally:
         if os.path.exists(tmp_out):
@@ -1066,9 +1066,9 @@ def test_synthesize_blocks_ignores_old_clone_profiles_in_single_unified_mode():
         assert engine._get_or_create_prompt_for_audio.call_count == 0
 
         # Kiểm tra khối câu thoại được sinh bằng prompt mỏ neo đồng nhất, không dùng clone tệp cũ
-        # 4 lượt thử mỏ neo + 1 lượt sinh câu thoại = 5 lượt gọi
-        assert mock_model.generate.call_count == 5
-        block_kwargs = mock_model.generate.call_args_list[4].kwargs
+        # 6 lượt thử mỏ neo + 1 lượt sinh câu thoại = 7 lượt gọi
+        assert mock_model.generate.call_count == 7
+        block_kwargs = mock_model.generate.call_args_list[6].kwargs
         assert block_kwargs.get("voice_clone_prompt") is mock_prompt
     finally:
         if os.path.exists(tmp_out):
@@ -1115,8 +1115,8 @@ def test_synthesize_blocks_cache_invalidation_when_switching_presets():
         try:
             rep_a = engine_a.synthesize_blocks(blocks, total_duration=3.0, output_path=out_a)
             assert rep_a.status == "success"
-            # 4 lượt thử mỏ neo A + 1 lượt sinh block = 5
-            assert mock_model_a.generate.call_count == 5
+            # 6 lượt thử mỏ neo A + 1 lượt sinh block = 7
+            assert mock_model_a.generate.call_count == 7
         finally:
             if os.path.exists(out_a):
                 os.remove(out_a)
@@ -1145,8 +1145,8 @@ def test_synthesize_blocks_cache_invalidation_when_switching_presets():
             rep_b = engine_b.synthesize_blocks(blocks, total_duration=3.0, output_path=out_b)
             assert rep_b.status == "success"
             # mock_model_b PHẢI được gọi vì khóa cache khác biệt hoàn toàn giữa Preset A và B
-            # 4 lượt thử mỏ neo B + 1 lượt sinh block = 5
-            assert mock_model_b.generate.call_count == 5
+            # 6 lượt thử mỏ neo B + 1 lượt sinh block = 7
+            assert mock_model_b.generate.call_count == 7
 
             # 3. Chạy lại lần nữa với Preset B -> Phải trúng cache (cache hit), không cần gọi generate lại cho block
             mock_model_b.reset_mock()
@@ -2510,6 +2510,188 @@ def test_ui_speaker_count_mode_toggle_and_param_collection():
     assert params["speaker_count_mode"] == "capped"
     assert params["max_speakers"] == 5
     assert params["exact_speakers"] is None
+
+
+def test_distinct_voice_pool_and_effective_instruct():
+    """Xác minh bộ lọc giọng độc nhất loại bỏ hoàn toàn các preset trùng instruct hiệu dụng."""
+    from src.ai_engines.tts_engine import build_distinct_voice_pool, get_effective_instruct, VIETNAMESE_VOICE_CATALOG
+
+    # 1. Danh mục mặc định (không trẻ em, không thì thầm)
+    pool_default = build_distinct_voice_pool(allow_child=False, allow_whisper=False)
+    assert len(pool_default) >= 14
+
+    # Xác nhận không có preset trùng instruct hiệu dụng
+    eff_instructs = [get_effective_instruct(v["instruct"]) for v in pool_default.values()]
+    assert len(eff_instructs) == len(set(eff_instructs))
+
+    # Xác nhận các preset bị trùng hiệu dụng đã bị loại bỏ
+    assert "Nam Phong Cách Âu Mỹ Đọc Tiếng Việt" not in pool_default
+    assert "Nữ Phong Cách Anh Quốc Đọc Tiếng Việt" not in pool_default
+    assert "Nữ Phong Cách Đông Á Đọc Tiếng Việt" not in pool_default
+    assert "Nam Vui Vẻ Tự Nhiên - Kèm Tiếng Cười Biểu Cảm" not in pool_default
+
+    # Xác nhận thì thầm và trẻ em không có trong danh mục mặc định
+    for v in pool_default.values():
+        assert "whisper" not in v["instruct"].lower()
+        assert v.get("age_group") != "child"
+
+    # 2. Cho phép trẻ em
+    pool_child = build_distinct_voice_pool(allow_child=True, allow_whisper=False)
+    child_presets = [k for k, v in pool_child.items() if v.get("age_group") == "child"]
+    assert len(child_presets) > 0
+
+    # 3. Cho phép thì thầm
+    pool_whisper = build_distinct_voice_pool(allow_child=False, allow_whisper=True)
+    whisper_presets = [k for k, v in pool_whisper.items() if "whisper" in v["instruct"].lower()]
+    assert len(whisper_presets) > 0
+
+
+def test_voice_match_accent_and_weights():
+    """Xác minh điểm phù hợp giọng đọc phân bổ chính xác theo giới tính, cao độ, tuổi và không thiên vị phương ngữ."""
+    from src.ai_engines.tts_engine import VoiceRecommendationEngine, VIETNAMESE_VOICE_CATALOG
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    # Nhân vật nam, thanh niên, cao độ chuẩn, giọng Nam
+    p_male = CharacterVoiceProfile(
+        speaker_id="spk_nam",
+        display_name="Nam Thanh Niên",
+        gender="male",
+        age_group="young_adult",
+        pitch_level="moderate",
+        vietnamese_accent="nam",
+    )
+
+    preset_bac = VIETNAMESE_VOICE_CATALOG["Nam Thanh Niên Chuẩn - Thuyết Minh Và Tin Tức"]
+    score_bac, desc_bac = VoiceRecommendationEngine.calculate_voice_match(p_male, preset_bac)
+
+    # Giới tính (40) + Cao độ (30) + Nhóm tuổi (20) = 90
+    assert score_bac == 90
+    assert "giới tính phù hợp" in desc_bac
+    assert "cao độ phù hợp" in desc_bac
+    assert "nhóm tuổi phù hợp" in desc_bac
+
+    # Preset thì thầm phải bị phạt điểm khi nhân vật không yêu cầu
+    preset_whisper = VIETNAMESE_VOICE_CATALOG["Nam Thì Thầm Bí Ẩn - Phim Kinh Dị Và Trinh Thám"]
+    score_whisper, _ = VoiceRecommendationEngine.calculate_voice_match(p_male, preset_whisper)
+    assert score_whisper < score_bac
+
+
+def test_acoustic_classifier_edge_cases():
+    """Xác minh bộ phân loại âm học xử lý chính xác các trường hợp biên của giọng nói."""
+    from src.ai_engines.tts_engine import AcousticClassifier
+
+    # 1. Phụ nữ giọng cao (F0 = 252 Hz, centroid 1950 Hz) không bị coi là trẻ em
+    f_high_f0 = [248.0, 252.0, 255.0]
+    res_f = AcousticClassifier.classify(f_high_f0, centroid=1950.0, allow_child=False)
+    assert res_f["gender"] == "female"
+    assert res_f["age_group"] in ("young_adult", "teenager")
+
+    # 2. Nam thanh niên giọng trầm (F0 = 110 Hz, centroid 1450 Hz) không bị coi là người già
+    m_deep_f0 = [108.0, 110.0, 112.0]
+    res_m = AcousticClassifier.classify(m_deep_f0, centroid=1450.0, iqr_f0=10.0)
+    assert res_m["gender"] == "male"
+    assert res_m["age_group"] == "young_adult"
+
+    # 3. Người già thực thụ (F0 = 98 Hz, centroid 950 Hz)
+    m_elder_f0 = [95.0, 98.0, 100.0]
+    res_elder = AcousticClassifier.classify(m_elder_f0, centroid=950.0)
+    assert res_elder["gender"] == "male"
+    assert res_elder["age_group"] == "elderly"
+
+    # 4. Vùng giao thoa (F0 = 165 Hz) có độ tin cậy < 0.80 và gắn cờ review_needed
+    crossover_f0 = [165.0, 168.0, 164.0]
+    res_cross = AcousticClassifier.classify(crossover_f0, centroid=1600.0)
+    assert res_cross["gender_confidence"] < 0.80
+    assert res_cross["review_needed"] is True
+
+
+def test_build_distinct_anchors_campp_cosine_constraint(tmp_path):
+    """Xác minh build_distinct_anchors kiểm tra tương đồng CAM++ và tự động đổi hạt giống khi tương đồng >= 0.80."""
+    from src.ai_engines.tts_engine import TTSEngine
+
+    engine = TTSEngine()
+    engine.voice_prompt_cache_dir = str(tmp_path)
+    engine.speaker_model_path = str(tmp_path / "campp.onnx")
+
+    # Mock _build_anchor_prompt trả về wav giả
+    mock_prompt_1 = MagicMock()
+    mock_prompt_2 = MagicMock()
+    fake_wav_1 = str(tmp_path / "fake1.wav")
+    fake_wav_2 = str(tmp_path / "fake2.wav")
+    fake_wav_3 = str(tmp_path / "fake3.wav")
+
+    sr = 24000
+    t = np.linspace(0, 1.0, sr, endpoint=False, dtype=np.float32)
+    sf.write(fake_wav_1, 0.2 * np.sin(2 * np.pi * 150 * t), sr)
+    sf.write(fake_wav_2, 0.2 * np.sin(2 * np.pi * 160 * t), sr)
+    sf.write(fake_wav_3, 0.2 * np.sin(2 * np.pi * 220 * t), sr)
+
+    call_count = [0]
+    def fake_build(key, instruct=None, sample_text=None, tries=6, seed_offset=0):
+        call_count[0] += 1
+        if "spk1" in key:
+            return mock_prompt_1, fake_wav_1
+        if seed_offset == 0:
+            return mock_prompt_2, fake_wav_2
+        return mock_prompt_2, fake_wav_3
+
+    engine._build_anchor_prompt = fake_build
+
+    # Mock CAM++ embeddings:
+    # Lần 1: fake_wav_1 và fake_wav_2 có cosine similarity = 0.95 (quá cao!)
+    # Lần 2 (khi seed_offset != 0): fake_wav_3 có cosine similarity = 0.50 (< 0.80)
+    emb_1 = np.zeros(192, dtype=np.float32)
+    emb_1[0] = 1.0
+    emb_2 = np.zeros(192, dtype=np.float32)
+    emb_2[0] = 0.95
+    emb_2[1] = np.sqrt(1 - 0.95**2)
+    emb_3 = np.zeros(192, dtype=np.float32)
+    emb_3[10] = 1.0  # Hoàn toàn trực giao (sim = 0.0)
+
+    def fake_extract(session, audio, sample_rate):
+        if len(audio) == len(t):
+            # Dựa vào âm thanh mẫu để trả vector đặc trưng
+            if np.allclose(audio[:100], (0.2 * np.sin(2 * np.pi * 150 * t))[:100]):
+                return emb_1
+            elif np.allclose(audio[:100], (0.2 * np.sin(2 * np.pi * 160 * t))[:100]):
+                return emb_2
+            else:
+                return emb_3
+        return emb_1
+
+    with patch("src.ai_engines.speaker_embedding_onnx.create_speaker_session", return_value=(MagicMock(), "CPUExecutionProvider")), \
+         patch("src.ai_engines.speaker_embedding_onnx.extract_speaker_embedding", side_effect=fake_extract), \
+         patch("src.ai_engines.speaker_embedding_onnx.close_speaker_session"):
+
+        results = engine.build_distinct_anchors(
+            speaker_keys=["spk1", "spk2"],
+            speaker_instructs={"spk1": "male, young adult", "spk2": "male, young adult"},
+            max_sim=0.80,
+            tries_per_speaker=3,
+        )
+
+    assert "spk1" in results
+    assert "spk2" in results
+    assert results["spk1"][0] == mock_prompt_1
+    assert results["spk2"][0] == mock_prompt_2
+    # spk2 phải được thử lại vì lần đầu có similarity 0.95 >= 0.80
+    assert call_count[0] >= 3
+
+
+def test_engine_init_with_none_speaker_counts():
+    """Xác minh TTSEngine khởi tạo an toàn khi nhận max_speakers=None và exact_speakers=None từ UI."""
+    from src.ai_engines.tts_engine import TTSEngine
+
+    engine = TTSEngine(
+        max_speakers=None,
+        exact_speakers=None,
+        speaker_count_mode="auto",
+    )
+    assert engine.max_speakers is None
+    assert engine.exact_speakers is None
+    assert engine.speaker_count_mode == "auto"
+
+
 
 
 

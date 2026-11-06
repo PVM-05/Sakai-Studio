@@ -944,7 +944,7 @@ class TTSEngine:
         asr_model_name: str = "openai/whisper-large-v3-turbo",
         voice_prompt_cache_dir: Optional[str] = None,
         multi_speaker_mode: str = "single",
-        max_speakers: int = 4,
+        max_speakers: Optional[int] = 4,
         speaker_profiles: Optional[Dict[str, Dict[str, Any]]] = None,
         resume_cache_dir: Optional[str] = None,
         ducking_mode: str = "dynamic",
@@ -964,7 +964,7 @@ class TTSEngine:
         self.mode = mode if mode in ("clone", "design", "auto") else "clone"
         self.preset_name = preset_name or kwargs.get("preset_name")
         self.language = language if (language and language not in ("auto", "Auto")) else None
-        self.speed = max(0.5, min(2.0, float(speed)))
+        self.speed = max(0.5, min(2.0, float(speed))) if speed is not None else 1.0
         self.sync_to_subtitle_duration = bool(sync_to_subtitle_duration)
         self.ref_audio_path = ref_audio_path if (ref_audio_path and str(ref_audio_path).strip()) else None
         self.ref_text = ref_text if (ref_text and str(ref_text).strip()) else None
@@ -973,16 +973,16 @@ class TTSEngine:
         self.instruct = instruct if (instruct and str(instruct).strip()) else None
 
         # Tham số OmniVoiceGenerationConfig đầy đủ
-        self.num_step = max(4, min(64, int(num_step)))
-        self.guidance_scale = max(0.0, min(4.0, float(guidance_scale)))
-        self.t_shift = float(t_shift)
-        self.layer_penalty_factor = float(layer_penalty_factor)
-        self.position_temperature = float(position_temperature)
-        self.class_temperature = float(class_temperature)
-        self.audio_chunk_duration = max(3.0, float(audio_chunk_duration))
-        self.audio_chunk_threshold = max(5.0, float(audio_chunk_threshold))
-        self.pad_duration = max(0.0, float(pad_duration))
-        self.fade_duration = max(0.0, float(fade_duration))
+        self.num_step = max(4, min(64, int(num_step))) if num_step is not None else 32
+        self.guidance_scale = max(0.0, min(4.0, float(guidance_scale))) if guidance_scale is not None else 2.0
+        self.t_shift = float(t_shift) if t_shift is not None else 0.1
+        self.layer_penalty_factor = float(layer_penalty_factor) if layer_penalty_factor is not None else 5.0
+        self.position_temperature = float(position_temperature) if position_temperature is not None else 5.0
+        self.class_temperature = float(class_temperature) if class_temperature is not None else 0.0
+        self.audio_chunk_duration = max(3.0, float(audio_chunk_duration)) if audio_chunk_duration is not None else 15.0
+        self.audio_chunk_threshold = max(5.0, float(audio_chunk_threshold)) if audio_chunk_threshold is not None else 30.0
+        self.pad_duration = max(0.0, float(pad_duration)) if pad_duration is not None else 0.1
+        self.fade_duration = max(0.0, float(fade_duration)) if fade_duration is not None else 0.1
         self.denoise = bool(denoise)
         self.preprocess_prompt = bool(preprocess_prompt)
         self.postprocess_output = bool(postprocess_output)
@@ -994,7 +994,7 @@ class TTSEngine:
         # Cấu hình đa giọng đọc / phân vai người nói
         # multi_speaker_mode: "single" | "auto_video_cluster" | "per_line_video_clone" | "auto_srt_text" | "custom_table"
         self.multi_speaker_mode = multi_speaker_mode or "single"
-        self.max_speakers = max(1, min(16, int(max_speakers)))
+        self.max_speakers = max(1, min(16, int(max_speakers))) if max_speakers is not None else None
         self.speaker_profiles: Dict[str, Dict[str, Any]] = speaker_profiles or {}
         if speaker_model_path:
             self.speaker_model_path = str(speaker_model_path).strip()
@@ -1009,7 +1009,7 @@ class TTSEngine:
         self.ducking_mode = ducking_mode if ducking_mode in ("dynamic", "fixed") else "dynamic"
         self.allow_mock = bool(allow_mock)
         self.speaker_count_mode = str(speaker_count_mode or "auto")
-        self.exact_speakers = exact_speakers
+        self.exact_speakers = max(1, min(16, int(exact_speakers))) if exact_speakers is not None else None
         self.clustering_sensitivity = str(clustering_sensitivity or "standard")
         self.overflow_strategy = "strict_sync" if str(overflow_strategy).strip() == "strict_sync" else "preserve_speech"
         self._cancel_requested: bool = False
@@ -1585,7 +1585,8 @@ class TTSEngine:
         key: str,
         instruct: Optional[str] = None,
         sample_text: Optional[str] = None,
-        tries: int = 4,
+        tries: int = 6,
+        seed_offset: int = 0,
     ) -> Tuple[Optional[VoiceClonePrompt], Optional[str]]:
         """
         Tạo hoặc nạp mẫu giọng mỏ neo (Anchor Voice Prompt) bằng Voice Design với nhiều hạt số ngẫu nhiên,
@@ -1595,9 +1596,10 @@ class TTSEngine:
         target_ins = (instruct or self.instruct or DEFAULT_SPEAKER_PRESETS["Người nói 1"]["instruct"]).strip()
         target_sample = sample_text or self._get_anchor_sample_text()
 
-        tag = hashlib.sha1(
-            f"{key}|{target_ins}|{self.model_name_or_path}|{self.language}".encode("utf-8")
-        ).hexdigest()[:10]
+        tag_content = f"{key}|{target_ins}|{self.model_name_or_path}|{self.language}"
+        if seed_offset != 0:
+            tag_content += f"|seed_{seed_offset}"
+        tag = hashlib.sha1(tag_content.encode("utf-8")).hexdigest()[:10]
 
         anchor_dir = getattr(self, "voice_prompt_cache_dir", None) or os.path.join(BASE_DIR, "output", "voice_prompts")
         os.makedirs(anchor_dir, exist_ok=True)
@@ -1627,7 +1629,12 @@ class TTSEngine:
             return None, None
 
         best, best_score = None, -1.0
-        base = zlib.crc32(tag.encode("utf-8")) % 100000
+        base = (zlib.crc32(tag.encode("utf-8")) + seed_offset) % 100000
+
+        lowered_ins = target_ins.lower()
+        is_female_target = any(w in lowered_ins for w in ("female", "nữ", "woman", "girl"))
+        is_child_target = any(w in lowered_ins for w in ("child", "trẻ em", "kid", "boy"))
+        is_male_target = any(w in lowered_ins for w in ("male", "nam", "man")) and not is_female_target
 
         for t in range(tries):
             seed = base + t * 7919
@@ -1659,23 +1666,22 @@ class TTSEngine:
                     continue
                 score = float(np.sqrt(np.mean(arr ** 2))) * min(len(arr) / float(self.sample_rate) / 5.0, 1.0)
                 # Kiểm tra F0 đối chiếu với giới tính yêu cầu trong instruct để chống lẫn giọng
-                lowered_ins = target_ins.lower()
                 c_feat = self._extract_acoustic_features(arr, self.sample_rate)
                 if c_feat is not None:
                     sample_f0 = float(c_feat[0] * 200.0)
-                    if any(w in lowered_ins for w in ("female", "nữ", "woman", "girl")):
+                    if is_female_target:
                         if sample_f0 < 165.0:
-                            score *= 0.35
+                            continue
                         elif sample_f0 >= 185.0:
                             score *= 1.30
-                    elif any(w in lowered_ins for w in ("child", "trẻ em", "kid", "boy")):
-                        if sample_f0 < 210.0:
-                            score *= 0.30
+                    elif is_child_target:
+                        if sample_f0 < 220.0:
+                            continue
                         elif sample_f0 >= 240.0:
                             score *= 1.40
-                    elif any(w in lowered_ins for w in ("male", "nam", "man")):
-                        if sample_f0 > 190.0:
-                            score *= 0.35
+                    elif is_male_target:
+                        if sample_f0 > 185.0:
+                            continue
                         elif sample_f0 <= 165.0:
                             score *= 1.25
                 if score > best_score:
@@ -1746,6 +1752,113 @@ class TTSEngine:
             self._speaker_prompt_cache[ck] = prompt
         return prompt, wav_path
 
+    def build_distinct_anchors(
+        self,
+        speaker_keys: List[str],
+        speaker_instructs: Optional[Dict[str, str]] = None,
+        max_sim: float = 0.80,
+        tries_per_speaker: int = 4,
+    ) -> Dict[str, Tuple[Optional[VoiceClonePrompt], Optional[str]]]:
+        """
+        Tạo và kiểm định mỏ neo (Anchor Voice Prompt) cho tất cả các nhân vật bằng mô hình CAM++ ONNX.
+        Bảo đảm không có 2 nhân vật nào có độ tương đồng cosin >= max_sim (mặc định 0.80).
+        Nếu phát hiện 2 nhân vật quá giống nhau, tự động gieo lại hạt số ngẫu nhiên (seed_offset) để tạo giọng khác biệt.
+        """
+        results: Dict[str, Tuple[Optional[VoiceClonePrompt], Optional[str]]] = {}
+        if not speaker_keys:
+            return results
+
+        ins_map = dict(speaker_instructs or {})
+        spk_embs: Dict[str, np.ndarray] = {}
+
+        # Khởi tạo phiên CAM++ nếu khả dụng
+        session = None
+        try:
+            from .speaker_embedding_onnx import create_speaker_session, extract_speaker_embedding, close_speaker_session
+            sess_res = create_speaker_session(self.speaker_model_path, prefer_cuda=False)
+            session = sess_res[0] if isinstance(sess_res, tuple) else sess_res
+        except Exception:
+            session = None
+
+        try:
+            for spk in speaker_keys:
+                ins = (
+                    ins_map.get(spk)
+                    or self._speaker_instruct_cache.get(spk)
+                    or (self.speaker_profiles.get(spk, {}).get("voice_instruct") if isinstance(self.speaker_profiles.get(spk), dict) else getattr(self.speaker_profiles.get(spk, {}), "voice_instruct", ""))
+                    or DEFAULT_SPEAKER_PRESETS.get(spk, {}).get("instruct", "")
+                    or self.instruct
+                )
+
+                best_p, best_w = None, None
+                best_emb = None
+
+                for attempt in range(tries_per_speaker):
+                    offset = attempt * 12345
+                    p, w = self._build_anchor_prompt(
+                        key=f"char_{spk}",
+                        instruct=ins,
+                        seed_offset=offset,
+                    )
+                    if p is None or not w or not os.path.exists(w):
+                        continue
+
+                    best_p, best_w = p, w
+
+                    if session is not None:
+                        try:
+                            audio_data, sr = sf.read(w, dtype="float32")
+                            if audio_data.ndim > 1:
+                                audio_data = np.mean(audio_data, axis=1)
+                            emb = extract_speaker_embedding(session, audio_data, sample_rate=sr)
+                            norm = float(np.linalg.norm(emb))
+                            if norm > 1e-6:
+                                emb = emb / norm
+
+                            # Kiểm tra độ tương đồng cosin với các nhân vật đã tạo trước đó
+                            is_too_similar = False
+                            for other_spk, other_emb in spk_embs.items():
+                                sim = float(np.dot(emb, other_emb))
+                                if sim >= max_sim:
+                                    is_too_similar = True
+                                    self.log(
+                                        f"Nhân vật {spk} có độ tương đồng âm sắc cao với {other_spk} "
+                                        f"({round(sim, 2)} >= {max_sim}). Đang thử hạt số khác..."
+                                    )
+                                    break
+
+                            if not is_too_similar:
+                                best_emb = emb
+                                break
+                        except Exception as emb_err:
+                            self.log(f"Không thể đo embedding cho {spk}: {emb_err}")
+                            break
+                    else:
+                        break
+
+                if best_p is not None:
+                    results[spk] = (best_p, best_w)
+                    if best_emb is not None:
+                        spk_embs[spk] = best_emb
+
+                    # Lưu vào cache để synthesize_blocks sử dụng lại
+                    p_key = self._compute_character_prompt_key(spk)
+                    self._speaker_prompt_cache[p_key] = best_p
+                    self._speaker_prompt_cache[f"character_{spk}"] = best_p
+                    if best_w:
+                        if not hasattr(self, "_speaker_prompt_wav_cache"):
+                            self._speaker_prompt_wav_cache = {}
+                        self._speaker_prompt_wav_cache[p_key] = best_w
+                        self._speaker_prompt_wav_cache[f"character_{spk}"] = best_w
+        finally:
+            if session is not None:
+                try:
+                    close_speaker_session(session)
+                except Exception:
+                    pass
+
+        return results
+
     @staticmethod
     def _extract_acoustic_features(seg: np.ndarray, sr: int) -> Optional[np.ndarray]:
         """
@@ -1783,12 +1896,17 @@ class TTSEngine:
             spec = np.abs(np.fft.rfft(windowed))
             spectra.append(spec)
 
-            # Tính tự tương quan chuẩn hóa để tìm F0
+            # Tính tự tương quan chuẩn hóa để tìm F0 (yêu cầu đỉnh nội bộ để loại bỏ tín hiệu phẳng DC/nhiễu)
             ac = np.correlate(windowed, windowed, mode="full")[frame_len - 1:]
             if ac[0] > 1e-6 and max_lag > min_lag:
                 sub_ac = ac[min_lag:max_lag] / ac[0]
                 best_idx = int(np.argmax(sub_ac))
-                if sub_ac[best_idx] > 0.28:
+                if (
+                    0 < best_idx < len(sub_ac) - 1
+                    and sub_ac[best_idx] > sub_ac[best_idx - 1]
+                    and sub_ac[best_idx] > sub_ac[best_idx + 1]
+                    and sub_ac[best_idx] > 0.28
+                ):
                     lag = min_lag + best_idx
                     f0_list.append(float(sr) / float(lag))
 
@@ -1978,6 +2096,10 @@ class TTSEngine:
                         d_sr = diar_info.samplerate
                         for blk in blocks:
                             if getattr(blk, "speaker", "") == spk_name:
+                                # Chỉ quét các câu có độ tin cậy cao để tránh lẫn giọng của nhân vật khác
+                                blk_conf = getattr(blk, "confidence_level", "")
+                                if blk_conf and blk_conf != "high" and blk_conf != ConfidenceLevel.HIGH.value:
+                                    continue
                                 b_start = parse_timestamp_to_seconds(blk.start_time)
                                 b_end = parse_timestamp_to_seconds(getattr(blk, "end_time", blk.start_time))
                                 if b_end - b_start >= 0.8:
@@ -2016,6 +2138,7 @@ class TTSEngine:
                     centroid=centroid_val,
                     iqr_f0=iqr_val,
                     band_energies=band_arr,
+                    allow_child=False,
                 )
 
                 # Nhận diện phương ngữ tiếng Việt từ phụ đề của nhân vật
@@ -2075,9 +2198,12 @@ class TTSEngine:
                 ratio = getattr(prof, "high_confidence_ratio", 1.0)
                 prof_data["high_confidence_ratio"] = float(ratio)
                 prof_data["description"] = f"Độ tin cậy: {int(ratio * 100)}%"
-                prof_data["confidence_level"] = "high" if ratio >= 0.7 else "review_needed"
-                if ratio < 0.7:
+                needs_review = ratio < 0.7 or gender_conf < 0.80 or acoustic_res.get("review_needed", False)
+                prof_data["confidence_level"] = "review_needed" if needs_review else "high"
+                if needs_review:
                     prof_data["status"] = "review_needed"
+                else:
+                    prof_data["status"] = "locked"
                 detected_profiles[spk_name] = prof_data
 
             # Phân bổ giọng đọc AI tiếng Việt không trùng lặp (1-đối-1) cho toàn bộ các nhân vật
@@ -2793,6 +2919,18 @@ class TTSEngine:
                 speaker_keys.add(spk)
 
         preset_keys = list(VIETNAMESE_VOICE_CATALOG.keys())
+
+        # Đảm bảo các nhân vật phân vai preset có mỏ neo phân biệt âm học qua CAM++
+        preset_spks = [
+            spk for spk in sorted(speaker_keys)
+            if (self.speaker_profiles.get(spk, {}).get("method") if isinstance(self.speaker_profiles.get(spk), dict) else getattr(self.speaker_profiles.get(spk, {}), "method", "")) in ("preset", "design", None)
+            and not (self.speaker_profiles.get(spk, {}).get("source_audio_path") if isinstance(self.speaker_profiles.get(spk), dict) else getattr(self.speaker_profiles.get(spk, {}), "source_audio_path", ""))
+        ]
+        if len(preset_spks) > 1:
+            try:
+                self.build_distinct_anchors(preset_spks)
+            except Exception as e_dist:
+                self.log(f"Không thể khởi tạo mỏ neo phân biệt CAM++ cho các nhân vật: {e_dist}")
 
         for idx, spk in enumerate(sorted(speaker_keys)):
             prof = self.speaker_profiles.get(spk, {})
@@ -3934,8 +4072,55 @@ class TTSEngine:
                     pass
 
 
+
 # Tương thích ngược với các lệnh gọi OmniVoiceEngine
 OmniVoiceEngine = TTSEngine
+
+
+_ACCENT_PATTERN = re.compile(r",\s*\w+\s+accent", re.IGNORECASE)
+
+
+def get_effective_instruct(instruct: str) -> str:
+    """Loại bỏ các thành phần không có tác dụng âm học đối với tiếng Việt (như accent)."""
+    cleaned = _ACCENT_PATTERN.sub("", instruct or "")
+    parts = [p.strip().lower() for p in cleaned.split(",") if p.strip()]
+    return ", ".join(parts)
+
+
+def build_distinct_voice_pool(
+    catalog: Optional[Dict[str, Dict[str, Any]]] = None,
+    allow_child: bool = False,
+    allow_whisper: bool = False,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Lọc danh mục giọng đọc để bảo đảm mọi preset đều có instruct hiệu dụng (effective instruct)
+    hoàn toàn khác biệt, loại bỏ các preset trùng instruct hoặc các biến thể không cần thiết.
+    """
+    target = catalog if catalog is not None else VIETNAMESE_VOICE_CATALOG
+    filtered_pool: Dict[str, Dict[str, Any]] = {}
+    seen_effective_instructs = set()
+
+    for preset_name, info in target.items():
+        ins = info.get("instruct", "")
+        style = info.get("style", "")
+        age = info.get("age_group", "")
+
+        # 1. Lọc giọng thì thầm nếu không cho phép
+        if not allow_whisper:
+            if "whisper" in ins.lower() or style == "thi_tham":
+                continue
+
+        # 2. Lọc giọng trẻ em nếu không cho phép
+        if not allow_child:
+            if age == "child" or "child" in ins.lower():
+                continue
+
+        eff_ins = get_effective_instruct(ins)
+        if eff_ins not in seen_effective_instructs:
+            seen_effective_instructs.add(eff_ins)
+            filtered_pool[preset_name] = info
+
+    return filtered_pool
 
 
 class VoiceRecommendationEngine:
@@ -3948,61 +4133,64 @@ class VoiceRecommendationEngine:
         score = 0
         reasons: List[str] = []
 
-        # 1. Giới tính (Trọng số 35 điểm) - Tách bạch với nhóm tuổi
+        # 1. Giới tính (Trọng số 40 điểm) - Tách bạch với nhóm tuổi
         prof_gender = getattr(profile, "gender", None) or (profile.get("gender") if isinstance(profile, dict) else "auto")
         voice_gender = voice_entry.get("gender", "")
         if prof_gender in ("auto", "", None, "unknown"):
-            score += 30
-        elif prof_gender == voice_gender:
             score += 35
+        elif prof_gender == voice_gender:
+            score += 40
             reasons.append("giới tính phù hợp")
         else:
             return 0, "Khác giới tính"
 
-        # 2. Nhóm tuổi (Trọng số 25 điểm) - Tách biệt độc lập với giới tính
+        # 2. Cao độ âm thanh (Trọng số 30 điểm)
+        prof_pitch = getattr(profile, "pitch_level", None) or (profile.get("pitch_level") if isinstance(profile, dict) else "moderate")
+        voice_pitch = voice_entry.get("pitch", "moderate")
+        if prof_pitch == voice_pitch:
+            score += 30
+            reasons.append("cao độ phù hợp")
+        elif prof_pitch in cls.PITCH_LEVELS and voice_pitch in cls.PITCH_LEVELS:
+            diff = abs(cls.PITCH_LEVELS.index(prof_pitch) - cls.PITCH_LEVELS.index(voice_pitch))
+            if diff == 1:
+                score += 20
+            elif diff == 2:
+                score += 10
+
+        # 3. Nhóm tuổi (Trọng số 20 điểm) - Tách biệt độc lập với giới tính
         prof_age = getattr(profile, "age_group", None) or (profile.get("age_group") if isinstance(profile, dict) else "young_adult")
         voice_age = voice_entry.get("age_group", "young_adult")
         if prof_age == voice_age:
-            score += 25
+            score += 20
             reasons.append("nhóm tuổi phù hợp")
         elif {prof_age, voice_age}.issubset({"teenager", "young_adult"}) or {prof_age, voice_age}.issubset({"young_adult", "middle_aged"}):
-            score += 15
-        elif {prof_age, voice_age}.issubset({"middle_aged", "elderly"}):
             score += 12
+        elif {prof_age, voice_age}.issubset({"middle_aged", "elderly"}):
+            score += 10
         elif prof_age == "child" or voice_age == "child":
             score += 0
         else:
             score += 5
 
-        # 3. Khẩu âm vùng miền Việt Nam (Trọng số 25 điểm)
-        prof_accent = getattr(profile, "vietnamese_accent", None) or (profile.get("vietnamese_accent") if isinstance(profile, dict) else "bac")
-        voice_accent = voice_entry.get("accent", "bac")
-        accent_names = {"bac": "miền Bắc", "trung": "miền Trung", "nam": "miền Nam"}
-        if prof_accent == voice_accent:
-            score += 25
-            reasons.append(f"giọng {accent_names.get(voice_accent, voice_accent)}")
-        else:
-            score += 5
-
-        # 4. Cao độ âm thanh (Trọng số 10 điểm)
-        prof_pitch = getattr(profile, "pitch_level", None) or (profile.get("pitch_level") if isinstance(profile, dict) else "moderate")
-        voice_pitch = voice_entry.get("pitch", "moderate")
-        if prof_pitch == voice_pitch:
-            score += 10
-            reasons.append("cao độ phù hợp")
-        elif prof_pitch in cls.PITCH_LEVELS and voice_pitch in cls.PITCH_LEVELS:
-            diff = abs(cls.PITCH_LEVELS.index(prof_pitch) - cls.PITCH_LEVELS.index(voice_pitch))
-            if diff == 1:
-                score += 7
-            elif diff == 2:
-                score += 3
-
-        # 5. Phong cách thể hiện (Trọng số 5 điểm)
+        # 4. Phong cách thể hiện (Trọng số 10 điểm)
         prof_style = getattr(profile, "style_tag", None) or (profile.get("style_tag") if isinstance(profile, dict) else "natural")
         voice_style = voice_entry.get("style", "")
         if prof_style and voice_style and prof_style == voice_style:
-            score += 5
+            score += 10
             reasons.append("phong cách tương đồng")
+
+        # Phạt nặng preset thì thầm hoặc trẻ em nếu nhân vật không yêu cầu
+        if voice_style == "thi_tham" and prof_style != "thi_tham":
+            score -= 30
+        if voice_age == "child" and prof_age != "child":
+            score -= 50
+
+        # Thông tin phương ngữ ghi nhận vào mô tả nếu trùng (không cộng điểm làm lệch âm học)
+        prof_accent = getattr(profile, "vietnamese_accent", None) or (profile.get("vietnamese_accent") if isinstance(profile, dict) else "")
+        voice_accent = voice_entry.get("accent", "")
+        if prof_accent and voice_accent and prof_accent == voice_accent:
+            accent_names = {"bac": "miền Bắc", "trung": "miền Trung", "nam": "miền Nam"}
+            reasons.append(f"giọng {accent_names.get(voice_accent, voice_accent)}")
 
         score = min(100, max(0, score))
         desc = f"Phù hợp {score}% ({', '.join(reasons)})" if reasons else f"Phù hợp {score}%"
@@ -4038,7 +4226,7 @@ class AcousticClassifier:
     Phân tích kết hợp F0 median, F0 IQR/variance, Trọng tâm phổ (Spectral Centroid)
     và 8 dải năng lượng âm sắc để phân biệt chính xác:
     - Giọng nữ trầm vs Giọng nam cao ở vùng giao thoa (155 - 190 Hz)
-    - Giọng trẻ em (F0 > 240 Hz + centroid cao) tách bạch giới tính
+    - Giọng trẻ em (F0 > 250 Hz + centroid cao) tách bạch giới tính
     - Giọng người già / trung niên / thanh niên / thiếu niên
     """
 
@@ -4049,6 +4237,7 @@ class AcousticClassifier:
         centroid: float = 1500.0,
         iqr_f0: float = 15.0,
         band_energies: Optional[np.ndarray] = None,
+        allow_child: Optional[bool] = None,
     ) -> Dict[str, Any]:
         if not f0_list:
             return {
@@ -4058,6 +4247,7 @@ class AcousticClassifier:
                 "pitch_level": "moderate",
                 "pitch_hz": 150.0,
                 "style_tag": "natural",
+                "review_needed": False,
             }
 
         median_f0 = float(np.median(f0_list))
@@ -4071,13 +4261,17 @@ class AcousticClassifier:
             low_high_ratio = low_energy / high_energy
 
         # 1. Phát hiện Giọng Trẻ Em (Child)
-        is_child = (median_f0 > 240.0 and centroid > 1800.0) or (median_f0 > 260.0)
+        if allow_child is None:
+            is_child = (median_f0 >= 250.0 and centroid > 2350.0) or (median_f0 >= 285.0)
+        elif allow_child is True:
+            is_child = (median_f0 >= 240.0 and centroid > 2000.0) or (median_f0 >= 265.0)
+        else:
+            is_child = False
 
         if is_child:
             age_group = "child"
             pitch_level = "very_high" if median_f0 > 275.0 else "high"
             style_tag = "hoat_hinh"
-            # Trẻ em vẫn có giới tính tách biệt (nam/nữ) dựa trên low_high_ratio và centroid
             if low_high_ratio < 0.9 or centroid > 2300.0:
                 gender = "female"
             else:
@@ -4090,31 +4284,31 @@ class AcousticClassifier:
                 "pitch_level": pitch_level,
                 "pitch_hz": pitch_hz,
                 "style_tag": style_tag,
+                "review_needed": True,
             }
 
         # 2. Phân loại Giới tính cho Người lớn (Adult Gender Classification)
         if median_f0 < 155.0:
             gender = "male"
-            gender_confidence = min(0.98, 0.75 + (155.0 - median_f0) / 150.0)
+            gender_confidence = min(0.98, 0.80 + (155.0 - median_f0) / 100.0)
         elif median_f0 > 190.0:
             gender = "female"
-            gender_confidence = min(0.98, 0.75 + (median_f0 - 190.0) / 150.0)
+            gender_confidence = min(0.98, 0.80 + (median_f0 - 190.0) / 100.0)
         else:
             # Vùng giao thoa F0 155 - 190 Hz:
             if centroid > 1550.0 or low_high_ratio < 1.15:
                 gender = "female"
-                gender_confidence = 0.72
             else:
                 gender = "male"
-                gender_confidence = 0.72
+            gender_confidence = 0.70
 
         # 3. Phân loại Nhóm tuổi cho Người lớn (Adult Age Group Classification)
         if gender == "male":
-            if median_f0 < 105.0 or (median_f0 < 120.0 and iqr_f0 > 28.0):
+            if (median_f0 < 105.0 and centroid < 1000.0) or (median_f0 < 95.0 and iqr_f0 > 25.0):
                 age_group = "elderly"
                 pitch_level = "very_low"
                 style_tag = "ke_chuyen"
-            elif median_f0 < 128.0:
+            elif median_f0 < 120.0 and (centroid < 1300.0 or iqr_f0 > 22.0):
                 age_group = "middle_aged"
                 pitch_level = "low"
                 style_tag = "ke_chuyen"
@@ -4124,14 +4318,14 @@ class AcousticClassifier:
                 style_tag = "soi_noi"
             else:
                 age_group = "young_adult"
-                pitch_level = "high" if median_f0 > 155.0 else "moderate"
+                pitch_level = "low" if median_f0 < 120.0 else ("high" if median_f0 > 155.0 else "moderate")
                 style_tag = "thuyet_minh"
         else:  # female
-            if median_f0 < 165.0 and (iqr_f0 > 24.0 or centroid < 1400.0):
+            if (median_f0 < 165.0 and centroid < 1300.0) or (median_f0 < 155.0 and iqr_f0 > 25.0):
                 age_group = "elderly"
                 pitch_level = "low"
                 style_tag = "ke_chuyen"
-            elif median_f0 < 185.0:
+            elif median_f0 < 185.0 and (centroid < 1600.0 or iqr_f0 > 20.0):
                 age_group = "middle_aged"
                 pitch_level = "low"
                 style_tag = "ke_chuyen"
@@ -4151,6 +4345,7 @@ class AcousticClassifier:
             "pitch_level": pitch_level,
             "pitch_hz": pitch_hz,
             "style_tag": style_tag,
+            "review_needed": gender_confidence < 0.80,
         }
 
 
@@ -4201,7 +4396,7 @@ class VietnameseAccentClassifier:
 class GlobalVoiceAllocator:
     """
     Thuật toán phân bổ giọng nói toàn cục không trùng lặp (Non-Colliding Global Voice Allocator).
-    Đảm bảo 100% mỗi nhân vật được gán một giọng đọc AI tiếng Việt riêng biệt từ VIETNAMESE_VOICE_CATALOG.
+    Đảm bảo 100% mỗi nhân vật được gán một giọng đọc AI tiếng Việt riêng biệt từ danh mục giọng độc nhất.
     """
 
     @classmethod
@@ -4215,7 +4410,19 @@ class GlobalVoiceAllocator:
             return {}
 
         cat = catalog if catalog is not None else VIETNAMESE_VOICE_CATALOG
-        catalog_names = list(cat.keys())
+
+        # Kiểm tra xem có nhân vật nào là trẻ em hoặc thì thầm không
+        has_child = any(
+            (getattr(p, "age_group", "") or (p.get("age_group") if isinstance(p, dict) else "")) == "child"
+            for p in profiles
+        )
+        has_whisper = any(
+            (getattr(p, "style_tag", "") or (p.get("style_tag") if isinstance(p, dict) else "")) == "thi_tham"
+            for p in profiles
+        )
+
+        distinct_pool = build_distinct_voice_pool(cat, allow_child=has_child, allow_whisper=has_whisper)
+        catalog_names = list(distinct_pool.keys()) if distinct_pool else list(cat.keys())
 
         # Thu thập câu thoại theo nhân vật để nhận diện phương ngữ
         speaker_texts: Dict[str, List[str]] = {}
@@ -4252,7 +4459,9 @@ class GlobalVoiceAllocator:
 
         available_presets = [k for k in catalog_names if k not in used_presets]
         if not available_presets:
-            available_presets = list(catalog_names)
+            available_presets = [k for k in list(cat.keys()) if k not in used_presets]
+        if not available_presets:
+            available_presets = list(cat.keys())
 
         # Cập nhật phương ngữ cho các nhân vật chưa khóa
         for prof in unassigned_profs:
@@ -4336,13 +4545,15 @@ class GlobalVoiceAllocator:
             prof.method = "preset"
             prof.preset_name = preset_name
             prof.voice_instruct = ins
-            prof.status = "locked"
+            if getattr(prof, "status", "") != "review_needed":
+                prof.status = "locked"
         elif isinstance(prof, dict):
             prof["method"] = "preset"
             prof["preset_name"] = preset_name
             prof["voice_instruct"] = ins
             prof["instruct"] = ins
-            prof["status"] = "locked"
+            if prof.get("status") != "review_needed":
+                prof["status"] = "locked"
 
 
 def verify_speaker_acoustic_distinction(
@@ -4351,24 +4562,36 @@ def verify_speaker_acoustic_distinction(
 ) -> Dict[str, Any]:
     """
     Xác minh độ tách biệt âm học giữa các giọng được phân bổ cho các nhân vật.
-    Đảm bảo không có hai nhân vật nào bị tương đồng quá mức trong không gian âm học.
+    Đảm bảo không có hai nhân vật nào bị trùng lặp preset hoặc trùng lặp instruct hiệu dụng.
     """
     cat = catalog if catalog is not None else VIETNAMESE_VOICE_CATALOG
     assigned_presets = []
+    assigned_instructs = []
+
     for prof in profiles:
         p_name = getattr(prof, "preset_name", "") or (prof.get("preset_name") if isinstance(prof, dict) else "")
         if p_name:
             assigned_presets.append(p_name)
+        ins = getattr(prof, "voice_instruct", "") or (prof.get("voice_instruct") if isinstance(prof, dict) else "")
+        if not ins and p_name in cat:
+            ins = cat[p_name].get("instruct", "")
+        if ins:
+            assigned_instructs.append(get_effective_instruct(ins))
 
     if len(assigned_presets) <= 1:
         return {"all_distinct": True, "duplicate_count": 0, "unique_ratio": 1.0}
 
-    unique_count = len(set(assigned_presets))
-    duplicates = len(assigned_presets) - unique_count
+    unique_presets = len(set(assigned_presets))
+    dup_presets = len(assigned_presets) - unique_presets
+
+    unique_instructs = len(set(assigned_instructs))
+    dup_instructs = len(assigned_instructs) - unique_instructs
+
+    total_dups = max(dup_presets, dup_instructs)
     return {
-        "all_distinct": duplicates == 0,
-        "duplicate_count": duplicates,
-        "unique_ratio": round(unique_count / len(assigned_presets), 4),
+        "all_distinct": total_dups == 0,
+        "duplicate_count": total_dups,
+        "unique_ratio": round(unique_presets / len(assigned_presets), 4),
         "total_assigned": len(assigned_presets),
     }
 
@@ -4379,5 +4602,6 @@ TTSEngine.recommend_voices = VoiceRecommendationEngine.recommend_voices
 TTSEngine.allocate_distinct_voices = GlobalVoiceAllocator.allocate_distinct_voices
 TTSEngine.AcousticClassifier = AcousticClassifier
 TTSEngine.VietnameseAccentClassifier = VietnameseAccentClassifier
+TTSEngine.build_distinct_voice_pool = staticmethod(build_distinct_voice_pool)
 TTSEngine.GlobalVoiceAllocator = GlobalVoiceAllocator
 
