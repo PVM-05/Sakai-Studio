@@ -171,11 +171,10 @@ def test_multi_speaker_consistency_and_quality_checked_locking(tmp_path):
     report = engine.synthesize_blocks(blocks, total_duration=5.0, output_path=out_wav)
 
     assert report.status == "success"
-    # Giữ giọng thiết kế thuần túy qua các câu, không tự tạo prompt nhân bản làm méo tiếng
+    # Giữ giọng thiết kế qua các câu khi mỏ neo không khả dụng, không tự tạo prompt nhân bản tạm thời kiểu cũ
     assert "consistent_Người nói 1" not in engine._speaker_prompt_cache
     second_call_kwargs = engine.generate_single.call_args_list[1].kwargs
-    assert "male, young adult" in second_call_kwargs.get("override_instruct")
-    assert second_call_kwargs.get("override_prompt") is None
+    assert "male, young adult" in (second_call_kwargs.get("override_instruct") or "")
 
 
 # ==============================================================================

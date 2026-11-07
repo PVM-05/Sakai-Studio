@@ -142,6 +142,8 @@ from src.ai_engines.tts_engine import (
 
     VIETNAMESE_VOICE_CATALOG,
 
+    build_distinct_voice_pool,
+
     DEFAULT_SPEAKER_PRESETS,
 
     parse_timestamp_to_seconds,
@@ -617,9 +619,9 @@ class OmniVoiceTaskWorker(QThread):
             self._run_engine_task(engine)
 
         except Exception as e:
-
-            self.logSignal.emit(f"Lỗi thực thi: {str(e)}")
-
+            import traceback
+            tb_str = traceback.format_exc()
+            self.logSignal.emit(f"Lỗi thực thi: {str(e)}\n{tb_str}")
             self._emit_result(False, self.task_type, "", str(e))
 
         finally:
@@ -668,50 +670,29 @@ class OmniVoiceTaskWorker(QThread):
                         try:
 
                             download_speaker_embedding_model(
-
-                                progress_callback=lambda p, msg: self.progressSignal.emit(int(p * 20), msg)
-
+                                progress_callback=lambda p, msg: self.progressSignal.emit(int((p or 0.0) * 20), msg)
                             )
-
                         except Exception as e:
-
                             self.logSignal.emit(f"Không thể tự động tải mô hình CAM++: {e}")
 
                     device_str = "ưu tiên CUDA trên GPU NVIDIA" if self.prefer_cuda else "CPU"
-
                     self.progressSignal.emit(25, f"Đang nhận diện người nói · {device_str}...")
 
-                    exact_spk = self.engine_params.get("exact_speakers", None)
-
                     sensitivity = self.engine_params.get("clustering_sensitivity", "standard")
-
                     ai_vocal_sep = bool(self.engine_params.get("ai_vocal_separation", True))
                     if ai_vocal_sep:
                         self.progressSignal.emit(18, "Đang tách sạch nhạc nền và tiếng ồn bằng trí tuệ nhân tạo...")
                     profiles = engine.detect_speakers_from_video(
-
                         self.video_path,
-
                         self.subtitle_blocks,
-
                         max_speakers=max_spk,
-
                         exact_speakers=exact_spk,
-
                         clustering_sensitivity=sensitivity,
-
                         prefer_cuda=self.prefer_cuda,
-
                         enable_ai_vocal_separation=ai_vocal_sep,
-
                     )
-
                     source_desc = "từ âm thanh video gốc"
-
                 else:
-
-                    exact_spk = self.engine_params.get("exact_speakers", None)
-
                     self.progressSignal.emit(35, "Đang phân tích hội thoại và đại từ trong phụ đề để phân vai...")
 
                     profiles = engine.detect_speakers_from_srt_text(
@@ -857,37 +838,39 @@ class OmniVoiceTaskWorker(QThread):
                 target_dur = self.fixed_duration if self.fixed_duration > 0.4 else None
 
                 override_mode = self.override_mode
+                override_prompt = None
 
                 if not override_mode:
-
                     if self.task_type == "character_audition":
-
-                        override_mode = "clone" if (self.override_ref_audio and not self.override_instruct) else ("design" if self.override_instruct else None)
-
+                        if self.override_instruct and not self.override_ref_audio:
+                            # Tạo hoặc nạp mỏ neo để câu nghe thử đồng nhất chất giọng với luồng xuất video
+                            target_spk = getattr(self, "_current_audition_speaker", "") or "audition"
+                            a_prompt, a_wav = engine._build_anchor_prompt(
+                                key=f"char_{target_spk}",
+                                instruct=self.override_instruct,
+                                sample_text=engine._get_anchor_sample_text(),
+                            )
+                            if a_prompt is not None:
+                                override_mode = "clone"
+                                override_prompt = a_prompt
+                            else:
+                                override_mode = "design"
+                        else:
+                            override_mode = "clone" if self.override_ref_audio else "design"
                     elif self.override_instruct and not self.override_ref_audio:
-
                         override_mode = "design"
-
                     elif self.override_ref_audio and not self.override_instruct:
-
                         override_mode = "clone"
 
                 engine.generate_single(
-
                     self.text,
-
                     output_path=self.output_path,
-
                     target_duration=target_dur,
-
                     override_mode=override_mode,
-
+                    override_prompt=override_prompt,
                     override_ref_audio=self.override_ref_audio if self.override_ref_audio else None,
-
                     override_instruct=self.override_instruct if self.override_instruct else None,
-
                     override_ref_text=self.override_ref_text if self.override_ref_text else None,
-
                 )
 
                 is_valid, wav_dur, _, _ = validate_audio_file(self.output_path)
@@ -1970,9 +1953,11 @@ class OmniVoiceInterface(ScrollArea):
         self.btn_reset_all_voices = PushButton("Đặt Lại Về Giọng Gốc", casting_card)
         self.btn_reset_all_voices.setToolTip("Khôi phục toàn bộ nhân vật về mẫu giọng gốc trích xuất từ video")
         self.btn_reset_all_voices.setIcon(FluentIcon.DELETE)
+        self.btn_reset_all_voices.setVisible(False)
 
         self.btn_audition_all_speakers = PushButton("Nghe Thử Toàn Bộ Nhân Vật", casting_card)
         self.btn_audition_all_speakers.setIcon(FluentIcon.VOLUME)
+        self.btn_audition_all_speakers.setVisible(False)
 
         # Bí danh điều phối cho nút nhận diện nhân vật duy nhất
         self.btn_reanalyze_speakers = self.btn_auto_detect_speakers
@@ -2996,8 +2981,6 @@ class OmniVoiceInterface(ScrollArea):
 
         # Tín hiệu bảng phân vai nhân vật (Bước 1)
 
-        self.btn_reanalyze_speakers.clicked.connect(self._run_auto_detect_speakers)
-
         self.btn_reset_all_voices.clicked.connect(lambda: self._handle_reset_all_voices_with_confirmation(None))
 
         self.btn_audition_all_speakers.clicked.connect(self._audition_all_speakers)
@@ -3040,7 +3023,7 @@ class OmniVoiceInterface(ScrollArea):
 
         self.spin_speed.setValue(float(config.mmoTTSSpeed.value))
 
-        self.spin_num_step.setValue(int(config.mmoTTSNumStep.value))
+        self.spin_num_step.setValue(int(config.mmoTTSNumStep.value or 32))
 
         self.spin_guidance.setValue(float(config.mmoTTSGuidanceScale.value))
 
@@ -3092,7 +3075,7 @@ class OmniVoiceInterface(ScrollArea):
 
         if hasattr(config, "mmoTTSMaxSpeakers"):
 
-            self.spin_max_speakers.setValue(int(config.mmoTTSMaxSpeakers.value))
+            self.spin_max_speakers.setValue(int(config.mmoTTSMaxSpeakers.value or 4))
 
         if hasattr(config, "mmoTTSDuckingMode"):
 
@@ -3603,18 +3586,32 @@ class OmniVoiceInterface(ScrollArea):
 
             dur_str = f" — {dur_val:.1f} giây" if dur_val > 0 else ""
 
+            pitch_val = prof_info.get("pitch_hz", 0.0)
+            rate_val = prof_info.get("speech_rate_sps", 0.0)
+            acoustic_tags = []
+            if pitch_val and pitch_val > 40:
+                acoustic_tags.append(f"~{int(round(pitch_val))} Hz")
+            if rate_val and rate_val > 0.5:
+                acoustic_tags.append(f"{rate_val:.1f} từ/s")
+            if acoustic_tags:
+                dur_str += f" · {' · '.join(acoustic_tags)}"
+
             item_cnt = QTableWidgetItem(f"{data['count']} câu{dur_str}")
 
             item_cnt.setFlags(item_cnt.flags() & ~Qt.ItemIsEditable)
 
             self.casting_table.setItem(row, 2, item_cnt)
 
-            # Cột 3: Giọng Đọc (22 giọng AI tiếng Việt chất lượng cao)
+            # Cột 3: Giọng Đọc (Giọng AI tiếng Việt riêng biệt chất lượng cao)
             combo_voice = ComboBox(self.casting_table)
-            catalog_list = list(VIETNAMESE_VOICE_CATALOG.keys())
+            distinct_pool = build_distinct_voice_pool()
+            catalog_list = list(distinct_pool.keys()) if distinct_pool else list(VIETNAMESE_VOICE_CATALOG.keys())
             combo_voice.addItems(catalog_list)
             curr_preset = prof_info.get("preset_name") or prof_info.get("voice_preset") or ""
-            if curr_preset in VIETNAMESE_VOICE_CATALOG:
+            if curr_preset in catalog_list:
+                combo_voice.setCurrentText(curr_preset)
+            elif curr_preset in VIETNAMESE_VOICE_CATALOG:
+                combo_voice.addItem(curr_preset)
                 combo_voice.setCurrentText(curr_preset)
             else:
                 default_preset = catalog_list[row % len(catalog_list)]
@@ -4613,7 +4610,7 @@ class OmniVoiceInterface(ScrollArea):
             if raw_f0 and isinstance(raw_f0, (int, float)) and raw_f0 > 40:
                 f0_hz = int(round(float(raw_f0)))
                 pitch_tag = "giọng trầm" if f0_hz < 165 else ("giọng cao" if f0_hz > 215 else "giọng trung")
-                f0_display = f"Cao độ: ~{f0_hz} Hz ({pitch_tag})"
+                f0_display = f"Cao độ: ~{f0_hz} Hz · {pitch_tag}"
             else:
                 f0_display = "Cao độ: Tự nhiên"
 
@@ -5006,8 +5003,9 @@ class OmniVoiceInterface(ScrollArea):
         safe_spk = re.sub(r'[^\w\-_\.]', '_', spk_name)
 
         import hashlib
-        line_hash = hashlib.md5(first_line.encode("utf-8")).hexdigest()[:8]
-        out_wav = os.path.join(out_dir, f"audition_{safe_spk}_{line_hash}.wav")
+        audition_sig = f"{safe_spk}|{method}|{voice_ins}|{ref_audio}|{first_line}"
+        content_hash = hashlib.md5(audition_sig.encode("utf-8")).hexdigest()[:10]
+        out_wav = os.path.join(out_dir, f"audition_{safe_spk}_{content_hash}.wav")
 
         if os.path.exists(out_wav) and os.path.getsize(out_wav) > 1000:
             if btn is not None and self._is_valid_widget(btn):
@@ -5088,7 +5086,7 @@ class OmniVoiceInterface(ScrollArea):
         vis = not self.adv_content_widget.isVisible()
         self.adv_content_widget.setVisible(vis)
         if hasattr(self, "btn_toggle_adv"):
-            self.btn_toggle_adv.setIcon(FluentIcon.CHEVRON_DOWN if vis else FluentIcon.CHEVRON_RIGHT)
+            self.btn_toggle_adv.setIcon(FluentIcon.CHEVRON_DOWN_MED if vis else FluentIcon.CHEVRON_RIGHT_MED)
 
     def _reset_advanced_parameters_to_default(self):
         """Khôi phục các tham số kỹ thuật khuếch tán và chia đoạn về giá trị mặc định tối ưu."""
@@ -5326,6 +5324,29 @@ class OmniVoiceInterface(ScrollArea):
                     "index": 0,
                     "message": "Chưa chọn giọng đọc đồng nhất hợp lệ từ kho mẫu tiếng Việt.",
                 })
+        elif len(self.speaker_profiles) > 1:
+            # Kiểm tra trùng lặp giọng và nhân vật cần kiểm tra lại
+            used_presets_map = {}
+            for spk_name, prof in self.speaker_profiles.items():
+                p_name = getattr(prof, "preset_name", "") or (prof.get("preset_name") if isinstance(prof, dict) else "")
+                method = getattr(prof, "method", "") or (prof.get("method") if isinstance(prof, dict) else "")
+                if method == "preset" and p_name:
+                    used_presets_map.setdefault(p_name, []).append(spk_name)
+                status = getattr(prof, "status", "") or (prof.get("status") if isinstance(prof, dict) else "")
+                if status == "review_needed":
+                    issues.append({
+                        "severity": "warning",
+                        "index": 0,
+                        "message": f"Nhân vật '{spk_name}' cần kiểm tra lại độ tách biệt hoặc cấu hình giọng.",
+                    })
+
+            for p_name, spk_list in used_presets_map.items():
+                if len(spk_list) > 1:
+                    issues.append({
+                        "severity": "warning",
+                        "index": 0,
+                        "message": f"Các nhân vật {', '.join(spk_list)} đang dùng chung giọng '{p_name}'. Hãy chọn các giọng khác nhau để tránh trùng lặp.",
+                    })
 
         for blk in self.subtitle_blocks:
 
@@ -5587,25 +5608,25 @@ class OmniVoiceInterface(ScrollArea):
 
             "instruct": self.edit_instruct_preview.text().strip() or None,
 
-            "num_step": int(self.spin_num_step.value()),
+            "num_step": int(self.spin_num_step.value() or 32) if hasattr(self, "spin_num_step") else 32,
 
-            "guidance_scale": float(self.spin_guidance.value()),
+            "guidance_scale": float(self.spin_guidance.value() or 2.0) if hasattr(self, "spin_guidance") else 2.0,
 
-            "t_shift": float(self.spin_t_shift.value()),
+            "t_shift": float(self.spin_t_shift.value() or 0.1) if hasattr(self, "spin_t_shift") else 0.1,
 
-            "layer_penalty_factor": float(self.spin_layer_penalty.value()),
+            "layer_penalty_factor": float(self.spin_layer_penalty.value() or 5.0) if hasattr(self, "spin_layer_penalty") else 5.0,
 
-            "position_temperature": float(self.spin_pos_temp.value()),
+            "position_temperature": float(self.spin_pos_temp.value() or 2.0) if hasattr(self, "spin_pos_temp") else 2.0,
 
-            "class_temperature": float(self.spin_cls_temp.value()),
+            "class_temperature": float(self.spin_cls_temp.value() or 2.0) if hasattr(self, "spin_cls_temp") else 2.0,
 
-            "audio_chunk_duration": float(self.spin_chunk_dur.value()),
+            "audio_chunk_duration": float(self.spin_chunk_dur.value() or 4.0) if hasattr(self, "spin_chunk_dur") else 4.0,
 
-            "audio_chunk_threshold": float(self.spin_chunk_thresh.value()),
+            "audio_chunk_threshold": float(self.spin_chunk_thresh.value() or 2.0) if hasattr(self, "spin_chunk_thresh") else 2.0,
 
-            "pad_duration": float(self.spin_pad_dur.value()),
+            "pad_duration": float(self.spin_pad_dur.value() or 0.3) if hasattr(self, "spin_pad_dur") else 0.3,
 
-            "fade_duration": float(self.spin_fade_dur.value()),
+            "fade_duration": float(self.spin_fade_dur.value() or 0.05) if hasattr(self, "spin_fade_dur") else 0.05,
 
             "denoise": self.chk_denoise.isChecked(),
 
@@ -5620,8 +5641,8 @@ class OmniVoiceInterface(ScrollArea):
             "multi_speaker_mode": self._get_selected_multi_speaker_mode(),
 
             "max_speakers": (
-                int(self.spin_max_speakers.value())
-                if (hasattr(self, "combo_speaker_count_mode") and self.combo_speaker_count_mode.currentIndex() in (1, 2))
+                int(self.spin_max_speakers.value() or 4)
+                if (hasattr(self, "combo_speaker_count_mode") and self.combo_speaker_count_mode.currentIndex() in (1, 2) and hasattr(self, "spin_max_speakers"))
                 else None
             ),
 
@@ -5632,14 +5653,16 @@ class OmniVoiceInterface(ScrollArea):
             ),
 
             "exact_speakers": (
-                int(self.spin_max_speakers.value())
-                if (hasattr(self, "combo_speaker_count_mode") and self.combo_speaker_count_mode.currentIndex() == 1)
+                int(self.spin_max_speakers.value() or 4)
+                if (hasattr(self, "combo_speaker_count_mode") and self.combo_speaker_count_mode.currentIndex() == 1 and hasattr(self, "spin_max_speakers"))
                 else None
             ),
 
             "clustering_sensitivity": self._get_clustering_sensitivity_code(),
 
             "ai_vocal_separation": self.chk_ai_vocal_separation.isChecked() if hasattr(self, "chk_ai_vocal_separation") else True,
+
+            "enable_ai_vocal_separation": self.chk_ai_vocal_separation.isChecked() if hasattr(self, "chk_ai_vocal_separation") else True,
 
             "speaker_profiles": copy.deepcopy(self.speaker_profiles),
 
@@ -6864,7 +6887,7 @@ class OmniVoiceInterface(ScrollArea):
 
         self.btn_clear_video.setEnabled(has_video)
 
-        self.btn_auto_detect_speakers.setEnabled(has_subs)
+        self._update_identify_button_state()
 
         self.btn_preview_selected_row.setEnabled(has_subs and has_selection)
 

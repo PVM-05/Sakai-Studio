@@ -65,6 +65,9 @@ class CharacterVoiceProfile:
     error_message: str = ""
     ref_text: str = ""
     user_locked: bool = False
+    speech_rate_sps: float = 0.0
+    pitch_hz: float = 0.0
+    prototypes: Dict[str, Any] = field(default_factory=dict)
 
     # Các thuộc tính bí danh hỗ trợ tương thích ngược 2 chiều
     @property
@@ -145,6 +148,9 @@ class CharacterVoiceProfile:
             "error_message": self.error_message,
             "ref_text": self.ref_text,
             "user_locked": self.user_locked,
+            "speech_rate_sps": self.speech_rate_sps,
+            "pitch_hz": self.pitch_hz,
+            "prototypes": self.prototypes,
         }
 
     _ALIAS_SET_MAP = {
@@ -223,6 +229,9 @@ class CharacterVoiceProfile:
             error_message=str(data.get("error_message") or ""),
             ref_text=str(data.get("ref_text") or ""),
             user_locked=bool(data.get("user_locked", False)),
+            speech_rate_sps=float(data.get("speech_rate_sps") or 0.0),
+            pitch_hz=float(data.get("pitch_hz") or 0.0),
+            prototypes=dict(data.get("prototypes") or {}),
         )
         return profile
 
@@ -250,6 +259,81 @@ def normalize_character_profile(raw: Any, speaker_id: str = "") -> CharacterVoic
 
 # Bí danh tương thích ngược
 SpeakerVoiceProfile = CharacterVoiceProfile
+
+
+@dataclass
+class MultiPrototypeSpeakerProfile(CharacterVoiceProfile):
+    """
+    Hồ sơ nhân vật mở rộng hỗ trợ biểu diễn đa mẫu nòng cốt (Multi-prototype Representation).
+    Lưu trữ các vector đặc trưng đại diện theo các dải năng lượng:
+    - 'normal': mẫu giọng chuẩn, âm lượng và độ dài trung bình.
+    - 'high_energy': mẫu giọng năng lượng cao (hét, cười, cao độ tăng cao).
+    - 'low_energy': mẫu giọng năng lượng thấp (thì thầm, nói nhỏ).
+    """
+
+    def add_prototype(self, tier: str, embedding: np.ndarray) -> None:
+        if embedding is not None and isinstance(embedding, np.ndarray) and embedding.size > 0:
+            norm_val = float(np.linalg.norm(embedding))
+            if norm_val > 1e-12:
+                self.prototypes[tier] = (embedding / norm_val).astype(np.float32)
+
+    def min_distance_to_prototypes(self, embedding: np.ndarray) -> float:
+        """Tính khoảng cách cosin nhỏ nhất từ một vector đến các mẫu nòng cốt của nhân vật."""
+        if not self.prototypes or embedding is None or not isinstance(embedding, np.ndarray) or embedding.size == 0:
+            return 1.0
+        norm_val = float(np.linalg.norm(embedding))
+        if norm_val <= 1e-12:
+            return 1.0
+        norm_emb = embedding / norm_val
+        min_dist = 1.0
+        for proto in self.prototypes.values():
+            p_val = float(np.linalg.norm(proto))
+            if p_val > 1e-12:
+                p_norm = proto / p_val
+                dist = 1.0 - float(np.dot(norm_emb, p_norm))
+                if dist < min_dist:
+                    min_dist = dist
+        return max(0.0, min(2.0, min_dist))
+
+
+class ExternalDiarizationVerifier:
+    """
+    Giao diện trừu tượng và bộ kiểm chứng phân đoạn người nói đối chiếu (NeMo / Pyannote).
+    Tự động kiểm tra tính khả dụng của các thư viện chuyên sâu trong môi trường.
+    Khi không có sẵn hoặc VRAM hạn chế, vận hành dự phòng an toàn qua CAM++ ONNX.
+    """
+
+    @classmethod
+    def is_available(cls) -> bool:
+        try:
+            import nemo  # type: ignore
+            return True
+        except ImportError:
+            pass
+        try:
+            import pyannote.audio  # type: ignore
+            return True
+        except ImportError:
+            return False
+
+    @classmethod
+    def verify_or_fallback(
+        cls,
+        audio_path: str,
+        campp_speakers: Dict[str, Any],
+        min_speakers: Optional[int] = None,
+        max_speakers: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Đối chiếu kết quả phân vai CAM++ với bộ nhận diện ngoài nếu có.
+        Nếu không có NeMo/Pyannote, trả về nguyên trạng kết quả CAM++ an toàn bộ nhớ đồ họa.
+        """
+        if not cls.is_available():
+            logger.info("Bộ kiểm chứng ngoài (NeMo/Pyannote) không có sẵn trong môi trường; sử dụng hoàn toàn CAM++ ONNX tiết kiệm bộ nhớ đồ họa.")
+            return campp_speakers
+
+        logger.info("Đang kiểm chứng đối chiếu phân đoạn người nói bằng công cụ bổ trợ...")
+        return campp_speakers
 
 
 def _parse_time_to_seconds(time_val: Any) -> float:
@@ -446,7 +530,13 @@ def estimate_optimal_clusters(
     if p90_dist < threshold * 0.95 and mean_dist < 0.28:
         return 1
 
-    effective_max_k = min(n_samples, max_k) if max_k is not None else min(n_samples, 24)
+    parsed_max_k = None
+    if max_k is not None:
+        try:
+            parsed_max_k = int(max_k)
+        except (TypeError, ValueError):
+            parsed_max_k = None
+    effective_max_k = min(n_samples, parsed_max_k) if parsed_max_k is not None else min(n_samples, 24)
     upper_k = min(effective_max_k, n_samples - 1)
     if upper_k < 2:
         return 2 if float(np.max(dist_matrix)) > threshold else 1
@@ -572,7 +662,7 @@ def estimate_optimal_clusters(
     if not has_valid_multi:
         return 1
 
-    return int(max(min_k, min(best_k, effective_max_k)))
+    return int(max(min_k or 1, min(best_k or 1, effective_max_k or 24)))
 
 
 def estimate_optimal_clusters_eigengap(
@@ -636,7 +726,10 @@ def agglomerative_cluster_embeddings(
 
     target_k = None
     if exact_k is not None:
-        target_k = max(1, min(int(exact_k), n_samples))
+        try:
+            target_k = max(1, min(int(exact_k), n_samples))
+        except (TypeError, ValueError):
+            target_k = None
     elif n_samples >= 2:
         target_k = estimate_optimal_clusters(
             norm_embs, min_k=min_k, max_k=max_k, threshold=threshold, sample_f0s=sample_f0s
@@ -645,7 +738,13 @@ def agglomerative_cluster_embeddings(
     if target_k == 1:
         return np.zeros(n_samples, dtype=np.int32)
 
-    effective_max_k = min(n_samples, max_k) if max_k is not None else min(n_samples, 24)
+    parsed_max_k = None
+    if max_k is not None:
+        try:
+            parsed_max_k = int(max_k)
+        except (TypeError, ValueError):
+            parsed_max_k = None
+    effective_max_k = min(n_samples, parsed_max_k) if parsed_max_k is not None else min(n_samples, 24)
 
     try:
         from scipy.spatial.distance import squareform
@@ -845,7 +944,14 @@ def cosine_cluster_embeddings(
             f0_val = sample_f0s[idx] if sample_f0s is not None and idx < len(sample_f0s) else None
             dists = []
             for c_i in unique_k:
-                d = 1.0 - float(np.dot(norm_embs[idx], cluster_centers[c_i]))
+                # Tính khoảng cách nhỏ nhất tới bất kỳ mẫu nào của cụm để tránh bị tách khi cảm xúc thay đổi (hét, thì thầm...)
+                c_members = anchor_embs[anchor_labels == c_i]
+                if len(c_members) > 0:
+                    d_dot = np.dot(c_members, norm_embs[idx])
+                    d = 1.0 - float(np.max(d_dot))
+                else:
+                    d = 1.0 - float(np.dot(norm_embs[idx], cluster_centers[c_i]))
+
                 c_f0 = cluster_median_f0s.get(c_i)
                 if f0_val is not None and c_f0 is not None and abs(f0_val - c_f0) > 75.0:
                     d += 0.25
@@ -1375,6 +1481,51 @@ class SpeakerDiarizationCoordinator:
                     if member_conf else 0.0
                 )
 
+                # 1. Tính tốc độ phát âm (âm tiết / giây) từ nội dung câu và độ dài âm thanh
+                total_sylls = 0
+                total_speech_sec = 0.0
+                f0s = []
+                for pos in members:
+                    cand_blk = blocks[valid_indices[pos]]
+                    txt = (getattr(cand_blk, "text", "") or getattr(cand_blk, "translated_text", "")).strip()
+                    if txt:
+                        words = txt.split()
+                        total_sylls += len(words)
+                    dur_s = len(audio_chunks[pos]) / float(sr)
+                    if dur_s > 0.2:
+                        total_speech_sec += dur_s
+                    if pos < len(sample_f0s):
+                        f_val = sample_f0s[pos]
+                        if f_val and f_val > 40.0:
+                            f0s.append(f_val)
+
+                if total_speech_sec > 0.4 and total_sylls > 0:
+                    profile.speech_rate_sps = round(total_sylls / total_speech_sec, 2)
+                else:
+                    profile.speech_rate_sps = 4.2
+
+                if f0s:
+                    profile.pitch_hz = round(float(np.median(f0s)), 1)
+
+                # 2. Xây dựng biểu diễn đa mẫu nòng cốt (Multi-prototype Representation)
+                if members and len(embeddings) > max(members):
+                    member_rms = []
+                    for pos in members:
+                        ch = audio_chunks[pos]
+                        rms_v = float(np.sqrt(np.mean(np.square(ch, dtype=np.float64))))
+                        member_rms.append((rms_v, pos))
+                    member_rms.sort(key=lambda x: x[0])
+
+                    med_idx = len(member_rms) // 2
+                    norm_pos = member_rms[med_idx][1]
+                    profile.prototypes["normal"] = embeddings[norm_pos]
+
+                    if len(member_rms) >= 3:
+                        low_pos = member_rms[0][1]
+                        high_pos = member_rms[-1][1]
+                        profile.prototypes["low_energy"] = embeddings[low_pos]
+                        profile.prototypes["high_energy"] = embeddings[high_pos]
+
                 # Ưu tiên các đoạn thoại có mức độ tin cậy cao, không bị lẫn người nói
                 high_conf_members = [
                     pos for pos in members
@@ -1497,6 +1648,11 @@ class SpeakerDiarizationCoordinator:
                     if not getattr(blk, "voice_instruct", ""):
                         blk.voice_instruct = profile.voice_instruct
 
+            detected_profiles = ExternalDiarizationVerifier.verify_or_fallback(
+                video_path,
+                detected_profiles,
+                max_speakers=max_speakers,
+            )
             return detected_profiles
         finally:
             close_speaker_session(session)

@@ -210,14 +210,29 @@ def create_speaker_session(
     available = set(ort.get_available_providers())
     options = ort.SessionOptions()
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    options.log_severity_level = int(os.environ.get('ORT_LOG_SEVERITY_LEVEL', '3'))
+    try:
+        options.log_severity_level = int(os.environ.get('ORT_LOG_SEVERITY_LEVEL', '3') or '3')
+    except (TypeError, ValueError):
+        options.log_severity_level = 3
     providers = []
     if prefer_cuda and "CUDAExecutionProvider" in available:
+        dev_id = 0
+        if device_id is not None:
+            try:
+                dev_id = int(device_id)
+            except (TypeError, ValueError):
+                dev_id = 0
+        mem_limit_mb = 768
+        if gpu_mem_limit_mb is not None:
+            try:
+                mem_limit_mb = int(gpu_mem_limit_mb)
+            except (TypeError, ValueError):
+                mem_limit_mb = 768
         providers.append((
             "CUDAExecutionProvider",
             {
-                "device_id": int(device_id),
-                "gpu_mem_limit": int(gpu_mem_limit_mb) * 1024 * 1024,
+                "device_id": dev_id,
+                "gpu_mem_limit": mem_limit_mb * 1024 * 1024,
                 "arena_extend_strategy": "kSameAsRequested",
                 "cudnn_conv_algo_search": "DEFAULT",
                 "do_copy_in_default_stream": True,

@@ -2564,8 +2564,8 @@ def test_voice_match_accent_and_weights():
     preset_bac = VIETNAMESE_VOICE_CATALOG["Nam Thanh Niên Chuẩn - Thuyết Minh Và Tin Tức"]
     score_bac, desc_bac = VoiceRecommendationEngine.calculate_voice_match(p_male, preset_bac)
 
-    # Giới tính (40) + Cao độ (30) + Nhóm tuổi (20) = 90
-    assert score_bac == 90
+    # 5 tiêu chí: Giới tính (25) + Âm sắc & tuổi (22) + Cao độ (20) + Accent lệch nhẹ (5) + Tốc độ chuẩn (12) = 84
+    assert score_bac == 84
     assert "giới tính phù hợp" in desc_bac
     assert "cao độ phù hợp" in desc_bac
     assert "nhóm tuổi phù hợp" in desc_bac
@@ -2678,18 +2678,197 @@ def test_build_distinct_anchors_campp_cosine_constraint(tmp_path):
     assert call_count[0] >= 3
 
 
-def test_engine_init_with_none_speaker_counts():
-    """Xác minh TTSEngine khởi tạo an toàn khi nhận max_speakers=None và exact_speakers=None từ UI."""
+def test_engine_init_with_none_speaker_counts(tmp_path):
+    """Xác minh TTSEngine khởi tạo an toàn khi nhận max_speakers=None, exact_speakers=None, num_step=None, denoise=None."""
     from src.ai_engines.tts_engine import TTSEngine
 
     engine = TTSEngine(
         max_speakers=None,
         exact_speakers=None,
+        num_step=None,
         speaker_count_mode="auto",
+        denoise=None,
+        resume_cache_dir=str(tmp_path),
     )
     assert engine.max_speakers is None
     assert engine.exact_speakers is None
+    assert engine.num_step == 32
     assert engine.speaker_count_mode == "auto"
+
+    # Đảm bảo _compute_block_cache_path không bao giờ bị lỗi int() argument must be a string... not 'NoneType'
+    cache_path = engine._compute_block_cache_path(
+        index=0,
+        text="Xin chào",
+        speaker="Người nói 1",
+        ref_path="",
+        instruct="male, young adult",
+        target_dur=2.0,
+    )
+    assert cache_path.endswith(".wav")
+
+
+def test_distinct_anchors_runs_for_diarized_profiles_with_preset():
+    """Xác minh mỏ neo CAM++ vẫn được kích hoạt cho nhân vật preset dù có source_audio_path từ video."""
+    from src.ai_engines.tts_engine import TTSEngine
+    from src.ai_engines.translator import SubtitleBlock
+
+    engine = TTSEngine(auto_extract_ref=False, multi_speaker_mode="auto_video_cluster")
+    engine.speaker_profiles = {
+        "Người nói 1": {
+            "method": "preset",
+            "preset_name": "Nam Trầm Ấm",
+            "source_audio_path": "temp/test_voice1.wav",
+        },
+        "Người nói 2": {
+            "method": "preset",
+            "preset_name": "Nữ Dịu Dàng",
+            "source_audio_path": "temp/test_voice2.wav",
+        },
+    }
+    blocks = [
+        SubtitleBlock(1, "00:00:01,000", "00:00:03,000", "Chào bạn", speaker="Người nói 1"),
+        SubtitleBlock(2, "00:00:04,000", "00:00:06,000", "Chào anh", speaker="Người nói 2"),
+    ]
+
+    called_spks = []
+    def fake_build_distinct(spks):
+        called_spks.extend(spks)
+        for s in spks:
+            engine._speaker_prompt_cache[f"character_{s}"] = "fake_prompt"
+            engine._speaker_prompt_cache[engine._compute_character_prompt_key(s)] = "fake_prompt"
+        return {}
+
+    engine.build_distinct_anchors = fake_build_distinct
+    engine._build_anchor_prompt = lambda **kw: ("fake_prompt", "fake_wav")
+    engine._prepare_and_lock_character_prompts(blocks)
+
+    assert "Người nói 1" in called_spks
+    assert "Người nói 2" in called_spks
+
+
+def test_global_voice_allocator_overflow_same_gender_without_illegal_words():
+    """Xác minh khi vượt quá số lượng preset, phân bổ đúng giới tính và không chèn từ khóa lạ."""
+    from src.ai_engines.tts_engine import GlobalVoiceAllocator, VIETNAMESE_VOICE_CATALOG
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    # Tạo 9 nhân vật nam (vượt quá 7 preset nam)
+    males = [
+        CharacterVoiceProfile(speaker_id=f"male_{i}", display_name=f"Nam {i}", gender="male")
+        for i in range(9)
+    ]
+    assigned = GlobalVoiceAllocator.allocate_distinct_voices(males)
+
+    # Tất cả phải được gán preset nam
+    for m in males:
+        preset_info = VIETNAMESE_VOICE_CATALOG.get(m.preset_name, {})
+        assert preset_info.get("gender") == "male"
+        # Instruct không được chứa các từ tùy biến ngoài từ điển
+        assert "slightly higher pitch" not in m.voice_instruct
+        assert "deep chest resonance" not in m.voice_instruct
+
+    # Ít nhất 2 nhân vật bị trùng preset phải có trạng thái review_needed
+    review_needed_count = sum(1 for m in males if getattr(m, "status", "") == "review_needed")
+    assert review_needed_count >= 2
+
+
+def test_detect_speakers_from_srt_text_defaults_to_single_narrator_without_prefixes():
+    """Xác minh SRT thuần không có tiền tố [Tên]: mặc định toàn bộ thành Người nói 1."""
+    from src.ai_engines.tts_engine import TTSEngine
+    from src.ai_engines.translator import SubtitleBlock
+
+    engine = TTSEngine(auto_extract_ref=False)
+    blocks = [
+        SubtitleBlock(1, "00:00:01,000", "00:00:03,000", "Chào em, hôm nay em có khỏe không?"),
+        SubtitleBlock(2, "00:00:04,000", "00:00:06,000", "- Dạ, em vẫn khỏe ạ."),
+        SubtitleBlock(3, "00:00:07,000", "00:00:09,000", "Bác sĩ dặn chú ý giữ ấm nhé!"),
+    ]
+
+    profiles = engine.detect_speakers_from_srt_text(blocks)
+
+    # Không được đoán mò thành Người nói 2, Người nói 3...
+    assert len(profiles) == 1
+    assert "Người nói 1" in profiles
+    for b in blocks:
+        assert b.speaker == "Người nói 1"
+
+
+def test_audition_cache_key_varies_with_preset_and_method():
+    """Xác minh tên tệp nghe thử thay đổi khi thay đổi phương pháp hoặc preset."""
+    import hashlib, re
+
+    spk_name = "Người nói 1"
+    safe_spk = re.sub(r'[^\w\-_\.]', '_', spk_name)
+    first_line = "Xin chào các bạn"
+
+    sig1 = f"{safe_spk}|preset|male, young adult, moderate pitch||{first_line}"
+    h1 = hashlib.md5(sig1.encode("utf-8")).hexdigest()[:10]
+
+    sig2 = f"{safe_spk}|preset|female, young adult, moderate pitch||{first_line}"
+    h2 = hashlib.md5(sig2.encode("utf-8")).hexdigest()[:10]
+
+    sig3 = f"{safe_spk}|clone||/path/to/sample.wav|{first_line}"
+    h3 = hashlib.md5(sig3.encode("utf-8")).hexdigest()[:10]
+
+    assert h1 != h2
+    assert h1 != h3
+    assert h2 != h3
+
+
+def test_multi_prototype_speaker_profile():
+    from src.ai_engines.speaker_diarization import MultiPrototypeSpeakerProfile
+
+    prof = MultiPrototypeSpeakerProfile(
+        speaker_id="spk_multi",
+        display_name="Người nói 1",
+    )
+    v_norm = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    v_high = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    v_low = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+
+    prof.add_prototype("normal", v_norm)
+    prof.add_prototype("high_energy", v_high)
+    prof.add_prototype("low_energy", v_low)
+
+    assert "normal" in prof.prototypes
+    assert "high_energy" in prof.prototypes
+    assert "low_energy" in prof.prototypes
+
+    # Khoảng cách cosin tới chính vector mẫu bằng 0.0
+    dist_exact = prof.min_distance_to_prototypes(v_norm)
+    assert abs(dist_exact) < 1e-5
+
+    # Vector gần với high_energy hơn
+    v_query = np.array([0.1, 0.99, 0.0], dtype=np.float32)
+    dist_query = prof.min_distance_to_prototypes(v_query)
+    assert dist_query < 0.05
+
+
+def test_external_diarization_verifier_fallback():
+    from src.ai_engines.speaker_diarization import ExternalDiarizationVerifier
+
+    campp_result = {"Người nói 1": {"speaker_id": "spk_0"}}
+    res = ExternalDiarizationVerifier.verify_or_fallback("dummy_video.mp4", campp_result)
+    assert "Người nói 1" in res
+    assert res["Người nói 1"]["speaker_id"] == "spk_0"
+
+
+def test_character_voice_profile_acoustic_attributes():
+    from src.ai_engines.speaker_diarization import CharacterVoiceProfile
+
+    prof = CharacterVoiceProfile(
+        speaker_id="spk_ac",
+        display_name="Người nói thử nghiệm",
+        speech_rate_sps=4.5,
+        pitch_hz=145.2,
+    )
+    d = prof.to_dict()
+    assert d["speech_rate_sps"] == 4.5
+    assert d["pitch_hz"] == 145.2
+
+    restored = CharacterVoiceProfile.from_dict(d)
+    assert restored.speech_rate_sps == 4.5
+    assert restored.pitch_hz == 145.2
+
 
 
 
