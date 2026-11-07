@@ -536,53 +536,45 @@ def estimate_optimal_clusters(
             parsed_max_k = int(max_k)
         except (TypeError, ValueError):
             parsed_max_k = None
-    effective_max_k = min(n_samples, parsed_max_k) if parsed_max_k is not None else min(n_samples, 24)
+    effective_max_k = min(n_samples, parsed_max_k) if parsed_max_k is not None else min(n_samples, 12)
     upper_k = min(effective_max_k, n_samples - 1)
     if upper_k < 2:
         return 2 if float(np.max(dist_matrix)) > threshold else 1
 
-    # 1. Ứng viên từ AHC cắt tự nhiên theo ngưỡng khoảng cách
     from scipy.spatial.distance import squareform
     from scipy.cluster.hierarchy import linkage, fcluster
 
     condensed_dist = squareform(dist_matrix, checks=False)
     Z = linkage(condensed_dist, method="average")
-    ahc_labels = fcluster(Z, t=threshold, criterion="distance") - 1
+
+    # 1. Phân tích bước nhảy khoảng cách gom cụm trên cây phân cấp (Dendrogram Jump)
+    # Bước nhảy lớn nhất chỉ ra ranh giới tự nhiên giữa gom câu cùng người nói và gộp hai người nói khác nhau
+    k_jump = 1
+    best_jump_metric = -1.0
+    for k in range(2, upper_k + 1):
+        idx_k = n_samples - k - 1
+        idx_prev = n_samples - k
+        if 0 <= idx_k < len(Z) and 0 <= idx_prev < len(Z):
+            d_k = float(Z[idx_k, 2])
+            d_prev = float(Z[idx_prev, 2])
+            jump = d_prev - d_k
+            ratio = d_prev / max(d_k, 1e-4)
+            # Ưu tiên bước nhảy xảy ra khi cự ly nội cụm còn nằm trong phạm vi cùng người nói (< 0.52)
+            metric = (jump * ratio) if d_k < 0.52 else (jump * 0.5)
+            if metric > best_jump_metric and jump > 0.04:
+                best_jump_metric = metric
+                k_jump = k
+
+    # 2. Ứng viên từ AHC cắt theo ngưỡng khoảng cách thực tế (0.48 cho video thực tế)
+    ahc_labels = fcluster(Z, t=max(threshold, 0.48), criterion="distance") - 1
     k_ahc = int(len(np.unique(ahc_labels)))
     k_ahc = max(min_k, min(k_ahc, upper_k))
 
-    # 2. Ứng viên từ phân tích Eigengap trên ma trận Affinity sắc nét (Sharpened Affinity)
-    # Lũy thừa 4 để triệt tiêu các liên kết yếu xuyên cụm (< 0.50), khuếch đại liên kết nội cụm (> 0.80)
-    affinity = np.maximum(0.0, sim_matrix) ** 4.0
-    affinity[dist_matrix > threshold * 1.15] = 0.0
-    np.fill_diagonal(affinity, 1.0)
-    affinity = 0.5 * (affinity + affinity.T)
-
-    deg = np.sum(affinity, axis=1)
-    deg_inv_sqrt = 1.0 / np.sqrt(np.maximum(deg, 1e-12))
-    laplacian = np.eye(n_samples) - (deg_inv_sqrt[:, None] * affinity * deg_inv_sqrt[None, :])
-
-    k_eigen = 1
-    gaps: List[Tuple[int, float]] = []
-    sorted_gaps: List[Tuple[int, float]] = []
-    try:
-        eigenvals = np.linalg.eigvalsh(laplacian)
-        for k in range(1, upper_k + 1):
-            gap = float(eigenvals[k] - eigenvals[k - 1])
-            gaps.append((k, gap))
-        if gaps:
-            # Sắp xếp gap giảm dần để lấy các đỉnh trị riêng rõ nhất
-            sorted_gaps = sorted(gaps, key=lambda x: x[1], reverse=True)
-            k_eigen = sorted_gaps[0][0]
-    except Exception:
-        k_eigen = k_ahc
-
-    # 3. Tập hợp các ứng viên tiềm năng để đánh giá Silhouette
-    candidate_ks = set([1, k_ahc, k_eigen])
-    if sorted_gaps:
-        for k_g, _ in sorted_gaps[:2]:
-            if min_k <= k_g <= upper_k:
-                candidate_ks.add(k_g)
+    # 3. Quét toàn bộ dải K khả dĩ từ min_k đến upper_k để không bỏ sót số lượng nhân vật thực
+    candidate_ks = set(range(max(2, min_k), upper_k + 1))
+    candidate_ks.add(1)
+    candidate_ks.add(k_jump)
+    candidate_ks.add(k_ahc)
     candidate_list = sorted([k for k in candidate_ks if min_k <= k <= upper_k or k == 1])
 
     def _calc_mean_silhouette(lbls: np.ndarray) -> float:
@@ -611,7 +603,6 @@ def estimate_optimal_clusters(
             scores.append((b - a) / denom)
         return float(np.mean(scores)) if scores else 0.0
 
-    # Đánh giá chất lượng từng ứng viên K >= 2
     best_k = 1
     best_score = -1.0
     has_valid_multi = False
@@ -622,8 +613,7 @@ def estimate_optimal_clusters(
         try:
             cand_labels = fcluster(Z, t=k, criterion="maxclust") - 1
             sil = _calc_mean_silhouette(cand_labels)
-            if sil < 0.15:
-                # Phân tách quá mờ nhạt, có thể là 1 người nói bị cắt gượng ép
+            if sil < 0.08:
                 continue
 
             # Kiểm tra khoảng cách giữa các tâm cụm ứng viên
@@ -640,18 +630,14 @@ def estimate_optimal_clusters(
                     if d_c < min_c_dist:
                         min_c_dist = d_c
 
-            if min_c_dist < 0.22:
-                # Có ít nhất 2 cụm quá sát nhau -> Không đủ tin cậy để tách thành 2 người nói
+            if min_c_dist < 0.20:
                 continue
 
-            # Điểm tổng hợp cho ứng viên K
-            gap_weight = 0.0
-            for k_g, g_val in gaps:
-                if k_g == k:
-                    gap_weight = max(0.0, g_val)
-                    break
+            jump_bonus = 0.25 if k == k_jump else (0.10 if k == k_ahc else 0.0)
+            # Phạt độ phức tạp mô hình để chống phân mảnh quá mức thành 20-24 người nói
+            penalty = 0.03 * (k - 1)
+            comp_score = 0.60 * sil + jump_bonus - penalty
 
-            comp_score = 0.60 * sil + 0.25 * gap_weight + (0.15 if k == k_ahc else 0.0)
             has_valid_multi = True
             if comp_score > best_score:
                 best_score = comp_score
@@ -662,7 +648,7 @@ def estimate_optimal_clusters(
     if not has_valid_multi:
         return 1
 
-    return int(max(min_k or 1, min(best_k or 1, effective_max_k or 24)))
+    return int(max(min_k or 1, min(best_k or 1, upper_k)))
 
 
 def estimate_optimal_clusters_eigengap(
@@ -710,7 +696,8 @@ def agglomerative_cluster_embeddings(
     dist_matrix = np.maximum(0.0, 1.0 - sim_matrix)
     np.fill_diagonal(dist_matrix, 0.0)
 
-    # Hiệu chỉnh khoảng cách bằng F0 nếu có
+    # Hiệu chỉnh khoảng cách bằng F0: CHỈ áp dụng khi đối lập giới tính rõ rệt
+    # Tuyệt đối không phạt chênh lệch F0 giữa các câu thoại cùng giới (tiếng Việt có thanh điệu biến thiên 60-80 Hz)
     if sample_f0s is not None and len(sample_f0s) == n_samples:
         for i in range(n_samples):
             f0_i = sample_f0s[i]
@@ -720,7 +707,7 @@ def agglomerative_cluster_embeddings(
                 f0_j = sample_f0s[j]
                 if f0_j is None or f0_j <= 0.0:
                     continue
-                if abs(f0_i - f0_j) > 75.0:
+                if (f0_i < 155.0 and f0_j > 190.0) or (f0_j < 155.0 and f0_i > 190.0):
                     dist_matrix[i, j] = min(1.0, dist_matrix[i, j] + 0.25)
                     dist_matrix[j, i] = dist_matrix[i, j]
 
@@ -744,7 +731,7 @@ def agglomerative_cluster_embeddings(
             parsed_max_k = int(max_k)
         except (TypeError, ValueError):
             parsed_max_k = None
-    effective_max_k = min(n_samples, parsed_max_k) if parsed_max_k is not None else min(n_samples, 24)
+    effective_max_k = min(n_samples, parsed_max_k) if parsed_max_k is not None else min(n_samples, 12)
 
     try:
         from scipy.spatial.distance import squareform
@@ -816,13 +803,16 @@ def agglomerative_cluster_embeddings(
                     if sample_f0s is not None:
                         f0s_i = [sample_f0s[m] for m in clusters[i] if sample_f0s[m] is not None]
                         f0s_j = [sample_f0s[m] for m in clusters[j] if sample_f0s[m] is not None]
-                        if f0s_i and f0s_j and abs(float(np.median(f0s_i)) - float(np.median(f0s_j))) > 75.0:
-                            continue
+                        if f0s_i and f0s_j:
+                            med_i = float(np.median(f0s_i))
+                            med_j = float(np.median(f0s_j))
+                            if (med_i < 145.0 and med_j > 200.0) or (med_j < 145.0 and med_i > 200.0):
+                                continue
                     if d < min_dist:
                         min_dist = d
                         c_pair = (i, j)
 
-            if c_pair[0] >= 0 and min_dist < 0.28:
+            if c_pair[0] >= 0 and min_dist < 0.38:
                 clusters[c_pair[0]].extend(clusters[c_pair[1]])
                 clusters.pop(c_pair[1])
                 merged_any = True

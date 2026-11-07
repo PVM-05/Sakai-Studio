@@ -1640,12 +1640,15 @@ class TTSEngine:
             return None, None
 
         best, best_score = None, -1.0
+        best_fallback, best_fallback_score = None, -1.0
         base = (zlib.crc32(tag.encode("utf-8")) + seed_offset) % 100000
 
         lowered_ins = target_ins.lower()
         is_female_target = any(w in lowered_ins for w in ("female", "nữ", "woman", "girl"))
         is_child_target = any(w in lowered_ins for w in ("child", "trẻ em", "kid", "boy"))
         is_male_target = any(w in lowered_ins for w in ("male", "nam", "man")) and not is_female_target
+        has_low_pitch = "low pitch" in lowered_ins or "very low pitch" in lowered_ins
+        has_high_pitch = "high pitch" in lowered_ins or "very high pitch" in lowered_ins
 
         for t in range(tries):
             seed = base + t * 7919
@@ -1676,22 +1679,27 @@ class TTSEngine:
                 if not ok:
                     continue
                 score = float(np.sqrt(np.mean(arr ** 2))) * min(len(arr) / float(self.sample_rate) / 5.0, 1.0)
+                if score > best_fallback_score:
+                    best_fallback, best_fallback_score = arr, score
+
                 # Kiểm tra F0 đối chiếu với giới tính yêu cầu trong instruct để chống lẫn giọng
                 c_feat = self._extract_acoustic_features(arr, self.sample_rate)
                 if c_feat is not None:
                     sample_f0 = float(c_feat[0] * 200.0)
                     if is_female_target:
-                        if sample_f0 < 165.0:
+                        min_female_f0 = 140.0 if has_low_pitch else 155.0
+                        if sample_f0 < min_female_f0:
                             continue
-                        elif sample_f0 >= 185.0:
+                        elif sample_f0 >= 180.0:
                             score *= 1.30
                     elif is_child_target:
-                        if sample_f0 < 220.0:
+                        if sample_f0 < 210.0:
                             continue
-                        elif sample_f0 >= 240.0:
+                        elif sample_f0 >= 235.0:
                             score *= 1.40
                     elif is_male_target:
-                        if sample_f0 > 185.0:
+                        max_male_f0 = 195.0 if has_high_pitch else 185.0
+                        if sample_f0 > max_male_f0:
                             continue
                         elif sample_f0 <= 165.0:
                             score *= 1.25
@@ -1701,8 +1709,19 @@ class TTSEngine:
                 self.log(f"Lỗi khi thử tạo mẫu mỏ neo lần {t + 1}: {e}")
 
         if best is None:
-            self.log(f"Không thể tạo được mẫu mỏ neo đạt chuẩn chất lượng cho {key}.")
-            return None, None
+            if best_fallback is not None:
+                self.log(f"Cảnh báo: Mẫu mỏ neo cho {key} sử dụng bản dự phòng chất lượng tốt nhất và đánh dấu cần kiểm tra.")
+                best = best_fallback
+                spk_clean = key.replace("char_", "")
+                if spk_clean in self.speaker_profiles:
+                    sp_p = self.speaker_profiles[spk_clean]
+                    if isinstance(sp_p, dict):
+                        sp_p["status"] = "review_needed"
+                    elif hasattr(sp_p, "status"):
+                        sp_p.status = "review_needed"
+            else:
+                self.log(f"Không thể tạo được mẫu mỏ neo đạt chuẩn chất lượng cho {key}.")
+                return None, None
 
         sf.write(wav_path, best, self.sample_rate)
         prompt = self.model.create_voice_clone_prompt(
@@ -2301,7 +2320,7 @@ class TTSEngine:
         if not blocks:
             return {}
 
-        effective_max_spk = int(max_speakers) if max_speakers is not None else 4
+        effective_max_spk = int(max_speakers) if max_speakers is not None else 16
 
         prefix_re = re.compile(
             r"^\s*(?:\[([^\]\r\n]{1,25})\]\s*[:：]?|\(([^)\r\n]{1,25})\)\s*[:：]|([A-Za-zÀ-ỹ0-9_ ]{1,25})\s*[:：])\s*(.+)$"
@@ -2351,16 +2370,31 @@ class TTSEngine:
         user_fixed_speakers = (getattr(self, "exact_speakers", None) is not None and getattr(self, "exact_speakers", None) > 1)
         allow_multi_inference = has_any_explicit_prefix or user_fixed_speakers
 
-        def _register_speaker(spk_id: str, instruct_str: str, desc_str: str, method: str = "preset", ref_path: str = "", user_locked: bool = False):
+        def _register_speaker(
+            spk_id: str,
+            instruct_str: str,
+            desc_str: str,
+            method: str = "preset",
+            ref_path: str = "",
+            user_locked: bool = False,
+            marker_matched: bool = False,
+            display_name: str = "",
+        ):
             if spk_id not in detected_profiles:
+                ins_low = (instruct_str or "").lower()
+                g = "female" if "female" in ins_low else ("male" if "male" in ins_low else "auto")
+                g_conf = 0.90 if marker_matched else 0.40
                 detected_profiles[spk_id] = {
                     "speaker_id": spk_id,
+                    "display_name": display_name or spk_id,
                     "description": desc_str,
+                    "gender": g,
+                    "gender_confidence": g_conf,
                     "pitch_hz": 0.0,
                     "ref_audio_path": ref_path,
                     "source_audio_path": ref_path,
                     "method": method,
-                    "status": "locked",
+                    "status": "locked" if marker_matched else "review_needed",
                     "user_locked": user_locked,
                     "instruct": instruct_str,
                     "voice_instruct": instruct_str,
@@ -2369,6 +2403,9 @@ class TTSEngine:
             detected_profiles[spk_id]["count"] += 1
 
         current_turn = 0
+        last_assigned_spk = ""
+        last_assigned_ins = ""
+        last_assigned_desc = ""
         for blk in blocks:
             raw_text = (blk.translated_text if blk.translated_text else blk.text).strip()
             lower_text = raw_text.lower()
@@ -2444,49 +2481,65 @@ class TTSEngine:
                     named_speaker_map[tag_key] = spk_id
                 assigned_spk = named_speaker_map[tag_key]
 
+                marker_matched = False
                 if any(w in tag_key for w in female_markers):
                     assigned_instruct = "female, young adult, moderate pitch"
                     assigned_desc = f"Giọng Nữ - {tag_name}" if tag_name else "Giọng Nữ"
+                    marker_matched = True
                 elif any(w in tag_key for w in male_markers):
                     assigned_instruct = "male, young adult, moderate pitch"
                     assigned_desc = f"Giọng Nam - {tag_name}" if tag_name else "Giọng Nam"
+                    marker_matched = True
                 elif any(w in tag_key for w in child_markers):
                     assigned_instruct = "child, high pitch"
                     assigned_desc = f"Giọng Trẻ Em - {tag_name}" if tag_name else "Giọng Trẻ Em"
+                    marker_matched = True
                 elif any(w in tag_key for w in elder_markers):
                     assigned_instruct = "male, elderly, very low pitch"
                     assigned_desc = f"Giọng Cao Tuổi - {tag_name}" if tag_name else "Giọng Cao Tuổi"
+                    marker_matched = True
 
+            marker_matched = False if "marker_matched" not in locals() else marker_matched
             if not assigned_spk:
                 if not allow_multi_inference:
                     assigned_spk = "Người nói 1"
                     assigned_instruct = "male, young adult, moderate pitch"
                     assigned_desc = "Giọng Người Dẫn Chuyện"
+                    marker_matched = True
                 else:
-                    # Phân tích dấu gạch đầu dòng hội thoại hoặc đại từ xưng hô trong câu
-                    words = set(re.findall(r"[a-zA-ZÀ-ỹ]+", lower_text))
-                    if raw_text.startswith("-") or raw_text.startswith("—") or "?" in raw_text:
-                        current_turn = (current_turn + 1) % min(max(2, effective_max_spk), 4)
-
-                    if words & child_markers and effective_max_spk >= 4:
-                        assigned_spk = f"Người nói {min(4, effective_max_spk)}"
-                        assigned_instruct = "child, high pitch"
-                        assigned_desc = "Giọng Trẻ Em / Cao"
-                    elif words & elder_markers and effective_max_spk >= 3:
-                        assigned_spk = f"Người nói {min(3, effective_max_spk)}"
-                        assigned_instruct = "male, middle-aged, low pitch"
-                        assigned_desc = "Giọng Trầm / Trung Niên"
-                    elif (words & female_markers) and not (words & male_markers):
-                        assigned_spk = "Người nói 2" if effective_max_spk >= 2 else "Người nói 1"
-                        assigned_instruct = "female, young adult, moderate pitch"
-                        assigned_desc = "Giọng Nữ Thanh Niên"
-                    elif (words & male_markers) and not (words & female_markers):
-                        assigned_spk = "Người nói 1"
-                        assigned_instruct = "male, young adult, moderate pitch"
-                        assigned_desc = "Giọng Nam Thanh Niên"
+                    is_dialogue_dash = raw_text.startswith("-") or raw_text.startswith("—")
+                    if not is_dialogue_dash and last_assigned_spk:
+                        assigned_spk = last_assigned_spk
+                        assigned_instruct = last_assigned_ins
+                        assigned_desc = last_assigned_desc
                     else:
-                        spk_idx = (current_turn % min(max(2, effective_max_spk), len(DEFAULT_SPEAKER_PRESETS))) + 1
-                        assigned_spk = f"Người nói {spk_idx}"
+                        words = set(re.findall(r"[a-zA-ZÀ-ỹ]+", lower_text))
+                        if is_dialogue_dash or "?" in raw_text:
+                            current_turn = (current_turn + 1) % min(max(2, effective_max_spk), 4)
+
+                        if words & child_markers and effective_max_spk >= 4:
+                            assigned_spk = f"Người nói {min(4, effective_max_spk)}"
+                            assigned_instruct = "child, high pitch"
+                            assigned_desc = "Giọng Trẻ Em / Cao"
+                            marker_matched = True
+                        elif words & elder_markers and effective_max_spk >= 3:
+                            assigned_spk = f"Người nói {min(3, effective_max_spk)}"
+                            assigned_instruct = "male, middle-aged, low pitch"
+                            assigned_desc = "Giọng Trầm / Trung Niên"
+                            marker_matched = True
+                        elif (words & female_markers) and not (words & male_markers):
+                            assigned_spk = "Người nói 2" if effective_max_spk >= 2 else "Người nói 1"
+                            assigned_instruct = "female, young adult, moderate pitch"
+                            assigned_desc = "Giọng Nữ Thanh Niên"
+                            marker_matched = True
+                        elif (words & male_markers) and not (words & female_markers):
+                            assigned_spk = "Người nói 1"
+                            assigned_instruct = "male, young adult, moderate pitch"
+                            assigned_desc = "Giọng Nam Thanh Niên"
+                            marker_matched = True
+                        else:
+                            spk_idx = (current_turn % min(max(2, effective_max_spk), len(DEFAULT_SPEAKER_PRESETS))) + 1
+                            assigned_spk = f"Người nói {spk_idx}"
 
             preset = DEFAULT_SPEAKER_PRESETS.get(assigned_spk, DEFAULT_SPEAKER_PRESETS["Người nói 1"])
             if not assigned_instruct:
@@ -2497,7 +2550,11 @@ class TTSEngine:
             blk.speaker = assigned_spk
             blk.voice_instruct = assigned_instruct
             blk.voice_ref_path = ""
-            _register_speaker(assigned_spk, assigned_instruct, assigned_desc)
+            disp_name = tag_name if has_valid_prefix and tag_name else assigned_spk
+            _register_speaker(assigned_spk, assigned_instruct, assigned_desc, marker_matched=marker_matched, display_name=disp_name)
+            last_assigned_spk = assigned_spk
+            last_assigned_ins = assigned_instruct
+            last_assigned_desc = assigned_desc
 
         # Phân bổ giọng đọc AI tiếng Việt không trùng lặp cho toàn bộ nhân vật
         GlobalVoiceAllocator.allocate_distinct_voices(list(detected_profiles.values()), subtitle_blocks=blocks)
@@ -3794,9 +3851,10 @@ class TTSEngine:
             if session is None:
                 return full_audio
 
+            is_single_mode = getattr(self, "multi_speaker_mode", "single") == "single"
             spk_groups: Dict[str, List[Dict[str, Any]]] = {}
             for rec in generated_blocks_audio:
-                s_key = rec.get("spk_key") or "default"
+                s_key = "single_unified_speaker" if is_single_mode else (rec.get("spk_key") or "default")
                 spk_groups.setdefault(s_key, []).append(rec)
 
             all_sims: List[float] = []
@@ -3837,8 +3895,10 @@ class TTSEngine:
                                 break
                             r_seed = 10007 + retry * 7919 + it["index"] * 101
 
+                            slot_dur = it.get("slot_dur", 0.0)
                             new_arr = self.generate_single(
                                 it["text"],
+                                target_duration=slot_dur if slot_dur > 0.4 else None,
                                 override_mode=it["mode"],
                                 override_prompt=it["prompt"],
                                 override_ref_audio=it["ref"],
@@ -3850,6 +3910,8 @@ class TTSEngine:
                                 trimmed = self._trim_silence_padding(new_arr, sample_rate=self.sample_rate)
                                 if len(trimmed) > 0:
                                     new_arr = trimmed
+                                if slot_dur > 0.4 and (len(new_arr) / float(self.sample_rate)) > slot_dur and getattr(self, "overflow_strategy", "") == "strict_sync":
+                                    new_arr = self._stretch_audio_wsola(new_arr, slot_dur, sample_rate=self.sample_rate)
                                 if len(new_arr) >= int(0.5 * self.sample_rate):
                                     new_emb = extract_speaker_embedding(session, new_arr, sample_rate=self.sample_rate)
                                     new_sim = float(np.dot(new_emb, centroid))
@@ -4379,15 +4441,17 @@ class AcousticClassifier:
             }
 
         # 2. Phân loại Giới tính cho Người lớn (Adult Gender Classification)
-        if median_f0 < 155.0:
+        # Giọng nam tiếng Việt có thể đạt 165 Hz khi nói câu hỏi hoặc thanh điệu cao (dấu sắc/ngã)
+        if median_f0 < 165.0:
             gender = "male"
-            gender_confidence = min(0.98, 0.80 + (155.0 - median_f0) / 100.0)
-        elif median_f0 > 190.0:
+            gender_confidence = min(0.98, 0.82 + (165.0 - median_f0) / 100.0)
+        elif median_f0 > 185.0:
             gender = "female"
-            gender_confidence = min(0.98, 0.80 + (median_f0 - 190.0) / 100.0)
+            gender_confidence = min(0.98, 0.82 + (median_f0 - 185.0) / 100.0)
         else:
-            # Vùng giao thoa F0 155 - 190 Hz:
-            if centroid > 1550.0 or low_high_ratio < 1.15:
+            # Vùng giao thoa F0 165 - 185 Hz:
+            # Chỉ coi là nữ khi thiếu hụt năng lượng lồng ngực (low_high_ratio <= 1.15) VÀ trọng tâm phổ thanh sáng (> 1650 Hz)
+            if centroid >= 1650.0 and low_high_ratio <= 1.15:
                 gender = "female"
             else:
                 gender = "male"

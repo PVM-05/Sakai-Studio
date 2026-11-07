@@ -356,6 +356,25 @@ MULTI_SPEAKER_MODE_ITEMS = [
 
 ]
 
+def _safe_int(val: Any, default: int = 0) -> int:
+    """Chuyển đổi số nguyên an toàn, tránh lỗi NoneType hoặc chuỗi sai định dạng."""
+    if val is None:
+        return default
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def safe_icon(icon_name: str, fallback: Any = None) -> Any:
+    """Trả về biểu tượng FluentIcon an toàn, tránh lỗi khi phiên bản qfluentwidgets thiếu thuộc tính."""
+    try:
+        from qfluentwidgets import FluentIcon
+        return getattr(FluentIcon, icon_name, fallback if fallback is not None else FluentIcon.INFO)
+    except Exception:
+        return fallback
+
+
 def is_valid_media_file(path: str) -> bool:
 
     """
@@ -549,39 +568,24 @@ class OmniVoiceTaskWorker(QThread):
         override_mode: Optional[str] = None,
 
         override_ref_text: str = "",
-
+        target_speaker: str = "",
         parent=None,
-
     ):
-
         super().__init__(parent=parent)
-
         self.task_type = task_type
-
         self.engine_params = engine_params
-
         self.text = text
-
         self.output_path = output_path
-
         self.video_path = video_path
-
         self.subtitle_blocks = subtitle_blocks or []
-
         self.original_volume = original_volume
-
         self.fixed_duration = fixed_duration
-
         self.override_ref_audio = override_ref_audio
-
         self.override_instruct = override_instruct
-
         self.prefer_cuda = prefer_cuda
-
         self.override_mode = override_mode
-
         self.override_ref_text = override_ref_text
-
+        self.target_speaker = target_speaker
         self._engine: Optional[TTSEngine] = None
 
         self._did_emit_result: bool = False
@@ -844,7 +848,7 @@ class OmniVoiceTaskWorker(QThread):
                     if self.task_type == "character_audition":
                         if self.override_instruct and not self.override_ref_audio:
                             # Tạo hoặc nạp mỏ neo để câu nghe thử đồng nhất chất giọng với luồng xuất video
-                            target_spk = getattr(self, "_current_audition_speaker", "") or "audition"
+                            target_spk = getattr(self, "target_speaker", "") or getattr(self, "_current_audition_speaker", "") or "audition"
                             a_prompt, a_wav = engine._build_anchor_prompt(
                                 key=f"char_{target_spk}",
                                 instruct=self.override_instruct,
@@ -3023,7 +3027,7 @@ class OmniVoiceInterface(ScrollArea):
 
         self.spin_speed.setValue(float(config.mmoTTSSpeed.value))
 
-        self.spin_num_step.setValue(int(config.mmoTTSNumStep.value or 32))
+        self.spin_num_step.setValue(_safe_int(getattr(config.mmoTTSNumStep, "value", 32), 32))
 
         self.spin_guidance.setValue(float(config.mmoTTSGuidanceScale.value))
 
@@ -3075,7 +3079,7 @@ class OmniVoiceInterface(ScrollArea):
 
         if hasattr(config, "mmoTTSMaxSpeakers"):
 
-            self.spin_max_speakers.setValue(int(config.mmoTTSMaxSpeakers.value or 4))
+            self.spin_max_speakers.setValue(_safe_int(getattr(config.mmoTTSMaxSpeakers, "value", 4), 4))
 
         if hasattr(config, "mmoTTSDuckingMode"):
 
@@ -3111,7 +3115,7 @@ class OmniVoiceInterface(ScrollArea):
 
         config.set(config.mmoTTSSpeed, float(self.spin_speed.value()))
 
-        config.set(config.mmoTTSNumStep, int(self.spin_num_step.value()))
+        config.set(config.mmoTTSNumStep, _safe_int(self.spin_num_step.value(), 32))
 
         config.set(config.mmoTTSGuidanceScale, float(self.spin_guidance.value()))
 
@@ -3137,7 +3141,7 @@ class OmniVoiceInterface(ScrollArea):
 
         if hasattr(config, "mmoTTSMaxSpeakers"):
 
-            config.set(config.mmoTTSMaxSpeakers, int(self.spin_max_speakers.value()))
+            config.set(config.mmoTTSMaxSpeakers, _safe_int(self.spin_max_speakers.value(), 4))
 
         if hasattr(config, "mmoTTSDuckingMode"):
 
@@ -3616,6 +3620,12 @@ class OmniVoiceInterface(ScrollArea):
             else:
                 default_preset = catalog_list[row % len(catalog_list)]
                 combo_voice.setCurrentText(default_preset)
+                if isinstance(prof_info, dict):
+                    prof_info["preset_name"] = default_preset
+                    prof_info["voice_instruct"] = VIETNAMESE_VOICE_CATALOG.get(default_preset, {}).get("instruct", "")
+                elif hasattr(prof_info, "preset_name"):
+                    prof_info.preset_name = default_preset
+                    prof_info.voice_instruct = VIETNAMESE_VOICE_CATALOG.get(default_preset, {}).get("instruct", "")
 
             combo_voice.currentTextChanged.connect(
                 lambda txt, s=spk_name: self._on_character_preset_changed(s, txt)
@@ -3669,43 +3679,9 @@ class OmniVoiceInterface(ScrollArea):
 
     def _on_character_preset_changed(self, spk_name: str, new_preset: str):
         """Đồng bộ khi người dùng đổi giọng đọc trên Bảng phân vai."""
-        if not new_preset:
+        if not new_preset or new_preset not in VIETNAMESE_VOICE_CATALOG:
             return
         prof = self.speaker_profiles.get(spk_name)
-        if new_preset == "Giọng gốc từ video":
-            orig_audio = ""
-            if isinstance(prof, dict):
-                orig_audio = prof.get("source_audio_path") or prof.get("_backup_source_audio") or prof.get("ref_audio_path") or ""
-                prof["method"] = "clone"
-                prof["source_audio_path"] = orig_audio
-                prof["ref_audio_path"] = orig_audio
-                prof["preset_name"] = ""
-                prof["voice_preset"] = ""
-                prof["voice_instruct"] = ""
-                prof["status"] = "locked"
-            elif hasattr(prof, "method"):
-                orig_audio = getattr(prof, "source_audio_path", "") or getattr(prof, "_backup_source_audio", "") or getattr(prof, "ref_audio_path", "") or ""
-                prof.method = "clone"
-                prof.source_audio_path = orig_audio
-                prof.preset_name = ""
-                prof.voice_instruct = ""
-                prof.status = "locked"
-            for blk in self.subtitle_blocks:
-                if getattr(blk, "speaker", "") == spk_name:
-                    blk.voice_ref_path = orig_audio
-                    blk.voice_instruct = ""
-                    blk.is_speaker_locked = True
-            self._populate_subtitle_table()
-            InfoBar.success(
-                "Đã chọn giọng gốc",
-                f"Nhân vật {spk_name} được khôi phục về mẫu giọng gốc từ video.",
-                parent=self,
-                duration=2500,
-            )
-            return
-
-        if new_preset not in VIETNAMESE_VOICE_CATALOG:
-            return
         ins = VIETNAMESE_VOICE_CATALOG[new_preset]["instruct"]
         if isinstance(prof, dict):
             if prof.get("source_audio_path"):
@@ -3726,11 +3702,13 @@ class OmniVoiceInterface(ScrollArea):
             prof.voice_instruct = ins
             prof.source_audio_path = ""
             prof.status = "locked"
+
         for blk in self.subtitle_blocks:
             if getattr(blk, "speaker", "") == spk_name:
                 blk.voice_instruct = ins
                 blk.voice_ref_path = ""
                 blk.is_speaker_locked = True
+
         self._populate_subtitle_table()
         InfoBar.success(
             "Đã cập nhật giọng đọc",
@@ -3739,16 +3717,8 @@ class OmniVoiceInterface(ScrollArea):
             duration=2500,
         )
 
-        for blk in self.subtitle_blocks:
-            if getattr(blk, "speaker", "") == spk_name:
-                blk.voice_instruct = ins
-                blk.voice_ref_path = ""
-                blk.is_speaker_locked = True
-
-        if hasattr(self, "tts_engine"):
+        if hasattr(self, "tts_engine") and self.tts_engine is not None:
             self.tts_engine.set_character_profiles(self.speaker_profiles)
-        if hasattr(self, "sub_table"):
-            self._populate_subtitle_table()
 
     def _on_character_method_changed(self, spk_name: str, chosen_method_text: str):
 
@@ -5026,6 +4996,7 @@ class OmniVoiceInterface(ScrollArea):
             override_ref_audio=ref_audio if method == "clone" else "",
             override_instruct=voice_ins if method == "preset" else "",
             override_ref_text=ref_text if method == "clone" else "",
+            target_speaker=spk_name,
         )
 
     def _audition_subtitle_row(self, row: int, btn: Any):
@@ -5325,6 +5296,12 @@ class OmniVoiceInterface(ScrollArea):
                     "message": "Chưa chọn giọng đọc đồng nhất hợp lệ từ kho mẫu tiếng Việt.",
                 })
         elif len(self.speaker_profiles) > 1:
+            if any(k in self.speaker_profiles for k in ("Chưa xác định", "Chưa phân vai", "unassigned")):
+                issues.append({
+                    "severity": "warning",
+                    "index": 0,
+                    "message": "Còn nhân vật 'Chưa xác định' trong danh sách phân vai. Vui lòng kiểm tra hoặc hoàn tất phân vai trước khi xuất.",
+                })
             # Kiểm tra trùng lặp giọng và nhân vật cần kiểm tra lại
             used_presets_map = {}
             for spk_name, prof in self.speaker_profiles.items():
@@ -5355,6 +5332,14 @@ class OmniVoiceInterface(ScrollArea):
             conf = getattr(blk, "confidence_level", "high")
 
             text = (blk.translated_text if blk.translated_text else blk.text or "").strip()
+
+            import re
+            if re.match(r"^Đoạn thoại\s*\d+$", text):
+                issues.append({
+                    "severity": "error",
+                    "index": blk.index,
+                    "message": f"Câu {blk.index}: Nội dung chưa được nhận diện lời thoại thực tế (đang là '{text}'). Vui lòng nạp tệp phụ đề hoặc trích xuất giọng nói bằng Whisper trước khi lồng tiếng.",
+                })
 
             if not text:
 
@@ -5608,25 +5593,25 @@ class OmniVoiceInterface(ScrollArea):
 
             "instruct": self.edit_instruct_preview.text().strip() or None,
 
-            "num_step": int(self.spin_num_step.value() or 32) if hasattr(self, "spin_num_step") else 32,
+            "num_step": _safe_int(self.spin_num_step.value() if hasattr(self, "spin_num_step") else 32, 32),
 
-            "guidance_scale": float(self.spin_guidance.value() or 2.0) if hasattr(self, "spin_guidance") else 2.0,
+            "guidance_scale": float(self.spin_guidance.value()) if hasattr(self, "spin_guidance") and self.spin_guidance.value() is not None else 2.0,
 
-            "t_shift": float(self.spin_t_shift.value() or 0.1) if hasattr(self, "spin_t_shift") else 0.1,
+            "t_shift": float(self.spin_t_shift.value()) if hasattr(self, "spin_t_shift") and self.spin_t_shift.value() is not None else 0.1,
 
-            "layer_penalty_factor": float(self.spin_layer_penalty.value() or 5.0) if hasattr(self, "spin_layer_penalty") else 5.0,
+            "layer_penalty_factor": float(self.spin_layer_penalty.value()) if hasattr(self, "spin_layer_penalty") and self.spin_layer_penalty.value() is not None else 5.0,
 
-            "position_temperature": float(self.spin_pos_temp.value() or 2.0) if hasattr(self, "spin_pos_temp") else 2.0,
+            "position_temperature": float(self.spin_pos_temp.value()) if hasattr(self, "spin_pos_temp") and self.spin_pos_temp.value() is not None else 2.0,
 
-            "class_temperature": float(self.spin_cls_temp.value() or 2.0) if hasattr(self, "spin_cls_temp") else 2.0,
+            "class_temperature": float(self.spin_cls_temp.value()) if hasattr(self, "spin_cls_temp") and self.spin_cls_temp.value() is not None else 0.0,
 
-            "audio_chunk_duration": float(self.spin_chunk_dur.value() or 4.0) if hasattr(self, "spin_chunk_dur") else 4.0,
+            "audio_chunk_duration": float(self.spin_chunk_dur.value()) if hasattr(self, "spin_chunk_dur") and self.spin_chunk_dur.value() is not None else 4.0,
 
-            "audio_chunk_threshold": float(self.spin_chunk_thresh.value() or 2.0) if hasattr(self, "spin_chunk_thresh") else 2.0,
+            "audio_chunk_threshold": float(self.spin_chunk_thresh.value()) if hasattr(self, "spin_chunk_thresh") and self.spin_chunk_thresh.value() is not None else 2.0,
 
-            "pad_duration": float(self.spin_pad_dur.value() or 0.3) if hasattr(self, "spin_pad_dur") else 0.3,
+            "pad_duration": float(self.spin_pad_dur.value()) if hasattr(self, "spin_pad_dur") and self.spin_pad_dur.value() is not None else 0.3,
 
-            "fade_duration": float(self.spin_fade_dur.value() or 0.05) if hasattr(self, "spin_fade_dur") else 0.05,
+            "fade_duration": float(self.spin_fade_dur.value()) if hasattr(self, "spin_fade_dur") and self.spin_fade_dur.value() is not None else 0.05,
 
             "denoise": self.chk_denoise.isChecked(),
 
@@ -5641,7 +5626,7 @@ class OmniVoiceInterface(ScrollArea):
             "multi_speaker_mode": self._get_selected_multi_speaker_mode(),
 
             "max_speakers": (
-                int(self.spin_max_speakers.value() or 4)
+                _safe_int(self.spin_max_speakers.value(), 4)
                 if (hasattr(self, "combo_speaker_count_mode") and self.combo_speaker_count_mode.currentIndex() in (1, 2) and hasattr(self, "spin_max_speakers"))
                 else None
             ),
@@ -5653,7 +5638,7 @@ class OmniVoiceInterface(ScrollArea):
             ),
 
             "exact_speakers": (
-                int(self.spin_max_speakers.value() or 4)
+                _safe_int(self.spin_max_speakers.value(), 4)
                 if (hasattr(self, "combo_speaker_count_mode") and self.combo_speaker_count_mode.currentIndex() == 1 and hasattr(self, "spin_max_speakers"))
                 else None
             ),
@@ -5673,16 +5658,22 @@ class OmniVoiceInterface(ScrollArea):
         }
 
         ms_mode = self._get_selected_multi_speaker_mode()
-        if ms_mode == "single" or (hasattr(self, "chk_single_unified_voice") and self.chk_single_unified_voice.isChecked()):
+        is_single_unified_checked = hasattr(self, "chk_single_unified_voice") and self.chk_single_unified_voice.isChecked()
+        if ms_mode == "single" or is_single_unified_checked:
             params["multi_speaker_mode"] = "single"
-            params["mode"] = "design"
-            params["ref_audio_path"] = None
-            params["ref_text"] = None
-            params["auto_extract_ref"] = False
-            preset_name = self.combo_single_unified_preset.currentText().strip() if hasattr(self, "combo_single_unified_preset") else ""
-            if preset_name in VIETNAMESE_VOICE_CATALOG:
-                params["instruct"] = VIETNAMESE_VOICE_CATALOG[preset_name]["instruct"]
-                params["preset_name"] = preset_name
+            if is_single_unified_checked or mode != "clone" or not self.current_ref_audio_path:
+                params["mode"] = "design"
+                params["ref_audio_path"] = None
+                params["ref_text"] = None
+                params["auto_extract_ref"] = False
+                preset_name = self.combo_single_unified_preset.currentText().strip() if hasattr(self, "combo_single_unified_preset") else ""
+                if preset_name in VIETNAMESE_VOICE_CATALOG:
+                    params["instruct"] = VIETNAMESE_VOICE_CATALOG[preset_name]["instruct"]
+                    params["preset_name"] = preset_name
+            else:
+                params["mode"] = "clone"
+                params["ref_audio_path"] = self.current_ref_audio_path
+                params["ref_text"] = self.edit_ref_text.text().strip() or None
 
         return params
 
@@ -6704,7 +6695,7 @@ class OmniVoiceInterface(ScrollArea):
         os.makedirs(cache_dir, exist_ok=True)
         out_wav = os.path.join(
             cache_dir,
-            f"seg_{blk.index}_{int(start_s * 1000)}_{int(end_s * 1000)}.wav",
+            f"seg_{_safe_int(getattr(blk, 'index', 0), 0)}_{_safe_int(start_s * 1000, 0)}_{_safe_int(end_s * 1000, 0)}.wav",
         )
 
         if not os.path.isfile(out_wav) or os.path.getsize(out_wav) == 0:
@@ -6998,15 +6989,16 @@ class OmniVoiceInterface(ScrollArea):
                 or getattr(norm, "ref_audio_path", "")
                 or (prof.get("ref_audio_path", "") if isinstance(prof, dict) else "")
             )
+            incoming_status = getattr(prof, "status", "") or (prof.get("status") if isinstance(prof, dict) else "")
+            norm.status = "review_needed" if incoming_status == "review_needed" else "locked"
+
             # Nếu profile được chỉ định rõ ràng method="clone" kèm tệp âm thanh (tương thích các bài kiểm thử giả lập)
             if prof_method == "clone" and orig_sample and os.path.exists(orig_sample):
                 norm.method = "clone"
                 norm.source_audio_path = orig_sample
                 norm.ref_audio_path = orig_sample
-                norm.status = "locked"
             else:
                 norm.method = "preset"
-                norm.status = "locked"
                 if orig_sample:
                     norm.source_audio_path = orig_sample
                     norm.ref_audio_path = orig_sample
@@ -7056,6 +7048,9 @@ class OmniVoiceInterface(ScrollArea):
         self._populate_subtitle_table()
 
         self._update_casting_table()
+
+        if hasattr(self, "combo_multi_speaker_mode"):
+            self.combo_multi_speaker_mode.setCurrentIndex(4)
 
         # Cập nhật nhãn tóm tắt kết quả nhận diện
 
@@ -7951,11 +7946,9 @@ class OmniVoiceInterface(ScrollArea):
         override_instruct: str = "",
 
         override_mode: Optional[str] = None,
-
         override_ref_text: str = "",
-
+        target_speaker: str = "",
     ):
-
         if self._worker and self._worker.isRunning():
 
             self._reset_audition_button()
@@ -8045,6 +8038,8 @@ class OmniVoiceInterface(ScrollArea):
             override_mode=override_mode,
 
             override_ref_text=override_ref_text,
+
+            target_speaker=target_speaker,
 
             parent=self,
 
