@@ -122,60 +122,72 @@ def verify_media_quality(
             video_fps = 25.0
 
         if total_frames > 0:
-            candidate_set = set()
-            # 1. Lấy mẫu đều theo thời gian (1.5s/khung hình)
-            step = max(1, int(round(video_fps * 1.5)))
-            for f_i in range(0, total_frames, step):
-                candidate_set.add(f_i)
-
-            # 2. Lấy mẫu tại thời điểm bắt đầu và kết thúc từng track phụ đề
-            if subtitle_intervals:
-                for interval in subtitle_intervals:
-                    if isinstance(interval, (list, tuple)) and len(interval) >= 2:
-                        s_f = int(round(interval[0]))
-                        e_f = int(round(interval[1]))
-                        candidate_set.add(max(0, min(total_frames - 1, s_f)))
-                        candidate_set.add(max(0, min(total_frames - 1, e_f)))
-                        candidate_set.add(max(0, min(total_frames - 1, (s_f + e_f) // 2)))
-
-            # 3. Lấy mẫu tại các thời điểm tracker thay đổi vị trí
-            if tracking_trajectory and isinstance(tracking_trajectory, dict):
-                prev_center = None
-                for t_frame, boxes in sorted(tracking_trajectory.items()):
-                    if not (0 <= t_frame < total_frames) or not boxes:
-                        continue
-                    first_box = boxes[0] if isinstance(boxes, list) else boxes
-                    if isinstance(first_box, (list, tuple)) and len(first_box) >= 4:
-                        cy = (first_box[0] + first_box[1]) / 2.0
-                        cx = (first_box[2] + first_box[3]) / 2.0
-                        if prev_center is None:
-                            prev_center = (cy, cx)
-                            candidate_set.add(t_frame)
-                        else:
-                            dy = abs(cy - prev_center[0])
-                            dx = abs(cx - prev_center[1])
-                            if dy > 6.0 or dx > 6.0:
-                                candidate_set.add(t_frame)
-                                prev_center = (cy, cx)
-
-            # 4. Kẹp giới hạn tối đa 30 khung hình, tối thiểu 5 khung hình
-            sorted_candidates = sorted(list(candidate_set))
-            if len(sorted_candidates) > 30:
-                picked_idxs = np.linspace(0, len(sorted_candidates) - 1, 30, dtype=int).tolist()
-                indices = sorted(list(dict.fromkeys([sorted_candidates[i] for i in picked_idxs])))
-            elif len(sorted_candidates) < 5 and total_frames >= 5:
-                extra = np.linspace(0, total_frames - 1, 5, dtype=int).tolist()
-                indices = sorted(list(dict.fromkeys(sorted_candidates + extra)))
-            else:
-                indices = sorted_candidates if sorted_candidates else list(range(min(total_frames, 5)))
-
-            for idx in indices:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-                ret, frame = cap.read()
-                if ret and frame is not None:
+            # Nếu tổng số khung hình nhỏ (<= 30), đọc tuần tự toàn bộ khung hình để tránh lỗi trôi vị trí tua khung hình
+            if total_frames <= 30:
+                curr_f = 0
+                while curr_f < total_frames:
+                    ret, frame = cap.read()
+                    if not ret or frame is None:
+                        break
                     if frame_h == 0 or frame_w == 0:
                         frame_h, frame_w = frame.shape[:2]
-                    sampled_frames.append((idx, frame))
+                    sampled_frames.append((curr_f, frame))
+                    curr_f += 1
+            else:
+                candidate_set = set()
+                # 1. Lấy mẫu đều theo thời gian (1.5s/khung hình)
+                step = max(1, int(round(video_fps * 1.5)))
+                for f_i in range(0, total_frames, step):
+                    candidate_set.add(f_i)
+
+                # 2. Lấy mẫu tại thời điểm bắt đầu và kết thúc từng track phụ đề
+                if subtitle_intervals:
+                    for interval in subtitle_intervals:
+                        if isinstance(interval, (list, tuple)) and len(interval) >= 2:
+                            s_f = int(round(interval[0]))
+                            e_f = int(round(interval[1]))
+                            candidate_set.add(max(0, min(total_frames - 1, s_f)))
+                            candidate_set.add(max(0, min(total_frames - 1, e_f)))
+                            candidate_set.add(max(0, min(total_frames - 1, (s_f + e_f) // 2)))
+
+                # 3. Lấy mẫu tại các thời điểm tracker thay đổi vị trí
+                if tracking_trajectory and isinstance(tracking_trajectory, dict):
+                    prev_center = None
+                    for t_frame, boxes in sorted(tracking_trajectory.items()):
+                        if not (0 <= t_frame < total_frames) or not boxes:
+                            continue
+                        first_box = boxes[0] if isinstance(boxes, list) else boxes
+                        if isinstance(first_box, (list, tuple)) and len(first_box) >= 4:
+                            cy = (first_box[0] + first_box[1]) / 2.0
+                            cx = (first_box[2] + first_box[3]) / 2.0
+                            if prev_center is None:
+                                prev_center = (cy, cx)
+                                candidate_set.add(t_frame)
+                            else:
+                                dy = abs(cy - prev_center[0])
+                                dx = abs(cx - prev_center[1])
+                                if dy > 6.0 or dx > 6.0:
+                                    candidate_set.add(t_frame)
+                                    prev_center = (cy, cx)
+
+                # 4. Kẹp giới hạn tối đa 30 khung hình, tối thiểu 5 khung hình
+                sorted_candidates = sorted(list(candidate_set))
+                if len(sorted_candidates) > 30:
+                    picked_idxs = np.linspace(0, len(sorted_candidates) - 1, 30, dtype=int).tolist()
+                    indices = sorted(list(dict.fromkeys([sorted_candidates[i] for i in picked_idxs])))
+                elif len(sorted_candidates) < 5 and total_frames >= 5:
+                    extra = np.linspace(0, total_frames - 1, 5, dtype=int).tolist()
+                    indices = sorted(list(dict.fromkeys(sorted_candidates + extra)))
+                else:
+                    indices = sorted_candidates if sorted_candidates else list(range(min(total_frames, 5)))
+
+                for idx in indices:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                    ret, frame = cap.read()
+                    if ret and frame is not None:
+                        if frame_h == 0 or frame_w == 0:
+                            frame_h, frame_w = frame.shape[:2]
+                        sampled_frames.append((idx, frame))
         cap.release()
     else:
         cap.release()
