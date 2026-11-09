@@ -69,40 +69,106 @@ def _load_adjacent_video_frames(video_path: str, current_frame_idx: int, count: 
     return frames
 
 
-def verify_media_quality(video_path: str, sub_areas: List[Tuple[int, int, int, int]]) -> Dict[str, Any]:
+def verify_media_quality(
+    video_path: str,
+    sub_areas: List[Tuple[int, int, int, int]],
+    tracking_trajectory: Optional[Dict[int, Any]] = None,
+    subtitle_intervals: Optional[List[Tuple[int, int]]] = None,
+    fps: Optional[float] = None,
+    fallback_used: bool = False,
+) -> Dict[str, Any]:
     """
     Cổng kiểm soát chất lượng sau xuất:
-    Lấy mẫu các khung hình trong tệp kết quả và kiểm tra xem có còn dấu vết chữ chưa sạch
-    trong các vùng đã xử lý hay không.
+    Lấy mẫu các khung hình trong tệp kết quả theo thời gian, thời điểm xuất hiện phụ đề
+    và quỹ đạo bám đuổi để kiểm tra dấu vết chữ chưa sạch và độ nhấp nháy khung hình.
     Trả về từ điển gồm:
-      - passed: bool (False nếu phát hiện chữ còn sót)
+      - status: str ("PASS", "WARNING", "FAIL", "UNVERIFIED")
+      - passed: bool (True nếu đạt hoặc cảnh báo nhẹ, False nếu phát hiện lỗi hoặc không thể xác minh)
       - residual_text_found: bool
       - flicker_score: float
       - message: str
+      - diagnostics: Dict[str, Any]
     """
-    default_pass = {
+    default_res = {
+        "status": "PASS",
         "passed": True,
         "residual_text_found": False,
         "flicker_score": 0.0,
         "message": "",
+        "diagnostics": {
+            "sampled_frame_indices": [],
+            "total_frames": 0,
+            "detector_errors": [],
+            "text_detected_frames": [],
+            "is_unverified": False,
+        },
     }
     if not video_path or not sub_areas:
-        return default_pass
+        return default_res
 
     target_path = get_readable_path(video_path) if 'get_readable_path' in globals() else video_path
     cap = cv2.VideoCapture(target_path)
     sampled_frames = []
     total_frames = 0
     frame_h, frame_w = 0, 0
+    detector_errors: List[str] = []
 
     if cap.isOpened():
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        video_fps = fps or cap.get(cv2.CAP_PROP_FPS) or 25.0
+        if video_fps <= 0 or np.isnan(video_fps):
+            video_fps = 25.0
+
         if total_frames > 0:
-            sample_count = min(10, max(5, total_frames))
-            indices = np.linspace(0, total_frames - 1, sample_count, dtype=int).tolist()
-            indices = sorted(list(dict.fromkeys(indices)))
+            candidate_set = set()
+            # 1. Lấy mẫu đều theo thời gian (1.5s/khung hình)
+            step = max(1, int(round(video_fps * 1.5)))
+            for f_i in range(0, total_frames, step):
+                candidate_set.add(f_i)
+
+            # 2. Lấy mẫu tại thời điểm bắt đầu và kết thúc từng track phụ đề
+            if subtitle_intervals:
+                for interval in subtitle_intervals:
+                    if isinstance(interval, (list, tuple)) and len(interval) >= 2:
+                        s_f = int(round(interval[0]))
+                        e_f = int(round(interval[1]))
+                        candidate_set.add(max(0, min(total_frames - 1, s_f)))
+                        candidate_set.add(max(0, min(total_frames - 1, e_f)))
+                        candidate_set.add(max(0, min(total_frames - 1, (s_f + e_f) // 2)))
+
+            # 3. Lấy mẫu tại các thời điểm tracker thay đổi vị trí
+            if tracking_trajectory and isinstance(tracking_trajectory, dict):
+                prev_center = None
+                for t_frame, boxes in sorted(tracking_trajectory.items()):
+                    if not (0 <= t_frame < total_frames) or not boxes:
+                        continue
+                    first_box = boxes[0] if isinstance(boxes, list) else boxes
+                    if isinstance(first_box, (list, tuple)) and len(first_box) >= 4:
+                        cy = (first_box[0] + first_box[1]) / 2.0
+                        cx = (first_box[2] + first_box[3]) / 2.0
+                        if prev_center is None:
+                            prev_center = (cy, cx)
+                            candidate_set.add(t_frame)
+                        else:
+                            dy = abs(cy - prev_center[0])
+                            dx = abs(cx - prev_center[1])
+                            if dy > 6.0 or dx > 6.0:
+                                candidate_set.add(t_frame)
+                                prev_center = (cy, cx)
+
+            # 4. Kẹp giới hạn tối đa 30 khung hình, tối thiểu 5 khung hình
+            sorted_candidates = sorted(list(candidate_set))
+            if len(sorted_candidates) > 30:
+                picked_idxs = np.linspace(0, len(sorted_candidates) - 1, 30, dtype=int).tolist()
+                indices = sorted(list(dict.fromkeys([sorted_candidates[i] for i in picked_idxs])))
+            elif len(sorted_candidates) < 5 and total_frames >= 5:
+                extra = np.linspace(0, total_frames - 1, 5, dtype=int).tolist()
+                indices = sorted(list(dict.fromkeys(sorted_candidates + extra)))
+            else:
+                indices = sorted_candidates if sorted_candidates else list(range(min(total_frames, 5)))
+
             for idx in indices:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
                 ret, frame = cap.read()
@@ -121,38 +187,54 @@ def verify_media_quality(video_path: str, sub_areas: List[Tuple[int, int, int, i
                 total_frames = 1
 
     if not sampled_frames:
-        return default_pass
+        return {
+            "status": "UNVERIFIED",
+            "passed": False,
+            "residual_text_found": False,
+            "flicker_score": 0.0,
+            "message": "Không thể mở tệp video hoặc đọc khung hình để kiểm tra chất lượng.",
+            "diagnostics": {
+                "sampled_frame_indices": [],
+                "total_frames": total_frames,
+                "detector_errors": ["Không thể đọc khung hình video"],
+                "text_detected_frames": [],
+                "is_unverified": True,
+            },
+        }
 
-    # Chuẩn hóa và kẹp biên an toàn cho tọa độ sub_areas
-    parsed_sub_areas = []
-    for area in sub_areas:
-        y1, y2, x1, x2 = area[:4]
-        if all(isinstance(v, (float, int)) and 0.0 <= v <= 1.0 for v in (y1, y2, x1, x2)) and max(y2, x2) <= 1.0 and (y2 > 0 or x2 > 0):
-            y1 = int(round(y1 * frame_h))
-            y2 = int(round(y2 * frame_h))
-            x1 = int(round(x1 * frame_w))
-            x2 = int(round(x2 * frame_w))
-        else:
-            y1, y2, x1, x2 = int(round(y1)), int(round(y2)), int(round(x1)), int(round(x2))
-        y1 = max(0, min(frame_h, y1))
-        y2 = max(0, min(frame_h, y2))
-        x1 = max(0, min(frame_w, x1))
-        x2 = max(0, min(frame_w, x2))
-        if y2 > y1 and x2 > x1:
-            parsed_sub_areas.append((y1, y2, x1, x2))
+    # Chuẩn hóa và kẹp biên an toàn cho tọa độ sub_areas tĩnh
+    def _normalize_areas(areas_to_parse: List[Tuple[int, int, int, int]]) -> List[Tuple[int, int, int, int]]:
+        res = []
+        for area in areas_to_parse:
+            y1, y2, x1, x2 = area[:4]
+            if all(isinstance(v, (float, int)) and 0.0 <= v <= 1.0 for v in (y1, y2, x1, x2)) and max(y2, x2) <= 1.0 and (y2 > 0 or x2 > 0):
+                y1 = int(round(y1 * frame_h))
+                y2 = int(round(y2 * frame_h))
+                x1 = int(round(x1 * frame_w))
+                x2 = int(round(x2 * frame_w))
+            else:
+                y1, y2, x1, x2 = int(round(y1)), int(round(y2)), int(round(x1)), int(round(x2))
+            y1 = max(0, min(frame_h, y1))
+            y2 = max(0, min(frame_h, y2))
+            x1 = max(0, min(frame_w, x1))
+            x2 = max(0, min(frame_w, x2))
+            if y2 > y1 and x2 > x1:
+                res.append((y1, y2, x1, x2))
+        return res
 
-    if not parsed_sub_areas:
-        return default_pass
+    static_parsed_areas = _normalize_areas(sub_areas)
+    if not static_parsed_areas:
+        return default_res
 
-    # Tính độ nhấp nháy khung hình theo thời gian nếu khả dụng
+    # Tính độ nhấp nháy khung hình theo thời gian trên vùng phục hồi nền
     flicker_val = 0.0
     try:
         from src.core.quality import temporal_flicker_score
         roi_samples = []
-        ymin_all = min(a[0] for a in parsed_sub_areas)
-        ymax_all = max(a[1] for a in parsed_sub_areas)
-        xmin_all = min(a[2] for a in parsed_sub_areas)
-        xmax_all = max(a[3] for a in parsed_sub_areas)
+        ymin_all = min(a[0] for a in static_parsed_areas)
+        ymax_all = max(a[1] for a in static_parsed_areas)
+        xmin_all = min(a[2] for a in static_parsed_areas)
+        xmax_all = max(a[3] for a in static_parsed_areas)
         for idx, frame in sampled_frames:
             roi = frame[ymin_all:ymax_all, xmin_all:xmax_all]
             if roi.size > 0:
@@ -161,27 +243,37 @@ def verify_media_quality(video_path: str, sub_areas: List[Tuple[int, int, int, i
             score = temporal_flicker_score(roi_samples, max_frame_gap=max(1, total_frames))
             if score is not None:
                 flicker_val = float(score)
-    except Exception:
-        pass
+    except Exception as fl_err:
+        detector_errors.append(f"Không thể đo nhấp nháy khung hình: {fl_err}")
 
-    # Khởi tạo lười bộ nhận diện phụ đề SubtitleDetect khi kiểm tra nhanh chưa phát hiện
+    # Khởi tạo lười bộ nhận diện chữ SubtitleDetect
     detector = None
     detector_initialized = False
 
-    text_detected_count = 0
+    text_detected_frames: List[int] = []
     for idx, frame in sampled_frames:
         frame_has_text = False
-        # 1. Ưu tiên kiểm tra nhanh bằng thuật toán mật độ cạnh và đường viền (residual_text_score)
+        # Xác định vùng kiểm tra tại khung hình: ưu tiên tọa độ theo vết chuyển động nếu có
+        cur_areas = static_parsed_areas
+        if tracking_trajectory and isinstance(tracking_trajectory, dict) and idx in tracking_trajectory:
+            t_boxes = tracking_trajectory[idx]
+            if t_boxes:
+                raw_boxes = t_boxes if isinstance(t_boxes, list) else [t_boxes]
+                dynamic_areas = _normalize_areas(raw_boxes)
+                if dynamic_areas:
+                    cur_areas = dynamic_areas
+
+        # 1. Kiểm tra nhanh bằng thuật toán mật độ cạnh và đường viền (residual_text_score)
         try:
             from src.core.quality import residual_text_score
-            for (y1, y2, x1, x2) in parsed_sub_areas:
+            for (y1, y2, x1, x2) in cur_areas:
                 crop = frame[y1:y2, x1:x2]
                 r_score = residual_text_score(crop)
                 if r_score is not None and r_score > 0.25:
                     frame_has_text = True
                     break
-        except Exception:
-            pass
+        except Exception as r_err:
+            detector_errors.append(f"Khung hình {idx} lỗi mật độ cạnh: {r_err}")
 
         # 2. Nếu kiểm tra nhanh chưa phát hiện thì mới dùng bộ nhận diện chữ OCR
         if not frame_has_text:
@@ -189,36 +281,96 @@ def verify_media_quality(video_path: str, sub_areas: List[Tuple[int, int, int, i
                 detector_initialized = True
                 try:
                     from src.core.tools.subtitle_detect import SubtitleDetect
-                    detector = SubtitleDetect(video_path, parsed_sub_areas)
-                except Exception:
+                    detector = SubtitleDetect(video_path, cur_areas)
+                except Exception as det_init_err:
                     detector = None
+                    detector_errors.append(f"Không thể khởi tạo bộ nhận diện phụ đề: {det_init_err}")
             if detector is not None:
                 try:
                     boxes = detector.detect_subtitle(frame)
                     if boxes and len(boxes) > 0:
                         frame_has_text = True
-                except Exception:
-                    pass
+                except Exception as det_run_err:
+                    detector_errors.append(f"Khung hình {idx} lỗi quét phụ đề: {det_run_err}")
 
         if frame_has_text:
-            text_detected_count += 1
+            text_detected_frames.append(idx)
+
+    sampled_indices = [idx for idx, _ in sampled_frames]
+    diagnostics = {
+        "sampled_frame_indices": sampled_indices,
+        "total_frames": total_frames,
+        "detector_errors": detector_errors,
+        "text_detected_frames": text_detected_frames,
+        "is_unverified": False,
+    }
 
     threshold = 2 if len(sampled_frames) >= 2 else 1
-    if text_detected_count >= threshold:
+    # 1. Phát hiện chữ còn sót -> FAIL
+    if len(text_detected_frames) >= threshold:
         return {
+            "status": "FAIL",
             "passed": False,
             "residual_text_found": True,
             "flicker_score": flicker_val,
             "message": "Phát hiện dấu vết chữ chưa sạch tại các khung hình đã xử lý. Khuyến nghị: tăng khoảng đệm mặt nạ hoặc chuyển đổi mô hình phục hồi nền.",
+            "diagnostics": diagnostics,
         }
 
+    # 2. Bộ nhận diện chữ bị lỗi toàn bộ -> UNVERIFIED (không được mặc định là sạch)
+    if detector_errors and len(detector_errors) >= len(sampled_frames) and len(sampled_frames) > 0:
+        diagnostics["is_unverified"] = True
+        return {
+            "status": "UNVERIFIED",
+            "passed": False,
+            "residual_text_found": False,
+            "flicker_score": flicker_val,
+            "message": "Bộ nhận diện chữ gặp sự cố trên toàn bộ khung hình lấy mẫu. Không thể xác nhận độ sạch của video.",
+            "diagnostics": diagnostics,
+        }
+
+    # 3. Hiện tượng nhấp nháy khung hình vượt ngưỡng thử nghiệm (>= 0.35) -> WARNING
+    if flicker_val >= 0.35:
+        return {
+            "status": "WARNING",
+            "passed": True,
+            "residual_text_found": False,
+            "flicker_score": flicker_val,
+            "message": f"Vùng phục hồi nền có hiện tượng nhấp nháy khung hình (chỉ số: {flicker_val:.2f} >= 0.35). Cần kiểm tra lại hoặc bật tính năng làm mượt thời gian.",
+            "diagnostics": diagnostics,
+        }
+
+    # 4. Sử dụng mô hình dự phòng do thiếu bộ nhớ đồ họa -> WARNING
+    if fallback_used:
+        return {
+            "status": "WARNING",
+            "passed": True,
+            "residual_text_found": False,
+            "flicker_score": flicker_val,
+            "message": "Video đã được xử lý qua mô hình dự phòng từng khung hình do thiếu bộ nhớ đồ họa; cần kiểm tra lại chất lượng thực tế.",
+            "diagnostics": diagnostics,
+        }
+
+    # 5. Có một số lỗi nhận diện nhỏ nhưng không phải toàn bộ -> WARNING
+    if detector_errors:
+        return {
+            "status": "WARNING",
+            "passed": True,
+            "residual_text_found": False,
+            "flicker_score": flicker_val,
+            "message": "Một số khung hình lấy mẫu không thể quét chữ do lỗi công cụ nhận diện; cần kiểm tra lại trước khi bàn giao.",
+            "diagnostics": diagnostics,
+        }
+
+    # 6. Đạt toàn diện -> PASS
     return {
+        "status": "PASS",
         "passed": True,
         "residual_text_found": False,
         "flicker_score": flicker_val,
-        "message": "",
+        "message": "Đã kiểm tra chất lượng: Không phát hiện chữ còn sót và không có hiện tượng nhấp nháy bất thường.",
+        "diagnostics": diagnostics,
     }
-
 
 class HomeInterface(QWidget):
     progress_signal = Signal(int, bool, int)
@@ -1494,11 +1646,22 @@ class HomeInterface(QWidget):
                                 task_obj.output_path = output_path
                                 
                                 # Đánh giá chất lượng sau xuất tách bạch giữa tính toàn vẹn tệp và mức độ xóa sạch
-                                quality_res = verify_media_quality(output_path, sub_areas=subtitle_areas)
+                                quality_res = verify_media_quality(
+                                    output_path,
+                                    sub_areas=subtitle_areas,
+                                    tracking_trajectory=getattr(task_obj, 'tracking_trajectory', None) or getattr(self, 'tracking_trajectory', None),
+                                    subtitle_intervals=getattr(task_obj, 'subtitle_intervals', None) or getattr(self, 'subtitle_intervals', None),
+                                    fps=getattr(task_obj, 'fps', None) or getattr(self, 'fps', None),
+                                    fallback_used=bool(getattr(task_obj, 'vram_fallback_used', False) or getattr(self, 'vram_fallback_used', False)),
+                                )
                                 self.append_log_signal.emit(["[Kiểm tra đầu ra] Tệp đầu ra hợp lệ."])
-                                if quality_res.get("residual_text_found"):
-                                    msg = quality_res.get("message", "Cần kiểm tra lại")
-                                    self.append_log_signal.emit([f"[Đánh giá xóa phụ đề] {msg}"])
+                                q_status = quality_res.get("status", "PASS")
+                                q_msg = quality_res.get("message", "")
+                                if q_status == "FAIL":
+                                    self.append_log_signal.emit([f"[Đánh giá xóa phụ đề] {q_msg}"])
+                                    self.task_status_signal.emit(self.current_processing_task_index, TaskStatus.WARNING)
+                                elif q_status in ("WARNING", "UNVERIFIED"):
+                                    self.append_log_signal.emit([f"[Đánh giá xóa phụ đề] {q_msg}"])
                                     self.task_status_signal.emit(self.current_processing_task_index, TaskStatus.WARNING)
                                 elif result_status == 'partial':
                                     self.task_status_signal.emit(self.current_processing_task_index, TaskStatus.WARNING)
@@ -1618,9 +1781,18 @@ class HomeInterface(QWidget):
                 detail = sr.tracking_report.get("warning_message", "")
 
             # Cổng kiểm soát chất lượng sau xuất: kiểm tra vết chữ còn sót
-            quality_res = verify_media_quality(output_path, getattr(sr, 'sub_areas', []))
-            if not quality_res.get("passed", True):
-                run_status = "partial"
+            quality_res = verify_media_quality(
+                output_path,
+                getattr(sr, 'sub_areas', []),
+                tracking_trajectory=getattr(sr, 'tracking_trajectory', None),
+                subtitle_intervals=getattr(sr, 'subtitle_intervals', None),
+                fps=getattr(sr, 'fps', None),
+                fallback_used=bool(getattr(sr, 'vram_fallback_used', False)),
+            )
+            q_status = quality_res.get("status", "PASS")
+            if q_status in ("FAIL", "WARNING", "UNVERIFIED") or not quality_res.get("passed", True):
+                if q_status == "FAIL" or not quality_res.get("passed", True):
+                    run_status = "partial"
                 msg = quality_res.get("message", "")
                 detail = f"{detail}. {msg}".strip(". ") if detail else msg
 

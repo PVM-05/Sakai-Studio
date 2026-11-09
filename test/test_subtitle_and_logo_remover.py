@@ -693,7 +693,7 @@ def test_verify_media_quality_detects_residual_text(tmp_path):
 
 def test_verify_media_quality_passes_when_clean(tmp_path):
     """
-    Xác minh hàm kiểm soát chất lượng sau xuất trả về passed=True khi vùng đã xử lý sạch sẽ.
+    Xác minh hàm kiểm soát chất lượng sau xuất trả về passed=True và status=PASS khi vùng đã xử lý sạch sẽ.
     """
     from src.desktop.ui.home_interface import verify_media_quality
 
@@ -705,8 +705,143 @@ def test_verify_media_quality_passes_when_clean(tmp_path):
     out.release()
 
     res = verify_media_quality(video_path, sub_areas=[(80, 120, 50, 250)])
+    assert res["status"] == "PASS"
     assert res["passed"] is True
     assert res["residual_text_found"] is False
+
+
+def test_verify_media_quality_warns_on_high_flicker(tmp_path):
+    """
+    Xác minh hàm kiểm soát chất lượng sau xuất:
+    Khi vùng xử lý có hiện tượng nhấp nháy khung hình (flicker_score >= 0.35),
+    hệ thống chuyển trạng thái sang WARNING kèm cảnh báo thử nghiệm.
+    """
+    from src.desktop.ui.home_interface import verify_media_quality
+
+    video_path = str(tmp_path / "flickering_video.mp4")
+    out = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*'mp4v'), 25.0, (200, 200))
+    for i in range(12):
+        val = 20 if (i % 2 == 0) else 235
+        frame = np.full((200, 200, 3), val, dtype=np.uint8)
+        out.write(frame)
+    out.release()
+
+    res = verify_media_quality(video_path, sub_areas=[(50, 150, 50, 150)])
+    assert res["status"] == "WARNING"
+    assert res["flicker_score"] >= 0.35
+    assert "nhấp nháy" in res["message"]
+
+
+def test_verify_media_quality_respects_motion_trajectory(tmp_path):
+    """
+    Xác minh hàm kiểm soát chất lượng hỗ trợ quỹ đạo di chuyển:
+    Nếu vùng tĩnh ban đầu sạch, nhưng logo di chuyển đến tọa độ khác và còn sót chữ,
+    hệ thống phát hiện được chữ theo tọa độ động của quỹ đạo và chuyển trạng thái FAIL.
+    """
+    from src.desktop.ui.home_interface import verify_media_quality
+
+    video_path = str(tmp_path / "moving_logo_output.mp4")
+    out = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*'mp4v'), 25.0, (300, 300))
+    trajectory = {}
+    for i in range(10):
+        frame = np.full((300, 300, 3), 128, dtype=np.uint8)
+        cur_y1, cur_y2, cur_x1, cur_x2 = 150, 200, 150, 250
+        trajectory[i] = [(cur_y1, cur_y2, cur_x1, cur_x2)]
+        if i in (4, 5, 6):
+            cv2.putText(frame, "LOGO_RESIDUAL", (cur_x1 + 5, cur_y2 - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        out.write(frame)
+    out.release()
+
+    # Vùng tĩnh sạch chữ
+    res_static = verify_media_quality(video_path, sub_areas=[(20, 60, 20, 80)])
+    assert res_static["status"] == "PASS"
+
+    # Khi cung cấp quỹ đạo di chuyển, phát hiện được chữ còn sót tại tọa độ động
+    res_dynamic = verify_media_quality(video_path, sub_areas=[(20, 60, 20, 80)], tracking_trajectory=trajectory)
+    assert res_dynamic["status"] == "FAIL"
+    assert res_dynamic["passed"] is False
+    assert res_dynamic["residual_text_found"] is True
+
+
+def test_verify_media_quality_adaptive_sampling_with_intervals_and_trajectory(tmp_path):
+    """
+    Xác minh lấy mẫu thích ứng:
+    Lấy mẫu tại thời điểm phụ đề, tracker thay đổi vị trí, và kẹp tối đa 30 khung hình.
+    """
+    from src.desktop.ui.home_interface import verify_media_quality
+
+    video_path = str(tmp_path / "long_video.mp4")
+    out = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*'mp4v'), 25.0, (160, 120))
+    for _ in range(120):
+        frame = np.full((120, 160, 3), 128, dtype=np.uint8)
+        out.write(frame)
+    out.release()
+
+    sub_intervals = [(25, 40), (80, 100)]
+    trajectory = {0: [(20, 50, 20, 50)], 50: [(50, 80, 50, 80)]}
+    res = verify_media_quality(
+        video_path,
+        sub_areas=[(20, 80, 20, 80)],
+        subtitle_intervals=sub_intervals,
+        tracking_trajectory=trajectory,
+        fps=25.0,
+    )
+    assert "diagnostics" in res
+    sampled_indices = res["diagnostics"]["sampled_frame_indices"]
+    assert len(sampled_indices) <= 30
+    assert len(sampled_indices) >= 5
+    # Các thời điểm phụ đề quan trọng phải có trong danh sách lấy mẫu
+    assert any(idx in sampled_indices for idx in (25, 40, 80, 100))
+
+
+def test_verify_media_quality_unverified_on_detector_failure(tmp_path, monkeypatch):
+    """
+    Xác minh nguyên tắc an toàn:
+    Khi bộ nhận diện chữ gặp lỗi trên toàn bộ khung hình lấy mẫu,
+    hệ thống trả về UNVERIFIED và passed=False, không được mặc định là video sạch.
+    """
+    from src.desktop.ui.home_interface import verify_media_quality
+
+    video_path = str(tmp_path / "detector_fail_video.mp4")
+    out = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*'mp4v'), 25.0, (200, 200))
+    for _ in range(10):
+        frame = np.full((200, 200, 3), 128, dtype=np.uint8)
+        out.write(frame)
+    out.release()
+
+    # Giả lập SubtitleDetect và residual_text_score bị lỗi ngoại lệ
+    import src.core.quality as quality_mod
+    monkeypatch.setattr(quality_mod, "residual_text_score", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("Lỗi thuật toán mật độ cạnh")))
+
+    import src.core.tools.subtitle_detect as det_mod
+    def mock_init(*args, **kwargs):
+        raise RuntimeError("Lỗi khởi tạo OCR")
+    monkeypatch.setattr(det_mod, "SubtitleDetect", mock_init)
+
+    res = verify_media_quality(video_path, sub_areas=[(50, 150, 50, 150)])
+    assert res["status"] == "UNVERIFIED"
+    assert res["passed"] is False
+    assert res["diagnostics"]["is_unverified"] is True
+    assert "sự cố" in res["message"] or "Không thể xác nhận" in res["message"]
+
+
+def test_verify_media_quality_warns_on_fallback_used(tmp_path):
+    """
+    Xác minh khi mô hình dự phòng được sử dụng, hệ thống chuyển sang WARNING và yêu cầu kiểm tra lại.
+    """
+    from src.desktop.ui.home_interface import verify_media_quality
+
+    video_path = str(tmp_path / "fallback_video.mp4")
+    out = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*'mp4v'), 25.0, (200, 200))
+    for _ in range(10):
+        frame = np.full((200, 200, 3), 128, dtype=np.uint8)
+        out.write(frame)
+    out.release()
+
+    res = verify_media_quality(video_path, sub_areas=[(50, 150, 50, 150)], fallback_used=True)
+    assert res["status"] == "WARNING"
+    assert "dự phòng" in res["message"]
+
 
 
 
