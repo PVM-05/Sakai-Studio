@@ -1514,16 +1514,20 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
         mock_queue = MagicMock()
 
         def fake_run(sr_instance):
-            # Giả lập ghi tệp đầu ra tạm thời mà tiến trình con mong đợi
-            with open(sr_instance.video_out_path, "wb") as f:
-                f.write(b"dummy_cleaned_video_bytes")
+            # Tạo tệp video MP4 thật sự để kiểm chứng verify_media_output nguyên bản không qua giả lập
+            _create_dummy_video(sr_instance.video_out_path, fps=10.0, num_frames=5)
+            sr_instance.frame_count = 5
+            sr_instance.fps = 10.0
+            sr_instance.is_picture = False
+            sr_instance.source_has_audio = False
 
         with patch.object(GUISubtitleRemover, "run", autospec=True, side_effect=fake_run) as mock_run:
-            with patch("src.core.main.verify_media_output", return_value=True):
-                _remover_process_worker(mock_queue, dummy_vid, dummy_out, {"sub_areas": []})
+            # Chạy trực tiếp qua verify_media_output thật sự, không giả lập
+            _remover_process_worker(mock_queue, dummy_vid, dummy_out, {"sub_areas": []})
 
         self.assertTrue(mock_run.called, "Tiến trình con phải gọi phương thức run của GUISubtitleRemover")
         self.assertTrue(os.path.exists(dummy_out), "Tệp đầu ra đích phải được tạo thành công sau khi hoàn tất")
+        self.assertGreater(os.path.getsize(dummy_out), 0, "Tệp đầu ra đích phải là video hợp lệ có dung lượng lớn hơn 0")
 
 if __name__ == "__main__":
     unittest.main()
