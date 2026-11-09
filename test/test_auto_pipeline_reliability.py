@@ -1496,6 +1496,35 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
         ui._update_sub_video_status_label()
         self.assertTrue(btn.isEnabled(), "Nut nghe goc phai tu dong mo khoa khi video san sang")
 
+    def test_remover_process_worker_imports_and_dispatches_correct_class(self):
+        """
+        Xác minh tiến trình con xóa phụ đề của luồng Tự Động nhập đúng lớp GUISubtitleRemover,
+        hỗ trợ bí danh SubtitleRemover tương thích ngược và không bị lỗi nhập mô-đun.
+        """
+        from src.core.main import GUISubtitleRemover, SubtitleRemover
+        from src.desktop.ui.auto_pipeline_interface import _remover_process_worker
+        from unittest.mock import MagicMock, patch
+
+        self.assertIs(SubtitleRemover, GUISubtitleRemover, "SubtitleRemover phải là bí danh của GUISubtitleRemover")
+
+        dummy_vid = os.path.join(self.temp_dir, "dummy_worker_in.mp4")
+        _create_dummy_video(dummy_vid, num_frames=5)
+        dummy_out = os.path.join(self.temp_dir, "dummy_worker_out.mp4")
+
+        mock_queue = MagicMock()
+
+        def fake_run(sr_instance):
+            # Giả lập ghi tệp đầu ra tạm thời mà tiến trình con mong đợi
+            with open(sr_instance.video_out_path, "wb") as f:
+                f.write(b"dummy_cleaned_video_bytes")
+
+        with patch.object(GUISubtitleRemover, "run", autospec=True, side_effect=fake_run) as mock_run:
+            with patch("src.core.main.verify_media_output", return_value=True):
+                _remover_process_worker(mock_queue, dummy_vid, dummy_out, {"sub_areas": []})
+
+        self.assertTrue(mock_run.called, "Tiến trình con phải gọi phương thức run của GUISubtitleRemover")
+        self.assertTrue(os.path.exists(dummy_out), "Tệp đầu ra đích phải được tạo thành công sau khi hoàn tất")
+
 if __name__ == "__main__":
     unittest.main()
 

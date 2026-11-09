@@ -2412,8 +2412,9 @@ class HomeInterface(QWidget):
                     elif inpaint_mode == InpaintMode.PROPAINTER:
                         from src.ai_engines.inpaint.propainter_inpaint import PropainterInpaint
                         self.append_log_signal.emit([f"Đang nạp mô hình ProPainter trên {dev}..."])
+                        use_fp16 = dev != torch.device("cpu") if (hasattr(torch, "device") and hasattr(torch, "cuda") and torch.cuda.is_available()) else False
                         def load_propainter():
-                            return PropainterInpaint(dev, model_config.PROPAINTER_MODEL_DIR)
+                            return PropainterInpaint(dev, model_config.PROPAINTER_MODEL_DIR, use_fp16=use_fp16)
                         propainter_model = ModelCacheManager.get_model(f"propainter_{dev}", load_propainter)
                         self.append_log_signal.emit([f"Mô hình ProPainter sẵn sàng ({_time.time()-_t0:.1f}s). Đang xóa phụ đề trên 5 khung hình..."])
                         frames = _get_temporal_frames()

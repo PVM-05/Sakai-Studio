@@ -62,25 +62,63 @@ def _remover_process_worker(queue, video_path, output_path, options):
     """Tiến trình con thực thi xóa phụ đề gốc khỏi video."""
     sr = None
     had_error = False
+    base_no_ext, ext = os.path.splitext(output_path)
+    temp_output_path = f"{base_no_ext}.tmp_{os.getpid()}{ext or '.mp4'}"
     try:
         import traceback
-        from src.core.main import SubtitleRemover
-        sr = SubtitleRemover(video_path, True)
-        sr.video_out_path = output_path
+        from src.core.main import GUISubtitleRemover, verify_media_output
+        from src.core.interface.worker_interface import ProcessCallback
+
+        class RemoteCallback(ProcessCallback):
+            def log_message(self, *args):
+                SubtitleRemoverRemoteCall.remote_call_append_log(queue, list(args))
+
+            def update_progress(self, progress: int, is_finished: bool, frame_no: int = 0):
+                SubtitleRemoverRemoteCall.remote_call_update_progress(queue, progress, is_finished, frame_no)
+
+            def on_error(self, err: Exception):
+                SubtitleRemoverRemoteCall.remote_call_catch_error(queue, err)
+
+            def manage_process(self, pid: int):
+                SubtitleRemoverRemoteCall.remote_call_manage_process(queue, pid)
+
+            def update_preview(self, *args):
+                SubtitleRemoverRemoteCall.remote_call_update_preview_with_comp(queue, list(args))
+
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        sr = GUISubtitleRemover(video_path, True, callback=RemoteCallback())
+        sr.video_out_path = temp_output_path
         for key, val in options.items():
             setattr(sr, key, val)
-        sr.add_progress_listener(
-            lambda progress, isFinished, frame_no=0: SubtitleRemoverRemoteCall.remote_call_update_progress(
-                queue, progress, isFinished, frame_no
-            )
-        )
-        sr.append_output = lambda *args: SubtitleRemoverRemoteCall.remote_call_append_log(queue, list(args))
-        sr.manage_process = lambda pid: SubtitleRemoverRemoteCall.remote_call_manage_process(queue, pid)
-        sr.update_preview_with_comp = lambda *args: SubtitleRemoverRemoteCall.remote_call_update_preview_with_comp(
-            queue, list(args)
-        )
+        if 'freehand_strokes' in options and not getattr(sr, 'strokes', None):
+            sr.strokes = options['freehand_strokes']
+
         sr.run()
-        if not os.path.exists(output_path) or os.path.getsize(output_path) <= 0:
+
+        expected_frames = int(sr.frame_count) if not sr.is_picture else 0
+        expected_fps = float(sr.fps) if not sr.is_picture else 0.0
+        require_audio = bool(getattr(sr, 'source_has_audio', False)) and not sr.is_picture
+        if not verify_media_output(
+            temp_output_path,
+            is_picture=sr.is_picture,
+            expected_frames=expected_frames,
+            expected_fps=expected_fps,
+            require_audio=require_audio,
+        ):
+            had_error = True
+            SubtitleRemoverRemoteCall.remote_call_catch_error(
+                queue, "Tệp video sau khi xóa phụ đề không hợp lệ hoặc thiếu luồng âm thanh."
+            )
+            return
+
+        if os.path.exists(temp_output_path):
+            if os.path.exists(output_path):
+                try:
+                    os.remove(output_path)
+                except Exception:
+                    pass
+            os.replace(temp_output_path, output_path)
+        else:
             had_error = True
             SubtitleRemoverRemoteCall.remote_call_catch_error(
                 queue, "Tiến trình xóa phụ đề kết thúc nhưng không tạo ra tệp video đầu ra hợp lệ."
@@ -93,6 +131,11 @@ def _remover_process_worker(queue, video_path, output_path, options):
     finally:
         if sr:
             sr.isFinished = True
+        if had_error and os.path.exists(temp_output_path):
+            try:
+                os.remove(temp_output_path)
+            except Exception:
+                pass
             sr.vsf_running = False
         SubtitleRemoverRemoteCall.remote_call_finish(queue)
         if had_error:

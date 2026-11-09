@@ -1262,10 +1262,24 @@ class GUISubtitleRemover:
     @property
     def propainter_inpaint(self):
         max_load = self.get_adaptive_propainter_max_load()
+        has_cuda = self.hardware_accelerator.has_cuda()
+        use_fp16 = bool(has_cuda)
         def load():
-            device = self.hardware_accelerator.device if self.hardware_accelerator.has_cuda() or self.hardware_accelerator.has_mps() else (torch.device("cpu") if torch is not None else "cpu")
-            return PropainterInpaint(device, self.model_config.PROPAINTER_MODEL_DIR, max_load)
-        return ModelCacheManager.get_model("propainter", load, param_key=max_load)
+            device = self.hardware_accelerator.device if has_cuda or self.hardware_accelerator.has_mps() else (torch.device("cpu") if torch is not None else "cpu")
+            return PropainterInpaint(device, self.model_config.PROPAINTER_MODEL_DIR, max_load, use_fp16=use_fp16)
+        return ModelCacheManager.get_model("propainter", load, param_key=(max_load, use_fp16))
+
+
+# Tên lớp tương thích ngược cho các mô-đun hoặc kiểm thử kế thừa
+SubtitleRemover = GUISubtitleRemover
+
+__all__ = [
+    "GUISubtitleRemover",
+    "SubtitleRemover",
+    "ModelCacheManager",
+    "verify_media_output",
+    "is_valid_media_file",
+]
 
 
 if __name__ == '__main__':
