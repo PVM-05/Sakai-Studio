@@ -267,8 +267,8 @@ def verify_media_quality(
         frame_has_text = False
         # Xác định vùng kiểm tra tại khung hình: ưu tiên tọa độ theo vết chuyển động nếu có
         cur_areas = static_parsed_areas
-        if tracking_trajectory and isinstance(tracking_trajectory, dict) and idx in tracking_trajectory:
-            t_boxes = tracking_trajectory[idx]
+        if tracking_trajectory and isinstance(tracking_trajectory, dict):
+            t_boxes = tracking_trajectory.get(idx) or tracking_trajectory.get(str(idx))
             if t_boxes:
                 raw_boxes = t_boxes if isinstance(t_boxes, list) else [t_boxes]
                 dynamic_areas = _normalize_areas(raw_boxes)
@@ -281,7 +281,7 @@ def verify_media_quality(
             for (y1, y2, x1, x2) in cur_areas:
                 crop = frame[y1:y2, x1:x2]
                 r_score = residual_text_score(crop)
-                if r_score is not None and r_score > 0.25:
+                if r_score is not None and r_score > 0.18:
                     frame_has_text = True
                     break
         except Exception as r_err:

@@ -741,13 +741,13 @@ def test_verify_media_quality_respects_motion_trajectory(tmp_path):
     from src.desktop.ui.home_interface import verify_media_quality
 
     video_path = str(tmp_path / "moving_logo_output.mp4")
-    out = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*'mp4v'), 25.0, (300, 300))
+    out = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*'mp4v'), 25.0, (320, 240))
     trajectory = {}
     for i in range(10):
-        frame = np.full((300, 300, 3), 128, dtype=np.uint8)
+        frame = np.full((240, 320, 3), 128, dtype=np.uint8)
         if i in (4, 5, 6):
-            cur_y1, cur_y2, cur_x1, cur_x2 = 150, 200, 150, 250
-            cv2.putText(frame, "LOGO_RESIDUAL", (cur_x1 + 5, cur_y2 - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            cur_y1, cur_y2, cur_x1, cur_x2 = 140, 190, 160, 280
+            cv2.putText(frame, "LOGO_RESIDUAL", (cur_x1 + 5, cur_y2 - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
         else:
             cur_y1, cur_y2, cur_x1, cur_x2 = 20, 60, 20, 80
         trajectory[i] = [(cur_y1, cur_y2, cur_x1, cur_x2)]
