@@ -230,6 +230,13 @@ PROVIDERS_INFO = {
         "key_prefix": [],
         "is_local": True,
     },
+    "Ollama": {
+        "label": "Ollama",
+        "base_url": "http://localhost:11434/v1",
+        "models": ["qwen2.5:7b", "qwen2.5:14b", "llama3.1:8b", "phi4", "gemma2:9b", "mistral"],
+        "key_prefix": [],
+        "is_local": True,
+    },
     "Custom Endpoint": {
         "label": "Custom Endpoint",
         "base_url": "https://api.openai.com/v1",
@@ -452,6 +459,11 @@ class TranslationInterface(QWidget):
         self.export_srt_button.setEnabled(False)
         export_layout.addWidget(self.export_srt_button)
 
+        self.export_bilingual_srt_button = PushButton("Lưu phụ đề song ngữ", self)
+        self.export_bilingual_srt_button.setIcon(FluentIcon.SAVE_AS)
+        self.export_bilingual_srt_button.setEnabled(False)
+        export_layout.addWidget(self.export_bilingual_srt_button)
+
         self.send_to_tts_button = PrimaryPushButton("Chuyển Sang Lồng Tiếng", self)
         self.send_to_tts_button.setIcon(FluentIcon.MICROPHONE)
         self.send_to_tts_button.setEnabled(False)
@@ -520,6 +532,7 @@ class TranslationInterface(QWidget):
         self.table.cellChanged.connect(self._on_table_cell_changed)
         self.table.itemSelectionChanged.connect(self._on_table_row_selected)
         self.export_srt_button.clicked.connect(self._export_srt)
+        self.export_bilingual_srt_button.clicked.connect(self._export_bilingual_srt)
         self.send_to_tts_button.clicked.connect(self._send_to_omnivoice)
 
         self.progress_signal.connect(self._update_progress)
@@ -792,6 +805,8 @@ class TranslationInterface(QWidget):
             self.translate_btn.setEnabled(has_data)
         if hasattr(self, 'export_srt_button'):
             self.export_srt_button.setEnabled(has_data)
+        if hasattr(self, 'export_bilingual_srt_button'):
+            self.export_bilingual_srt_button.setEnabled(has_data)
         if hasattr(self, 'send_to_tts_button'):
             self.send_to_tts_button.setEnabled(has_data)
 
@@ -998,6 +1013,28 @@ class TranslationInterface(QWidget):
             Path(filepath).write_text(content, encoding="utf-8")
             InfoBar.success("Đã lưu", f"Đã xuất tệp phụ đề tại: {os.path.basename(filepath)}", parent=self, duration=3000)
 
+    def _export_bilingual_srt(self):
+        if not self.subtitle_blocks:
+            InfoBar.warning("Cảnh báo", "Không có dữ liệu phụ đề để xuất!", parent=self, duration=2500)
+            return
+
+        default_name = "bilingual.srt"
+        if self.current_srt_path:
+            p = Path(self.current_srt_path)
+            default_name = f"{p.stem}_bilingual.srt"
+        elif self.current_video_path:
+            p = Path(self.current_video_path)
+            default_name = f"{p.stem}_bilingual.srt"
+
+        filepath, _ = FolderMemoryDialog.getSaveFileName(
+            self, "Lưu file phụ đề song ngữ", default_filename=default_name, filter_str="Phụ đề (*.srt)", category="subtitle"
+        )
+        if filepath:
+            from src.ai_engines.translator import blocks_to_bilingual_srt
+            content = blocks_to_bilingual_srt(self.subtitle_blocks)
+            Path(filepath).write_text(content, encoding="utf-8")
+            InfoBar.success("Đã lưu", f"Đã xuất tệp phụ đề song ngữ tại: {os.path.basename(filepath)}", parent=self, duration=3000)
+
     def _send_to_omnivoice(self):
         if not self.subtitle_blocks:
             InfoBar.warning("Cảnh báo", "Chưa có dữ liệu phụ đề để chuyển sang lồng tiếng!", parent=self, duration=2500)
@@ -1099,4 +1136,5 @@ class TranslationInterface(QWidget):
         self.btn_verify_key.setText("Xác thực & Nạp Key")
         self.btn_save_config.setText("Lưu Cài Đặt")
         self.export_srt_button.setText("Lưu tệp phụ đề dịch")
+        self.export_bilingual_srt_button.setText("Lưu phụ đề song ngữ")
         self.send_to_tts_button.setText("Chuyển Sang Lồng Tiếng")

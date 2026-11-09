@@ -55,6 +55,38 @@ This is a test subtitle.
         self.assertEqual(len(res), 1)
         self.assertEqual(res[0].translated_text, "Cảm ơn bạn")
 
+    def test_translation_interface_ollama_provider_and_bilingual_export(self):
+        """
+        Xác minh nhà cung cấp Ollama có sẵn trong danh mục cấu hình và nút xuất song ngữ
+        tạo ra tệp phụ đề song ngữ hợp lệ.
+        """
+        from src.desktop.ui.translation_interface import PROVIDERS_INFO, TranslationInterface
+        from PySide6.QtWidgets import QApplication
+        import tempfile
+        from pathlib import Path
+
+        self.assertIn("Ollama", PROVIDERS_INFO)
+        self.assertEqual(PROVIDERS_INFO["Ollama"]["base_url"], "http://localhost:11434/v1")
+        self.assertTrue(PROVIDERS_INFO["Ollama"]["is_local"])
+
+        app = QApplication.instance() or QApplication([])
+        ui = TranslationInterface()
+        self.assertTrue(hasattr(ui, "export_bilingual_srt_button"))
+
+        block = SubtitleBlock(index=1, start_time="00:00:01,000", end_time="00:00:02,000", text="Hello")
+        block.translated_text = "Xin chào"
+        ui.subtitle_blocks = [block]
+
+        with tempfile.TemporaryDirectory() as td:
+            out_file = os.path.join(td, "test_bilingual.srt")
+            with mock.patch("src.desktop.ui.translation_interface.FolderMemoryDialog.getSaveFileName", return_value=(out_file, "")):
+                ui._export_bilingual_srt()
+
+            self.assertTrue(os.path.exists(out_file))
+            saved_content = Path(out_file).read_text(encoding="utf-8")
+            self.assertIn("Hello", saved_content)
+            self.assertIn("Xin chào", saved_content)
+
 
 if __name__ == "__main__":
     unittest.main()

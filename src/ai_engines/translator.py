@@ -2,7 +2,7 @@
 
 Supports:
 - Parsing SRT, VTT, and ASS subtitle files.
-- Translation via Free Google Translate API, OpenAI/Gemini/Ollama LLM APIs, and DeepL API.
+- Translation via Free Google Translate API, OpenAI/Gemini/Ollama LLM APIs, Llama.cpp, and MarianNMT.
 - Exporting single-language SRT/VTT/ASS and Bilingual (Song ngữ) SRT.
 """
 
