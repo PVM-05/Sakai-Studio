@@ -891,6 +891,9 @@ def create_polygon_mask(
             poly_pts = item[0]
         elif isinstance(item, (np.ndarray, list)):
             poly_pts = item
+        elif isinstance(item, (tuple, list)) and len(item) >= 4 and all(isinstance(v, (int, float, np.integer, np.floating)) for v in item[:4]):
+            xmin, xmax, ymin, ymax = [int(v) for v in item[:4]]
+            poly_pts = np.array([[xmin, ymin], [xmax, ymin], [xmax, ymax], [xmin, ymax]], dtype=np.int32)
 
         if poly_pts is None:
             continue

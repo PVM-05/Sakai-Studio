@@ -799,7 +799,11 @@ class GUISubtitleRemover:
                     self.append_output(tr['Main']['ReadImageFailed'].format(self.video_path))
                     raise RuntimeError(tr['Main']['ReadImageFailed'].format(self.video_path))
                 sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
-                sub_list = sub_detector.detect_subtitle(original_frame)
+                mask_mode = getattr(config.maskType, 'value', 'stroke')
+                if mask_mode == 'polygon':
+                    sub_list = sub_detector.detect_polygons(original_frame)
+                else:
+                    sub_list = sub_detector.detect_subtitle(original_frame)
                 del sub_detector
                 gc.collect()
                 if len(sub_list) or self._has_positive_strokes():

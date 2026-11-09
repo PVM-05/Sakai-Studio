@@ -784,7 +784,7 @@ class Config(QConfig):
     # New Poisson Blending toggle setting
     poissonBlending = ConfigItem("Main", "PoissonBlending", True, BoolValidator())
     temporalSmoothing = ConfigItem("Main", "TemporalSmoothing", True, BoolValidator())
-    maskType = OptionsConfigItem("Main", "MaskType", "stroke", OptionsValidator(["stroke", "box"]))
+    maskType = OptionsConfigItem("Main", "MaskType", "stroke", OptionsValidator(["stroke", "box", "polygon"]))
     autoHardwareTuning = ConfigItem("Main", "AutoHardwareTuning", True, BoolValidator())
     gpuVideoEncoding = ConfigItem("Main", "GpuVideoEncoding", True, BoolValidator())
     sharpenInpaintedArea = ConfigItem("Main", "SharpenInpaintedArea", True, BoolValidator())

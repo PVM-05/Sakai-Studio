@@ -1774,101 +1774,128 @@ class HomeInterface(QWidget):
                     SubtitleRemoverRemoteCall.remote_call_update_preview_with_comp(queue, list(args))
 
             os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+            from src.core.config import config
+            orig_dilation = getattr(config.maskDilation, 'value', 8)
+            orig_feather = getattr(config.maskFeather, 'value', 4)
+            orig_mode = getattr(config.inpaintMode, 'value', None)
+
             max_retries = 2
             active_options = dict(options)
-            for attempt in range(max_retries + 1):
-                if attempt > 0:
-                    cur_temp_path = f"{base_no_ext}.tmp_{os.getpid()}_{attempt}{ext or '.mp4'}"
-                else:
-                    cur_temp_path = temp_output_path
+            try:
+                for attempt in range(max_retries + 1):
+                    if attempt > 0:
+                        cur_temp_path = f"{base_no_ext}.tmp_{os.getpid()}_{attempt}{ext or '.mp4'}"
+                    else:
+                        cur_temp_path = temp_output_path
 
-                sr = GUISubtitleRemover(video_path, True, callback=RemoteCallback())
-                sr.video_out_path = cur_temp_path
-                for key, val in active_options.items():
-                    setattr(sr, key, val)
-                if 'freehand_strokes' in active_options and not getattr(sr, 'strokes', None):
-                    sr.strokes = active_options['freehand_strokes']
+                    sr = GUISubtitleRemover(video_path, True, callback=RemoteCallback())
+                    sr.video_out_path = cur_temp_path
+                    for key, val in active_options.items():
+                        setattr(sr, key, val)
+                    if 'freehand_strokes' in active_options and not getattr(sr, 'strokes', None):
+                        sr.strokes = active_options['freehand_strokes']
 
-                sr.run()
+                    sr.run()
 
-                expected_frames = int(sr.frame_count) if not sr.is_picture else 0
-                expected_fps = float(sr.fps) if not sr.is_picture else 0.0
-                require_audio = bool(getattr(sr, 'source_has_audio', False)) and not sr.is_picture
-                if not verify_media_output(
-                    cur_temp_path,
-                    is_picture=sr.is_picture,
-                    expected_frames=expected_frames,
-                    expected_fps=expected_fps,
-                    require_audio=require_audio,
-                ):
-                    raise RuntimeError(f"Tệp kết quả tạm không hợp lệ: {cur_temp_path}")
+                    expected_frames = int(sr.frame_count) if not sr.is_picture else 0
+                    expected_fps = float(sr.fps) if not sr.is_picture else 0.0
+                    require_audio = bool(getattr(sr, 'source_has_audio', False)) and not sr.is_picture
+                    if not verify_media_output(
+                        cur_temp_path,
+                        is_picture=sr.is_picture,
+                        expected_frames=expected_frames,
+                        expected_fps=expected_fps,
+                        require_audio=require_audio,
+                    ):
+                        raise RuntimeError(f"Tệp kết quả tạm không hợp lệ: {cur_temp_path}")
 
-                # Cổng kiểm soát chất lượng sau xuất: kiểm tra vết chữ còn sót
-                quality_res = verify_media_quality(
-                    cur_temp_path,
-                    getattr(sr, 'sub_areas', []),
-                    tracking_trajectory=getattr(sr, 'tracking_trajectory', None),
-                    subtitle_intervals=getattr(sr, 'subtitle_intervals', None),
-                    fps=getattr(sr, 'fps', None),
-                    fallback_used=bool(getattr(sr, 'vram_fallback_used', False)),
-                )
-                q_status = quality_res.get("status", "PASS")
-
-                # Nếu phát hiện chữ còn sót và vẫn còn lượt thử lại trong thang nâng cấp
-                if q_status == "FAIL" and attempt < max_retries:
-                    from src.core.quality_gate import (
-                        retry_config_patch_for_gate,
-                        STATUS_REVIEW,
-                        LADDER_INCREASE_DILATION,
-                        LADDER_ALTERNATE_INPAINTER,
+                    # Cổng kiểm soát chất lượng sau xuất: kiểm tra vết chữ còn sót
+                    quality_res = verify_media_quality(
+                        cur_temp_path,
+                        getattr(sr, 'sub_areas', []),
+                        tracking_trajectory=getattr(sr, 'tracking_trajectory', None),
+                        subtitle_intervals=getattr(sr, 'subtitle_intervals', None),
+                        fps=getattr(sr, 'fps', None),
+                        fallback_used=bool(getattr(sr, 'vram_fallback_used', False)),
                     )
-                    ladder_step = LADDER_INCREASE_DILATION if attempt == 0 else LADDER_ALTERNATE_INPAINTER
-                    gate_eval = {
-                        "status": STATUS_REVIEW,
-                        "ladderStep": ladder_step,
-                        "reasons": [{"metric": "residual_text", "ladder": ladder_step}],
-                    }
-                    from src.core.config import config
-                    patch = retry_config_patch_for_gate(gate_eval, config)
-                    if "mask_dilate_px" in patch:
-                        config.maskDilation.value = patch["mask_dilate_px"]
-                        active_options["mask_dilate_px"] = patch["mask_dilate_px"]
-                    if "mask_feather_px" in patch:
-                        config.maskFeather.value = patch["mask_feather_px"]
-                        active_options["mask_feather_px"] = patch["mask_feather_px"]
-                    if "mode" in patch:
-                        from src.core.config import InpaintMode
-                        mode_val = str(patch["mode"]).lower()
-                        if mode_val == "lama":
-                            config.inpaintMode.value = InpaintMode.LAMA
-                            active_options["inpaint_mode"] = InpaintMode.LAMA
+                    q_status = quality_res.get("status", "PASS")
 
-                    SubtitleRemoverRemoteCall.remote_call_append_log(
-                        queue,
-                        [f"[Tự động thử lại] Phát hiện chữ còn sót, đang áp dụng thang nâng cấp chất lượng để xử lý lại (lần thử {attempt + 1}/{max_retries})..."]
-                    )
-                    if os.path.exists(cur_temp_path):
-                        try:
-                            os.remove(cur_temp_path)
-                        except Exception:
-                            pass
-                    continue
+                    # Nếu phát hiện chữ còn sót và vẫn còn lượt thử lại trong thang nâng cấp
+                    if q_status == "FAIL" and attempt < max_retries:
+                        from src.core.quality_gate import (
+                            retry_config_patch_for_gate,
+                            STATUS_REVIEW,
+                            LADDER_INCREASE_DILATION,
+                            LADDER_ALTERNATE_INPAINTER,
+                        )
+                        ladder_step = LADDER_INCREASE_DILATION if attempt == 0 else LADDER_ALTERNATE_INPAINTER
+                        gate_eval = {
+                            "status": STATUS_REVIEW,
+                            "ladderStep": ladder_step,
+                            "reasons": [{"metric": "residual_text", "ladder": ladder_step}],
+                        }
+                        patch = retry_config_patch_for_gate(gate_eval, config)
+                        if "mask_dilate_px" in patch:
+                            config.maskDilation.value = patch["mask_dilate_px"]
+                            active_options["mask_dilate_px"] = patch["mask_dilate_px"]
+                        if "mask_feather_px" in patch:
+                            config.maskFeather.value = patch["mask_feather_px"]
+                            active_options["mask_feather_px"] = patch["mask_feather_px"]
+                        if "mode" in patch:
+                            from src.core.config import InpaintMode
+                            mode_val = str(patch["mode"]).lower()
+                            if mode_val == "lama":
+                                config.inpaintMode.value = InpaintMode.LAMA
+                                active_options["inpaint_mode"] = InpaintMode.LAMA
 
-                # Hoàn tất xử lý hoặc đã đạt số lần thử tối đa
-                os.replace(cur_temp_path, output_path)
-                run_status = getattr(sr, 'run_status', 'success')
-                detail = ""
-                if run_status == "partial" and isinstance(getattr(sr, 'tracking_report', None), dict):
-                    detail = sr.tracking_report.get("warning_message", "")
+                        # Tối ưu hóa thử lại theo đoạn: chỉ inpaint các phân đoạn phát hiện chữ còn sót
+                        bad_frames = quality_res.get("diagnostics", {}).get("text_detected_frames", [])
+                        tot_f = expected_frames or getattr(sr, 'frame_count', 0)
+                        if bad_frames and tot_f > 10:
+                            raw_ranges = [(max(0, f - 15), min(tot_f - 1, f + 15)) for f in bad_frames]
+                            raw_ranges.sort(key=lambda r: r[0])
+                            merged_sec = []
+                            for r_start, r_end in raw_ranges:
+                                if not merged_sec or r_start > merged_sec[-1][1]:
+                                    merged_sec.append([r_start, r_end])
+                                else:
+                                    merged_sec[-1][1] = max(merged_sec[-1][1], r_end)
+                            if sum(e - s for s, e in merged_sec) < tot_f * 0.70:
+                                active_options["ab_sections"] = [range(s, e + 1) for s, e in merged_sec]
 
-                if q_status in ("FAIL", "WARNING", "UNVERIFIED") or not quality_res.get("passed", True):
-                    if q_status == "FAIL" or not quality_res.get("passed", True):
-                        run_status = "partial"
-                    msg = quality_res.get("message", "")
-                    detail = f"{detail}. {msg}".strip(". ") if detail else msg
+                        SubtitleRemoverRemoteCall.remote_call_append_log(
+                            queue,
+                            [f"[Tự động thử lại] Phát hiện chữ còn sót, đang áp dụng thang nâng cấp chất lượng để xử lý lại (lần thử {attempt + 1}/{max_retries})..."]
+                        )
+                        if os.path.exists(cur_temp_path):
+                            try:
+                                os.remove(cur_temp_path)
+                            except Exception:
+                                pass
+                        continue
 
-                SubtitleRemoverRemoteCall.remote_call_report_result(queue, run_status, output_path, detail)
-                break
+                    # Hoàn tất xử lý hoặc đã đạt số lần thử tối đa
+                    os.replace(cur_temp_path, output_path)
+                    run_status = getattr(sr, 'run_status', 'success')
+                    detail = ""
+                    if run_status == "partial" and isinstance(getattr(sr, 'tracking_report', None), dict):
+                        detail = sr.tracking_report.get("warning_message", "")
+
+                    if q_status in ("FAIL", "WARNING", "UNVERIFIED") or not quality_res.get("passed", True):
+                        if q_status == "FAIL" or not quality_res.get("passed", True):
+                            run_status = "partial"
+                        msg = quality_res.get("message", "")
+                        detail = f"{detail}. {msg}".strip(". ") if detail else msg
+
+                    SubtitleRemoverRemoteCall.remote_call_report_result(queue, run_status, output_path, detail)
+                    break
+            finally:
+                if hasattr(config, 'maskDilation'):
+                    config.maskDilation.value = orig_dilation
+                if hasattr(config, 'maskFeather'):
+                    config.maskFeather.value = orig_feather
+                if hasattr(config, 'inpaintMode') and orig_mode is not None:
+                    config.inpaintMode.value = orig_mode
         except Exception as e:
             exit_code = 1
             traceback.print_exc()
@@ -2329,7 +2356,12 @@ class HomeInterface(QWidget):
             from src.core.tools.subtitle_detect import SubtitleDetect
             video_src = self.current_video_path or getattr(self, 'video_path', None) or ""
             sub_detector = SubtitleDetect(video_src, sub_areas=selections)
-            detected_boxes = sub_detector.detect_subtitle(preview_frame)
+            mask_type = getattr(config, 'maskType', None)
+            mask_type_val = mask_type.value if hasattr(mask_type, 'value') else (str(mask_type) if mask_type else 'stroke')
+            if mask_type_val == 'polygon':
+                detected_boxes = sub_detector.detect_polygons(preview_frame)
+            else:
+                detected_boxes = sub_detector.detect_subtitle(preview_frame)
             if detected_boxes:
                 mask_coords = detected_boxes
             elif not strokes or len(strokes) == 0:

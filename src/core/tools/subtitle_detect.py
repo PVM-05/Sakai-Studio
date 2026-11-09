@@ -147,6 +147,97 @@ class SubtitleDetect:
 
             return PaddleXWrapper(paddle_engine)
 
+    def _get_polygons_from_ocr(self, img):
+        """Trích xuất danh sách đa giác nguyên bản (N, 2) từ RapidOCR hoặc PaddleOCR."""
+        mode = config.subtitleDetectMode.value
+        mode_val = mode.value if hasattr(mode, 'value') else str(mode)
+        polygons = []
+        try:
+            if mode_val == SubtitleDetectMode.RAPID_OCR.value:
+                result_rapid, _ = self.text_detector(img)
+                if result_rapid:
+                    for line in result_rapid:
+                        if isinstance(line, (list, tuple)) and len(line) >= 1:
+                            box = line[0]
+                            pts = np.asarray(box, dtype=np.int32)
+                            if pts.ndim == 2 and pts.shape[0] >= 3:
+                                polygons.append(pts)
+            else:
+                results = self.text_detector.predict(img)
+                for res in results:
+                    dt_polys = res.get('dt_polys') if isinstance(res, dict) else getattr(res, 'dt_polys', None)
+                    if dt_polys is None or len(dt_polys) == 0:
+                        continue
+                    poly_list = dt_polys.tolist() if hasattr(dt_polys, 'tolist') else dt_polys
+                    if poly_list and isinstance(poly_list[0][0], (int, float)):
+                        poly_list = [poly_list]
+                    for p in poly_list:
+                        pts = np.asarray(p, dtype=np.int32)
+                        if pts.ndim == 2 and pts.shape[0] >= 3:
+                            polygons.append(pts)
+        except Exception as e:
+            print(f"[Detection] Lỗi trích xuất đa giác: {e}")
+        return polygons
+
+    def detect_polygons(self, img):
+        """Nhận diện và trả về danh sách các đa giác (polygon) thực tế bám sát nét chữ."""
+        sub_areas = self.sub_areas
+        has_areas = sub_areas is not None and len(sub_areas) > 0
+        h, w = img.shape[:2]
+
+        if has_areas:
+            if len(sub_areas) == 1:
+                target_area = sub_areas[0]
+            else:
+                target_area = (
+                    min(area[0] for area in sub_areas),
+                    max(area[1] for area in sub_areas),
+                    min(area[2] for area in sub_areas),
+                    max(area[3] for area in sub_areas),
+                )
+            ymin_crop, ymax_crop, xmin_crop, xmax_crop = expand_search_roi(target_area, frame_w=w, frame_h=h)
+            cropped_img = img[ymin_crop:ymax_crop, xmin_crop:xmax_crop]
+            if cropped_img.size == 0:
+                return []
+        else:
+            cropped_img = img
+            ymin_crop, xmin_crop = 0, 0
+
+        try:
+            gray = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2GRAY) if cropped_img.ndim == 3 else cropped_img
+            if gray.std() < 3.0:
+                return []
+        except Exception:
+            pass
+
+        raw_polygons = self._get_polygons_from_ocr(cropped_img)
+        if not raw_polygons:
+            coords = self._get_coordinates_from_paddle(cropped_img)
+            for box in coords:
+                xmin, xmax, ymin, ymax = box[:4]
+                raw_polygons.append(np.array([[xmin, ymin], [xmax, ymin], [xmax, ymax], [xmin, ymax]], dtype=np.int32))
+
+        shifted_polys = []
+        for poly in raw_polygons:
+            shifted = poly.copy()
+            shifted[:, 0] += xmin_crop
+            shifted[:, 1] += ymin_crop
+            shifted_polys.append(shifted)
+
+        if not has_areas:
+            return shifted_polys
+
+        filtered = []
+        for poly in shifted_polys:
+            bx1, by1 = int(np.min(poly[:, 0])), int(np.min(poly[:, 1]))
+            bx2, by2 = int(np.max(poly[:, 0])), int(np.max(poly[:, 1]))
+            box = (bx1, bx2, by1, by2)
+            for area in sub_areas:
+                if overlaps_selected_region(box, area, min_ratio=0.15):
+                    filtered.append(poly)
+                    break
+        return filtered
+
     def _get_coordinates_from_paddle(self, img):
         """Run PaddleOCR/RapidOCR and return coordinates in (xmin,xmax,ymin,ymax) format."""
         
@@ -226,7 +317,9 @@ class SubtitleDetect:
                 
         return merged
 
-    def detect_subtitle(self, img):
+    def detect_subtitle(self, img, return_polygons: bool = False):
+        if return_polygons:
+            return self.detect_polygons(img)
         sub_areas = self.sub_areas
         has_areas = sub_areas is not None and len(sub_areas) > 0
         h, w = img.shape[:2]

@@ -205,8 +205,24 @@ def _retry_steps_for_gate(gate: Mapping[str, Any]) -> list[str]:
 
 
 def _config_value(config: Any, name: str, default: Any) -> Any:
+    alias_map = {
+        "mask_dilate_px": ("maskDilation", "mask_dilate_px"),
+        "mask_feather_px": ("maskFeather", "mask_feather_px"),
+        "mode": ("inpaintMode", "mode"),
+        "temporal_smooth_radius": ("temporalSmoothing", "temporal_smooth_radius"),
+    }
+    candidates = alias_map.get(name, (name,))
     if isinstance(config, Mapping):
-        return config.get(name, default)
+        for cand in candidates:
+            if cand in config:
+                val = config[cand]
+                return getattr(val, "value", val)
+        return default
+
+    for cand in candidates:
+        if hasattr(config, cand):
+            attr_val = getattr(config, cand)
+            return getattr(attr_val, "value", attr_val)
     return getattr(config, name, default)
 
 

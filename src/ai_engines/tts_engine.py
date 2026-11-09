@@ -1320,7 +1320,7 @@ class TTSEngine:
         # Nếu Whisper fallback không trả về kết quả, để OmniVoice tự xử lý hoặc dùng chuỗi mặc định
         return ""
 
-    def set_reference_voice(self, ref_audio_path: str, ref_text: Optional[str] = None) -> bool:
+    def set_reference_voice(self, ref_audio_path: str, ref_text: Optional[str] = None, force: bool = False) -> bool:
         """
         Đặt giọng mẫu từ tệp âm thanh (.wav, .mp3, .m4a) hoặc tệp mẫu đã lưu (.pt).
         Tạo VoiceClonePrompt và lưu vào bộ nhớ đệm để tái sử dụng cho toàn bộ video.
@@ -1337,9 +1337,6 @@ class TTSEngine:
         if ref_text is not None:
             self.ref_text = ref_text
 
-        self.load_model()
-        self.log(f"Đang mã hóa đặc trưng giọng mẫu từ tệp: {os.path.basename(ref_audio_path)}...")
-
         # Tự động chuẩn hóa LUFS, khử nhiễu quang phổ và chấm điểm chất lượng âm thanh mẫu
         effective_audio_path = ref_audio_path
         try:
@@ -1347,9 +1344,13 @@ class TTSEngine:
             import soundfile as sf
             raw_audio, in_sr = sf.read(ref_audio_path, dtype="float32")
             qc_report = evaluate_reference_audio_quality(raw_audio, sr=in_sr)
+            self.last_qc_report = qc_report
             self.log(f"Đánh giá chất lượng âm thanh mẫu: {qc_report.score}/100 điểm ({qc_report.grade}).")
             if not qc_report.is_acceptable:
-                self.log(f"Cảnh báo: {qc_report.rejection_reason}")
+                if not force:
+                    self.log(f"Từ chối tệp âm thanh mẫu: {qc_report.rejection_reason} (Điểm chất lượng: {qc_report.score}/100). Vui lòng chọn mẫu âm thanh khác rõ ràng hơn.")
+                    return False
+                self.log(f"Cảnh báo: Âm thanh mẫu không đạt chuẩn nhưng được cưỡng bức sử dụng: {qc_report.rejection_reason}")
             norm_audio = normalize_reference_audio(raw_audio, source_sr=in_sr, target_sr=24000, target_lufs=-16.0)
             if len(norm_audio) > 0:
                 base_stem, _ = os.path.splitext(ref_audio_path)
@@ -1358,6 +1359,9 @@ class TTSEngine:
                 effective_audio_path = norm_path
         except Exception as exc:
             self.log(f"Bỏ qua chuẩn hóa âm thanh mẫu tự động: {exc}")
+
+        self.load_model()
+        self.log(f"Đang mã hóa đặc trưng giọng mẫu từ tệp: {os.path.basename(ref_audio_path)}...")
 
         try:
             resolved_ref_text = self.ref_text

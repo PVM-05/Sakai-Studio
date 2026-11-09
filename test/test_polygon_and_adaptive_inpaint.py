@@ -16,25 +16,22 @@ from src.core.quality_gate import (
     LADDER_INCREASE_DILATION,
     LADDER_ALTERNATE_INPAINTER,
 )
+from src.core.config import config
 
 
 def test_measure_text_stroke_width_and_adaptive_dilation():
     """Kiểm tra thuật toán đo độ dày nét chữ và tính toán độ giãn nở thích ứng."""
-    # Tạo ảnh trắng nền đen có nét chữ mảnh (độ dày 2px)
     thin_img = np.zeros((60, 120, 3), dtype=np.uint8)
     cv2.putText(thin_img, "TEST", (10, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), thickness=2)
     thin_stroke = measure_text_stroke_width(thin_img)
     thin_dilation = calculate_adaptive_stroke_dilation(thin_img, base_dilation=8)
 
-    # Tạo ảnh có nét chữ dày (độ dày 8px)
     thick_img = np.zeros((60, 120, 3), dtype=np.uint8)
     cv2.putText(thick_img, "TEST", (10, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), thickness=8)
     thick_stroke = measure_text_stroke_width(thick_img)
     thick_dilation = calculate_adaptive_stroke_dilation(thick_img, base_dilation=8)
 
-    # Nét dày phải có stroke width lớn hơn nét mảnh
     assert thick_stroke > thin_stroke
-    # Độ giãn nở thích ứng của nét dày phải lớn hơn nét mảnh
     assert thick_dilation >= thin_dilation
     assert 3 <= thin_dilation <= 16
     assert 3 <= thick_dilation <= 16
@@ -43,18 +40,24 @@ def test_measure_text_stroke_width_and_adaptive_dilation():
 def test_create_polygon_mask_geometry():
     """Kiểm tra tạo mặt nạ đa giác không làm phình diện tích như hộp chữ nhật."""
     h, w = 100, 100
-    # Đa giác tam giác hoặc tứ giác nghiêng
     poly = np.array([[20, 20], [80, 20], [60, 80], [20, 80]], dtype=np.int32)
     mask = create_polygon_mask((h, w), [poly], dilation=2, feather_pixels=0)
 
     assert mask.shape == (h, w)
     assert mask.dtype == np.float32
-    # Điểm bên trong đa giác phải bằng 1.0
     assert mask[40, 40] == 1.0
-    # Điểm ở góc ngoài (0, 0) phải bằng 0.0
     assert mask[0, 0] == 0.0
-    # Điểm góc ngoài (90, 90) phải bằng 0.0
     assert mask[90, 90] == 0.0
+
+
+def test_create_polygon_mask_accepts_boxes_and_polygons():
+    """Kiểm tra create_polygon_mask chấp nhận cả hộp 4 phần tử lẫn đa giác điểm."""
+    h, w = 120, 120
+    box_coord = (10, 60, 20, 80)  # xmin, xmax, ymin, ymax
+    mask = create_polygon_mask((h, w), [box_coord], dilation=0, feather_pixels=0)
+    assert mask.shape == (h, w)
+    assert mask[40, 30] == 1.0
+    assert mask[0, 0] == 0.0
 
 
 def test_create_combined_mask_with_polygon_mode():
@@ -69,8 +72,7 @@ def test_create_combined_mask_with_polygon_mode():
 
 
 def test_residual_ocr_verification_blank_frame():
-    """Kiểm tra residual_ocr_verification xử lý an toàn khung hình sạch và khung hình rỗng."""
-    # Khung hình rỗng / None
+    """Kiểm tra residual_ocr_verification xử lý an toàn khung hình sạch và khung hình rỗng (ca âm tính)."""
     res_none = residual_ocr_verification(None)
     assert res_none["has_residual"] is False
     assert res_none["char_count"] == 0
@@ -79,11 +81,48 @@ def test_residual_ocr_verification_blank_frame():
     res_empty = residual_ocr_verification(empty_frame)
     assert res_empty["has_residual"] is False
 
-    # Khung hình nền đen không có chữ
     blank_frame = np.zeros((100, 300, 3), dtype=np.uint8)
     res_blank = residual_ocr_verification(blank_frame)
     assert res_blank["has_residual"] is False
     assert res_blank["char_count"] == 0
+
+
+def test_residual_ocr_verification_positive_case():
+    """Kiểm tra residual_ocr_verification phát hiện chữ tồn dư trên khung hình (ca dương tính)."""
+    # Tạo ảnh trắng có dòng chữ đen sắc nét rõ ràng
+    frame_with_text = np.full((120, 400, 3), 255, dtype=np.uint8)
+    cv2.putText(
+        frame_with_text,
+        "PHU DE SOT",
+        (30, 75),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.5,
+        (0, 0, 0),
+        thickness=3,
+    )
+    res = residual_ocr_verification(frame_with_text, threshold_chars=3)
+    # Xác nhận RapidOCR phát hiện ra chữ sót
+    assert res["has_residual"] is True
+    assert res["char_count"] >= 3
+    assert res["confidence"] >= 0.40
+
+
+def test_retry_config_patch_reads_sakai_config_mask_dilation():
+    """Kiểm tra retry_config_patch_for_gate đọc đúng thuộc tính maskDilation của Sakai config thay vì tính từ 8."""
+    # Giả định người dùng đã đặt maskDilation là 14 trên giao diện
+    orig_dilation = config.maskDilation.value
+    try:
+        config.maskDilation.value = 14
+        gate_dilation = {
+            "status": STATUS_REVIEW,
+            "ladderStep": LADDER_INCREASE_DILATION,
+            "reasons": [{"metric": "residual_text", "ladder": LADDER_INCREASE_DILATION}],
+        }
+        patch = retry_config_patch_for_gate(gate_dilation, config)
+        # 14 + 4 = 18 (không bị reset về 8 + 4 = 12)
+        assert patch.get("mask_dilate_px") == 18
+    finally:
+        config.maskDilation.value = orig_dilation
 
 
 def test_retry_config_patch_for_gate_steps():
@@ -94,23 +133,21 @@ def test_retry_config_patch_for_gate_steps():
             self.mask_feather_px = 4
             self.mode = "sttn"
 
-    config = FakeConfig()
+    fake_cfg = FakeConfig()
 
-    # Bước 1: Tăng độ giãn nở mặt nạ
     gate_dilation = {
         "status": STATUS_REVIEW,
         "ladderStep": LADDER_INCREASE_DILATION,
         "reasons": [{"metric": "residual_text", "ladder": LADDER_INCREASE_DILATION}],
     }
-    patch1 = retry_config_patch_for_gate(gate_dilation, config)
+    patch1 = retry_config_patch_for_gate(gate_dilation, fake_cfg)
     assert patch1.get("mask_dilate_px") == 12
     assert patch1.get("quality_report") is True
 
-    # Bước 2: Chuyển đổi mô hình phục hồi nền thay thế
     gate_inpaint = {
         "status": STATUS_REVIEW,
         "ladderStep": LADDER_ALTERNATE_INPAINTER,
         "reasons": [{"metric": "residual_text", "ladder": LADDER_ALTERNATE_INPAINTER}],
     }
-    patch2 = retry_config_patch_for_gate(gate_inpaint, config)
+    patch2 = retry_config_patch_for_gate(gate_inpaint, fake_cfg)
     assert patch2.get("mode") == "lama"

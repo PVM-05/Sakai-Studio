@@ -109,7 +109,7 @@ class SettingInterface(QtWidgets.QVBoxLayout):
 
         # Mask Type
         self.mask_type_combo = ComboBox(parent)
-        self.mask_type_combo.addItems(["Nét chữ", "Hộp chữ nhật"])
+        self.mask_type_combo.addItems(["Nét chữ", "Hộp chữ nhật", "Đa giác"])
         self.mask_type_combo.setCurrentIndex(get_idx(config.maskType.value, config.maskType.validator.options))
         self.mask_type_combo.currentIndexChanged.connect(lambda idx: config.set(config.maskType, list(config.maskType.validator.options)[idx]))
         config.maskType.valueChanged.connect(lambda val: self.mask_type_combo.setCurrentIndex(get_idx(val, config.maskType.validator.options)))

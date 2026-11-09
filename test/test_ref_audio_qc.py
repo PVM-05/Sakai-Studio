@@ -84,6 +84,29 @@ class TestRefAudioQC(unittest.TestCase):
         self.assertTrue(acc)
         self.assertIn("điểm", msg)
 
+    def test_set_reference_voice_rejects_poor_audio(self):
+        """Xác minh set_reference_voice chặn hoàn toàn mẫu âm thanh kém chất lượng khi force=False."""
+        import tempfile
+        import soundfile as sf
+        from src.ai_engines.tts_engine import TTSEngine
+
+        engine = TTSEngine()
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            sr = 24000
+            short_audio = np.zeros(int(0.5 * sr), dtype=np.float32)
+            sf.write(tmp_path, short_audio, sr)
+
+            res = engine.set_reference_voice(tmp_path, force=False)
+            self.assertFalse(res)
+            self.assertIsNotNone(engine.last_qc_report)
+            self.assertFalse(engine.last_qc_report.is_acceptable)
+            self.assertLess(engine.last_qc_report.score, 40)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
 
 if __name__ == "__main__":
     unittest.main()

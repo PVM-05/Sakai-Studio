@@ -3632,10 +3632,43 @@ class OmniVoiceInterface(ScrollArea):
             )
             self.casting_table.setCellWidget(row, 3, combo_voice)
 
-            # Cột 4: Trạng Thái
+            # Cột 4: Trạng Thái (Kèm điểm đánh giá chất lượng âm thanh mẫu)
+            prof_item = self.speaker_profiles.get(spk_name)
+            sample_path = (
+                getattr(prof_item, "source_audio_path", "")
+                or getattr(prof_item, "_backup_source_audio", "")
+                or (prof_item.get("source_audio_path", "") if isinstance(prof_item, dict) else "")
+                or (prof_item.get("_backup_source_audio", "") if isinstance(prof_item, dict) else "")
+            )
+            qc_score = prof_info.get("qc_score") if isinstance(prof_info, dict) else getattr(prof_info, "qc_score", None)
+            qc_reason = prof_info.get("qc_reason", "") if isinstance(prof_info, dict) else getattr(prof_info, "qc_reason", "")
+            if qc_score is None and sample_path and os.path.exists(sample_path):
+                try:
+                    from src.ai_engines.ref_audio_qc import evaluate_reference_audio_quality
+                    import soundfile as sf
+                    a_data, a_sr = sf.read(sample_path, dtype="float32")
+                    report = evaluate_reference_audio_quality(a_data, sr=a_sr)
+                    qc_score = report.score
+                    qc_reason = report.rejection_reason or report.grade
+                    if isinstance(prof_info, dict):
+                        prof_info["qc_score"] = qc_score
+                        prof_info["qc_reason"] = qc_reason
+                    else:
+                        setattr(prof_info, "qc_score", qc_score)
+                        setattr(prof_info, "qc_reason", qc_reason)
+                except Exception:
+                    pass
+
             status_val = prof_info.get("status", "locked")
             conf_code = data.get("confidence", "high")
-            if status_val == "locked":
+            if qc_score is not None:
+                if qc_score >= 70:
+                    status_str = f"Đạt chuẩn ({qc_score}/100)"
+                elif qc_score >= 40:
+                    status_str = f"Chấp nhận ({qc_score}/100)"
+                else:
+                    status_str = f"Kém ({qc_score}/100)"
+            elif status_val == "locked":
                 status_str = "Đã khóa"
             elif conf_code == "review_needed" or status_val == "review_needed":
                 status_str = "Cần kiểm tra"
@@ -3644,6 +3677,12 @@ class OmniVoiceInterface(ScrollArea):
 
             item_status = QTableWidgetItem(status_str)
             item_status.setFlags(item_status.flags() & ~Qt.ItemIsEditable)
+            if qc_score is not None and qc_score < 40:
+                from PySide6.QtGui import QColor
+                item_status.setForeground(QColor("#d83b01"))
+                item_status.setToolTip(f"Chất lượng âm thanh mẫu chưa đạt chuẩn ({qc_score}/100): {qc_reason}")
+            elif qc_score is not None:
+                item_status.setToolTip(f"Chất lượng âm thanh mẫu: {qc_score}/100 ({qc_reason})")
             self.casting_table.setItem(row, 4, item_status)
 
             # Cột 5: Thao Tác (Nút Nghe Giọng Gốc và Nghe Thử Giọng Trí Tuệ Nhân Tạo)
@@ -5030,10 +5069,25 @@ class OmniVoiceInterface(ScrollArea):
         ) if prof else ""
 
         if ref_path and os.path.exists(ref_path):
-
+            qc_score = prof.get("qc_score") if is_dict else getattr(prof, "qc_score", None)
+            qc_reason = prof.get("qc_reason", "") if is_dict else getattr(prof, "qc_reason", "")
             self._play_audio_file(ref_path)
-
-            InfoBar.info("Đang phát mẫu giọng", f"Đang nghe thử giọng mẫu gốc của {spk_name}.", parent=self, duration=2500)
+            if qc_score is not None and qc_score < 40:
+                InfoBar.warning(
+                    "Chất lượng giọng mẫu thấp",
+                    f"Mẫu giọng của {spk_name} chỉ đạt {qc_score}/100 điểm ({qc_reason}). Khuyến nghị chọn đoạn rõ hơn.",
+                    parent=self,
+                    duration=4500,
+                )
+            elif qc_score is not None:
+                InfoBar.info(
+                    "Đang phát mẫu giọng",
+                    f"Đang nghe thử giọng mẫu gốc của {spk_name} (Chất lượng: {qc_score}/100 điểm).",
+                    parent=self,
+                    duration=2500,
+                )
+            else:
+                InfoBar.info("Đang phát mẫu giọng", f"Đang nghe thử giọng mẫu gốc của {spk_name}.", parent=self, duration=2500)
 
         else:
 
