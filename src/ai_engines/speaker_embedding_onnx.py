@@ -202,6 +202,8 @@ def create_speaker_session(
             "SAKAI_SPEAKER_EMBEDDING_MODEL. Ứng dụng không chạy nhận diện giả lập."
         )
     if ort is None:
+        if allow_mock:
+            return MockSpeakerSession(192), "MockExecutionProvider"
         raise ImportError(
             "Chưa cài ONNX Runtime. Hãy cài onnxruntime-gpu tương thích CUDA để dùng RTX 4050 "
             "hoặc onnxruntime cho chế độ CPU."
@@ -249,11 +251,16 @@ def create_speaker_session(
         if prefer_cuda:
             logger.warning("CUDAExecutionProvider không khả dụng; dùng CPU theo cấu hình dự phòng.")
 
-    session = ort.InferenceSession(
-        resolved_path,
-        sess_options=options,
-        providers=providers,
-    )
+    try:
+        session = ort.InferenceSession(
+            resolved_path,
+            sess_options=options,
+            providers=providers,
+        )
+    except Exception as exc:
+        if allow_mock:
+            return MockSpeakerSession(192), "MockExecutionProvider"
+        raise
     active_providers = session.get_providers()
     if prefer_cuda and strict_cuda and "CUDAExecutionProvider" not in active_providers:
         del session

@@ -1895,22 +1895,16 @@ def test_preprocess_audio_resamples_24k_to_16k():
 
 def test_generate_single_respects_custom_seed():
     """Kiểm tra generate_single chấp nhận tham số hạt số ngẫu nhiên riêng biệt khi tái tạo."""
-    import torch
     engine = TTSEngine(auto_extract_ref=False, instruct="instruct gốc")
     engine.load_model = MagicMock()
     engine.model = MagicMock()
     engine.model.generate = MagicMock(return_value=[np.zeros(24000, dtype=np.float32)])
 
-    captured_seed = None
-
-    def fake_manual_seed(seed):
-        nonlocal captured_seed
-        captured_seed = seed
-
-    with patch("torch.manual_seed", side_effect=fake_manual_seed):
+    mock_torch = MagicMock()
+    mock_torch.cuda.is_available.return_value = False
+    with patch("src.ai_engines.tts_engine.torch", mock_torch):
         engine.generate_single("Kiểm tra hạt số", seed=777888)
-
-    assert captured_seed == 777888
+        mock_torch.manual_seed.assert_called_with(777888)
 
 
 def test_reset_speaker_locked_prompt_removes_anchor_files_on_disk(tmp_path):

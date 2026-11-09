@@ -1805,7 +1805,7 @@ class TTSEngine:
         session = None
         try:
             from .speaker_embedding_onnx import create_speaker_session, extract_speaker_embedding, close_speaker_session
-            sess_res = create_speaker_session(self.speaker_model_path, prefer_cuda=False)
+            sess_res = create_speaker_session(self.speaker_model_path, prefer_cuda=False, allow_mock=self.allow_mock)
             session = sess_res[0] if isinstance(sess_res, tuple) else sess_res
         except Exception:
             session = None
@@ -2009,7 +2009,7 @@ class TTSEngine:
         effective_allow_mock = self.allow_mock if allow_mock is None else bool(allow_mock)
 
         # Tự động tải mô hình CAM++ nếu chưa có hoặc dung lượng không hợp lệ (< 1MB)
-        if not self.speaker_model_path or not os.path.exists(self.speaker_model_path) or os.path.getsize(self.speaker_model_path) < 1024 * 1024:
+        if not effective_allow_mock and (not self.speaker_model_path or not os.path.exists(self.speaker_model_path) or os.path.getsize(self.speaker_model_path) < 1024 * 1024):
             try:
                 from .speaker_embedding_onnx import download_speaker_embedding_model, resolve_speaker_model_path
                 resolved = resolve_speaker_model_path(self.speaker_model_path)
@@ -3844,7 +3844,7 @@ class TTSEngine:
 
         session = None
         try:
-            session_obj = create_speaker_session(self.speaker_model_path, prefer_cuda=False)
+            session_obj = create_speaker_session(self.speaker_model_path, prefer_cuda=False, allow_mock=self.allow_mock)
             if session_obj is None:
                 return full_audio
             session = session_obj[0] if isinstance(session_obj, tuple) else session_obj
