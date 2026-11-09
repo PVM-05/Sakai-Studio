@@ -251,16 +251,11 @@ def create_speaker_session(
         if prefer_cuda:
             logger.warning("CUDAExecutionProvider không khả dụng; dùng CPU theo cấu hình dự phòng.")
 
-    try:
-        session = ort.InferenceSession(
-            resolved_path,
-            sess_options=options,
-            providers=providers,
-        )
-    except Exception as exc:
-        if allow_mock:
-            return MockSpeakerSession(192), "MockExecutionProvider"
-        raise
+    session = ort.InferenceSession(
+        resolved_path,
+        sess_options=options,
+        providers=providers,
+    )
     active_providers = session.get_providers()
     if prefer_cuda and strict_cuda and "CUDAExecutionProvider" not in active_providers:
         del session
