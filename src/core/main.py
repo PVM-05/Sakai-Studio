@@ -223,6 +223,7 @@ class GUISubtitleRemover:
         self.run_status = "pending"
         self.tracking_report = None
         self.audio_merge_failed = False
+        self.vram_fallback_used = False
         # 是否为gui运行，gui运行需要显示预览
         self.gui_mode = gui_mode
         self.hardware_accelerator = HardwareAccelerator.instance()
@@ -475,13 +476,12 @@ class GUISubtitleRemover:
                                         if area not in mask_area_coordinates:
                                             mask_area_coordinates.append(area)
                             mask = self.get_mask(temp_frames[0], mask_area_coordinates)
-                            # Cho phép LaMa xử lý theo batch để áp dụng Temporal Smoothing
-                            max_load = self.get_adaptive_propainter_max_load()
+                            f_h, f_w = temp_frames[0].shape[:2]
+                            max_load = self.get_adaptive_propainter_max_load(frame_w=f_w, frame_h=f_h, mask=mask)
                             for batch in batch_generator(temp_frames, max_load):
-                                # 2. Gọi batch inference (cho cả LaMa và ProPainter)
+                                # 2. Gọi batch inference với cơ chế chống tràn VRAM tự động
                                 if np.any(mask > 0):
-                                    # Gọi __call__ của model (LaMa hoặc ProPainter đều hỗ trợ)
-                                    inpainted_frames = propainter_inpaint(batch, mask)
+                                    inpainted_frames = self._execute_propainter_with_oom_recovery(propainter_inpaint, batch, mask)
                                     if config.temporalSmoothing.value:
                                         inpainted_frames = apply_temporal_smoothing(batch, inpainted_frames, mask, radius=config.temporalSmoothingRadius.value)
                                     for i, inpainted_frame in enumerate(inpainted_frames):
@@ -1091,22 +1091,23 @@ class GUISubtitleRemover:
         self.ass_file_path = ass_path
         self.append_output(f"[Hoàn tất] Đã xuất file phụ đề dịch: {os.path.basename(srt_path)} và {os.path.basename(ass_path)}")
 
-    def get_adaptive_propainter_max_load(self) -> int:
+    def get_adaptive_propainter_max_load(self, frame_w: int = 1280, frame_h: int = 720, mask: Optional[np.ndarray] = None) -> int:
         """
-        Trả về propainterMaxLoadNum.
-        - CHẾ ĐỘ THỦ CÔNG (autoHardwareTuning = False): Dùng 100% giá trị thủ công do người dùng fix trong Advanced Settings.
-        - CHẾ ĐỘ TỰ ĐỘNG (autoHardwareTuning = True): Tự động đo VRAM còn trống để đặt tham số an toàn tối ưu.
+        Trả về propainterMaxLoadNum theo công thức thực dụng:
+        N_safe = floor((V_available * alpha) / M_frame(W, H, crop, dtype))
+        - CHẾ ĐỘ THỦ CÔNG (autoHardwareTuning = False): Dùng giá trị thủ công do người dùng cấu hình.
+        - CHẾ ĐỘ TỰ ĐỘNG (autoHardwareTuning = True): Tự động đo VRAM còn trống và kích thước khung hình / vùng crop để đặt tải tối ưu, chống tràn bộ nhớ.
         """
         user_fixed = config.propainterMaxLoadNum.value
-        
-        # 1. CHẾ ĐỘ THỦ CÔNG (MANUAL MODE)
+
+        # 1. CHẾ ĐỘ THỦ CÔNG
         if not config.autoHardwareTuning.value:
             self.append_output(f"[Chế độ Thủ công] Tôn trọng cài đặt Advanced Settings: ProPainter Max Load = {user_fixed}")
             return user_fixed
 
-        # 2. CHẾ ĐỘ TỰ ĐỘNG (AUTO MODE)
+        # 2. CHẾ ĐỘ TỰ ĐỘNG
         if torch is None or not torch.cuda.is_available():
-            safe_load = 15
+            safe_load = 10
             self.append_output(f"[Chế độ Tự động - CPU] Đặt ProPainter Max Load = {safe_load}")
             return safe_load
 
@@ -1115,19 +1116,88 @@ class GUISubtitleRemover:
             free_vram_gb = free_bytes / (1024 ** 3)
             total_vram_gb = total_bytes / (1024 ** 3)
 
-            if free_vram_gb >= 12:
-                safe_load = 75
-            elif free_vram_gb >= 8:
-                safe_load = 55
-            elif free_vram_gb >= 4:
-                safe_load = 35
-            else:
-                safe_load = 15
+            # Tính diện tích xử lý: nếu có mask, tính vùng crop thực tế mà ProPainter sẽ cắt
+            effective_w = max(320, int(frame_w))
+            effective_h = max(240, int(frame_h))
+            if mask is not None and np.any(mask > 0):
+                split_h = int(effective_w * 3 / 16)
+                effective_h = min(effective_h, max(split_h, 120))
 
-            self.append_output(f"[Chế độ Tự động] VRAM trống: {free_vram_gb:.1f}GB/{total_vram_gb:.1f}GB -> Tự động đặt ProPainter Max Load = {safe_load}")
+            # Ước lượng bộ nhớ cho 1 frame ở float16:
+            # Baseline cho 720p (1280x720 ~ 0.92M pixel) là ~0.08 GB/frame cho luồng quang học RAFT và lan truyền đặc trưng
+            baseline_pixels = 1280 * 720
+            cur_pixels = effective_w * effective_h
+            m_frame_gb = max(0.035, 0.08 * (cur_pixels / baseline_pixels))
+
+            # Hệ số an toàn alpha = 0.70 để dành VRAM cho trọng số mô hình và bộ đệm CUDA
+            alpha = 0.70
+            v_avail_gb = max(0.5, free_vram_gb - 0.8)
+            n_calc = int(np.floor((v_avail_gb * alpha) / m_frame_gb))
+
+            safe_load = min(75, max(6, n_calc))
+
+            self.append_output(
+                f"[Chế độ Tự động] VRAM trống: {free_vram_gb:.1f}GB/{total_vram_gb:.1f}GB | "
+                f"Độ phân giải xử lý: {effective_w}x{effective_h} | "
+                f"ProPainter Max Load = {safe_load} khung hình"
+            )
             return safe_load
         except Exception:
-            return min(user_fixed, 30)
+            return min(user_fixed, 20)
+
+    def _execute_propainter_with_oom_recovery(self, propainter_model, batch, mask):
+        """
+        Thực thi ProPainter với cơ chế tự động thử lại khi tràn bộ nhớ đồ họa:
+        1. Thử xử lý cả đợt khung hình.
+        2. Nếu gặp OutOfMemoryError, dọn cache CUDA, chia đôi đợt khung hình và thử lại từng nửa.
+        3. Nếu chia nhỏ đến mức tối thiểu (< 6 khung hình) mà vẫn tràn VRAM, tự động chuyển đổi sang
+           mô hình LaMa từng khung hình để bảo toàn tiến trình xuất video, đồng thời đánh dấu cảnh báo
+           vram_fallback_used = True để cổng kiểm soát chất lượng không tự động coi là đạt.
+        """
+        try:
+            return propainter_model(batch, mask)
+        except Exception as exc:
+            err_msg = str(exc).lower()
+            is_oom = "out of memory" in err_msg or "cuda out of memory" in err_msg
+            oom_cls = getattr(getattr(torch, "cuda", None), "OutOfMemoryError", None)
+            if oom_cls is not None and isinstance(oom_cls, type) and isinstance(exc, oom_cls):
+                is_oom = True
+            if not is_oom:
+                raise
+
+            # 1. Giải phóng bộ nhớ đệm
+            gc.collect()
+            if torch and torch.cuda.is_available():
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+
+            # 2. Thử lại với đợt khung hình chia đôi nếu kích thước > 4
+            if len(batch) > 4:
+                mid = len(batch) // 2
+                b1, b2 = batch[:mid], batch[mid:]
+                self.append_output(
+                    f"[Cảnh báo VRAM] Tràn bộ nhớ đồ họa khi xử lý {len(batch)} khung hình. "
+                    f"Tự động chia nhỏ đợt ({len(b1)} và {len(b2)} khung hình) để thử lại..."
+                )
+                res1 = self._execute_propainter_with_oom_recovery(propainter_model, b1, mask)
+                res2 = self._execute_propainter_with_oom_recovery(propainter_model, b2, mask)
+                return res1 + res2
+
+            # 3. Khi đã chia nhỏ mà vẫn tràn bộ nhớ: chuyển đổi sang LaMa từng khung hình
+            self.vram_fallback_used = True
+            self.append_output(
+                "[Cảnh báo VRAM] Đã thử giảm đợt nhưng bộ nhớ đồ họa vẫn đầy. "
+                "Tự động chuyển đổi sang mô hình LaMa từng khung hình để bảo toàn tệp video; "
+                "kết quả sẽ được đánh dấu cảnh báo để kiểm tra lại chất lượng."
+            )
+            lama_engine = self.lama_inpaint
+            fallback_res = []
+            for single_frame in batch:
+                res_f = lama_engine([single_frame], mask)
+                fallback_res.append(res_f[0] if isinstance(res_f, list) else res_f)
+            return fallback_res
 
     def get_adaptive_sttn_max_load(self) -> int:
         """

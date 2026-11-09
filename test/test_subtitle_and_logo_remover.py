@@ -842,7 +842,90 @@ def test_verify_media_quality_warns_on_fallback_used(tmp_path):
     assert res["status"] == "WARNING"
     assert "dự phòng" in res["message"]
 
+def test_propainter_adaptive_load_resolution_scaling(monkeypatch):
+    """
+    Xác minh công thức tính tải an toàn N_safe của ProPainter:
+    Độ phân giải càng cao (Full HD / 4K) thì số khung hình xử lý cùng lúc tự động giảm.
+    """
+    from src.core.main import GUISubtitleRemover
+    import src.core.main as main_mod
+    from src.core.config import config
+
+    monkeypatch.setattr(config.autoHardwareTuning, "value", True)
+
+    # Giả lập môi trường có GPU 6GB (4GB VRAM khả dụng)
+    fake_mem = (int(4.0 * 1024**3), int(6.0 * 1024**3))
+    mock_torch = MagicMock()
+    mock_torch.cuda.is_available.return_value = True
+    mock_torch.cuda.mem_get_info.return_value = fake_mem
+    monkeypatch.setattr(main_mod, "torch", mock_torch)
+
+    remover = GUISubtitleRemover.__new__(GUISubtitleRemover)
+    remover.append_output = MagicMock()
+
+    # Ở độ phân giải 720p với vùng crop nhỏ
+    mask_720 = np.zeros((720, 1280), dtype=np.uint8)
+    mask_720[600:680, 200:1080] = 255
+    load_720 = remover.get_adaptive_propainter_max_load(1280, 720, mask=mask_720)
+
+    # Ở độ phân giải 1080p
+    mask_1080 = np.zeros((1080, 1920), dtype=np.uint8)
+    mask_1080[900:1040, 300:1620] = 255
+    load_1080 = remover.get_adaptive_propainter_max_load(1920, 1080, mask=mask_1080)
+
+    # Ở độ phân giải 4K toàn khung hình (vùng xóa cực lớn)
+    mask_4k = np.full((2160, 3840), 255, dtype=np.uint8)
+    load_4k = remover.get_adaptive_propainter_max_load(3840, 2160, mask=mask_4k)
+
+    # Tải ở 4K và 1080p phải nhỏ hơn tải ở 720p để bảo vệ GPU 6GB không bị tràn VRAM
+    assert load_720 >= load_1080
+    assert load_1080 > load_4k
+    assert load_4k >= 6  # Mức sàn tối thiểu an toàn
 
 
+def test_propainter_oom_recovery_halves_batch_and_falls_back(monkeypatch):
+    """
+    Xác minh cơ chế phục hồi khi tràn bộ nhớ đồ họa:
+    1. Khi gặp OutOfMemoryError ở đợt lớn, tự động chia đôi đợt và thử lại.
+    2. Khi đợt nhỏ vẫn tràn VRAM, tự động chuyển sang LaMa từng khung hình và đánh dấu vram_fallback_used.
+    """
+    from src.core.main import GUISubtitleRemover
+    import src.core.main as main_mod
 
+    mock_torch = MagicMock()
+    mock_torch.cuda.is_available.return_value = True
+    monkeypatch.setattr(main_mod, "torch", mock_torch)
+
+    remover = GUISubtitleRemover.__new__(GUISubtitleRemover)
+    remover.append_output = MagicMock()
+    remover.vram_fallback_used = False
+
+    # Giả lập mô hình LaMa dự phòng
+    remover.lama_inpaint = lambda batch, msk: [np.full((100, 100, 3), 99, dtype=np.uint8) for _ in batch]
+
+    # Kịch bản 1: Đợt 8 khung hình bị OOM một lần, nhưng khi chia làm 4 thì thành công
+    call_counts = []
+    def propainter_recovers_on_split(batch, mask):
+        call_counts.append(len(batch))
+        if len(batch) > 4:
+            raise RuntimeError("CUDA out of memory. Tried to allocate 2.50 GiB")
+        return [np.full((100, 100, 3), 1, dtype=np.uint8) for _ in batch]
+
+    batch_8 = [np.zeros((100, 100, 3), dtype=np.uint8) for _ in range(8)]
+    mask = np.ones((100, 100), dtype=np.uint8)
+
+    res1 = remover._execute_propainter_with_oom_recovery(propainter_recovers_on_split, batch_8, mask)
+    assert len(res1) == 8
+    assert remover.vram_fallback_used is False  # Phục hồi thành công qua chia đợt, không cần dùng LaMa
+    assert 8 in call_counts and 4 in call_counts
+
+    # Kịch bản 2: VRAM quá cạn kiệt, mọi kích thước đợt ProPainter đều bị OOM -> chuyển sang LaMa
+    def propainter_always_ooms(batch, mask):
+        raise RuntimeError("CUDA out of memory: unable to allocate tensor")
+
+    batch_4 = [np.zeros((100, 100, 3), dtype=np.uint8) for _ in range(4)]
+    res2 = remover._execute_propainter_with_oom_recovery(propainter_always_ooms, batch_4, mask)
+    assert len(res2) == 4
+    assert res2[0][0, 0, 0] == 99  # Kết quả từ LaMa fallback
+    assert remover.vram_fallback_used is True  # Cờ cảnh báo được bật để Quality Gate nhận biết
 

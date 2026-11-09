@@ -298,13 +298,15 @@ class MultiPrototypeSpeakerProfile(CharacterVoiceProfile):
 
 class ExternalDiarizationVerifier:
     """
-    Giao diện trừu tượng và bộ kiểm chứng phân đoạn người nói đối chiếu (NeMo / Pyannote).
-    Tự động kiểm tra tính khả dụng của các thư viện chuyên sâu trong môi trường.
-    Khi không có sẵn hoặc VRAM hạn chế, vận hành dự phòng an toàn qua CAM++ ONNX.
+    Giao diện khung dự phòng cho các bộ kiểm chứng đối chiếu ngoài trong tương lai.
+    Hiện tại hệ thống sử dụng hoàn toàn và độc lập mô hình CAM++ ONNX làm động cơ
+    nhận diện và phân cụm người nói chính thức, tiết kiệm tối đa bộ nhớ đồ họa.
+    Lớp này hiện giữ chỗ để bảo đảm tính tương thích ngược và mở rộng trong tương lai.
     """
 
     @classmethod
     def is_available(cls) -> bool:
+        """Kiểm tra sự hiện diện của các thư viện bổ trợ chuyên sâu trong môi trường."""
         try:
             import nemo  # type: ignore
             return True
@@ -325,14 +327,9 @@ class ExternalDiarizationVerifier:
         max_speakers: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
-        Đối chiếu kết quả phân vai CAM++ với bộ nhận diện ngoài nếu có.
-        Nếu không có NeMo/Pyannote, trả về nguyên trạng kết quả CAM++ an toàn bộ nhớ đồ họa.
+        Giao diện đối chiếu kết quả. Hiện tại luôn trả về nguyên trạng kết quả từ
+        mô hình CAM++ ONNX để bảo toàn tài nguyên bộ nhớ đồ họa và tính nhất quán.
         """
-        if not cls.is_available():
-            logger.info("Bộ kiểm chứng ngoài (NeMo/Pyannote) không có sẵn trong môi trường; sử dụng hoàn toàn CAM++ ONNX tiết kiệm bộ nhớ đồ họa.")
-            return campp_speakers
-
-        logger.info("Đang kiểm chứng đối chiếu phân đoạn người nói bằng công cụ bổ trợ...")
         return campp_speakers
 
 
