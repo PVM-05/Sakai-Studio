@@ -274,6 +274,11 @@ MainWindow = SubtitleExtractorGUI
 if __name__ == '__main__':
     multiprocessing.freeze_support()
     multiprocessing.set_start_method("spawn")
+    try:
+        from src.core.crash_reporter import install as install_crash_reporter
+        install_crash_reporter()
+    except Exception:
+        pass
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QtWidgets.QApplication(sys.argv)

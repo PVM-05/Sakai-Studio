@@ -1,3 +1,13 @@
+def _safe_print(msg: str):
+    try:
+        print(msg)
+    except Exception:
+        try:
+            encoding = getattr(sys.stdout, "encoding", "utf-8") or "utf-8"
+            print(msg.encode(encoding, errors="replace").decode(encoding))
+        except Exception:
+            pass
+
 import traceback
 import importlib.util
 
@@ -66,12 +76,12 @@ class HardwareAccelerator:
                     "CoreMLExecutionProvider",      # Apple macOS
                     "CUDAExecutionProvider",        # Nvidia GPU
                 ]:
-                    print(tr['Main']['OnnxExectionProviderNotSupportedSkipped'].format(provider))
+                    _safe_print(tr['Main']['OnnxExectionProviderNotSupportedSkipped'].format(provider))
                     continue
-                print(tr['Main']['OnnxExecutionProviderDetected'].format(provider))
+                _safe_print(tr['Main']['OnnxExecutionProviderDetected'].format(provider))
                 self.__onnx_providers.append(provider)
         except ModuleNotFoundError as e:
-            print(tr['Main']['OnnxRuntimeNotInstall'])
+            _safe_print(tr['Main']['OnnxRuntimeNotInstall'])
 
     def has_accelerator(self):
         if not self.__enabled:
@@ -149,8 +159,8 @@ class HardwareAccelerator:
             if self.__dml:
                 try:
                     import torch_directml
-                    return torch_directml.device(torch_directml.default_device())
                     self.__dml = True
+                    return torch_directml.device(torch_directml.default_device())
                 except:
                     traceback.print_exc()
                     self.__dml = False
