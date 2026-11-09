@@ -26,8 +26,6 @@ output/
 *.log
 *.exe
 *.db
-src/web_api/uploads/
-src/web_api/downloads/
 
 # PyInstaller
 *.manifest

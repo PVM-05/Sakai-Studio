@@ -96,11 +96,3 @@ PySide6-Fluent-Widgets>=1.5.0
 yt-dlp
 quickjs
 
-# SaaS Dependencies
-fastapi
-uvicorn
-celery
-redis
-sqlalchemy
-psycopg2-binary
-stripe
