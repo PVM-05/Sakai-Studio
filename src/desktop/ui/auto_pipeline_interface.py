@@ -68,6 +68,7 @@ def _remover_process_worker(queue, video_path, output_path, options):
         import traceback
         from src.core.main import GUISubtitleRemover, verify_media_output
         from src.core.interface.worker_interface import ProcessCallback
+        from src.desktop.ui.home_interface import verify_media_quality
 
         class RemoteCallback(ProcessCallback):
             def log_message(self, *args):
@@ -86,43 +87,102 @@ def _remover_process_worker(queue, video_path, output_path, options):
                 SubtitleRemoverRemoteCall.remote_call_update_preview_with_comp(queue, list(args))
 
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-        sr = GUISubtitleRemover(video_path, True, callback=RemoteCallback())
-        sr.video_out_path = temp_output_path
-        for key, val in options.items():
-            setattr(sr, key, val)
-        if 'freehand_strokes' in options and not getattr(sr, 'strokes', None):
-            sr.strokes = options['freehand_strokes']
+        max_retries = 2
+        active_options = dict(options)
+        for attempt in range(max_retries + 1):
+            if attempt > 0:
+                cur_temp_path = f"{base_no_ext}.tmp_{os.getpid()}_{attempt}{ext or '.mp4'}"
+            else:
+                cur_temp_path = temp_output_path
 
-        sr.run()
+            sr = GUISubtitleRemover(video_path, True, callback=RemoteCallback())
+            sr.video_out_path = cur_temp_path
+            for key, val in active_options.items():
+                setattr(sr, key, val)
+            if 'freehand_strokes' in active_options and not getattr(sr, 'strokes', None):
+                sr.strokes = active_options['freehand_strokes']
 
-        expected_frames = int(sr.frame_count) if not sr.is_picture else 0
-        expected_fps = float(sr.fps) if not sr.is_picture else 0.0
-        require_audio = bool(getattr(sr, 'source_has_audio', False)) and not sr.is_picture
-        if not verify_media_output(
-            temp_output_path,
-            is_picture=sr.is_picture,
-            expected_frames=expected_frames,
-            expected_fps=expected_fps,
-            require_audio=require_audio,
-        ):
-            had_error = True
-            SubtitleRemoverRemoteCall.remote_call_catch_error(
-                queue, "Tệp video sau khi xóa phụ đề không hợp lệ hoặc thiếu luồng âm thanh."
+            sr.run()
+
+            expected_frames = int(sr.frame_count) if not sr.is_picture else 0
+            expected_fps = float(sr.fps) if not sr.is_picture else 0.0
+            require_audio = bool(getattr(sr, 'source_has_audio', False)) and not sr.is_picture
+            if not verify_media_output(
+                cur_temp_path,
+                is_picture=sr.is_picture,
+                expected_frames=expected_frames,
+                expected_fps=expected_fps,
+                require_audio=require_audio,
+            ):
+                had_error = True
+                SubtitleRemoverRemoteCall.remote_call_catch_error(
+                    queue, "Tệp video sau khi xóa phụ đề không hợp lệ hoặc thiếu luồng âm thanh."
+                )
+                return
+
+            quality_res = verify_media_quality(
+                cur_temp_path,
+                getattr(sr, 'sub_areas', []),
+                tracking_trajectory=getattr(sr, 'tracking_trajectory', None),
+                subtitle_intervals=getattr(sr, 'subtitle_intervals', None),
+                fps=getattr(sr, 'fps', None),
+                fallback_used=bool(getattr(sr, 'vram_fallback_used', False)),
             )
-            return
+            q_status = quality_res.get("status", "PASS")
 
-        if os.path.exists(temp_output_path):
-            if os.path.exists(output_path):
-                try:
-                    os.remove(output_path)
-                except Exception:
-                    pass
-            os.replace(temp_output_path, output_path)
-        else:
-            had_error = True
-            SubtitleRemoverRemoteCall.remote_call_catch_error(
-                queue, "Tiến trình xóa phụ đề kết thúc nhưng không tạo ra tệp video đầu ra hợp lệ."
-            )
+            if q_status == "FAIL" and attempt < max_retries:
+                from src.core.quality_gate import (
+                    retry_config_patch_for_gate,
+                    STATUS_REVIEW,
+                    LADDER_INCREASE_DILATION,
+                    LADDER_ALTERNATE_INPAINTER,
+                )
+                ladder_step = LADDER_INCREASE_DILATION if attempt == 0 else LADDER_ALTERNATE_INPAINTER
+                gate_eval = {
+                    "status": STATUS_REVIEW,
+                    "ladderStep": ladder_step,
+                    "reasons": [{"metric": "residual_text", "ladder": ladder_step}],
+                }
+                from src.core.config import config
+                patch = retry_config_patch_for_gate(gate_eval, config)
+                if "mask_dilate_px" in patch:
+                    config.maskDilation.value = patch["mask_dilate_px"]
+                    active_options["mask_dilate_px"] = patch["mask_dilate_px"]
+                if "mask_feather_px" in patch:
+                    config.maskFeather.value = patch["mask_feather_px"]
+                    active_options["mask_feather_px"] = patch["mask_feather_px"]
+                if "mode" in patch:
+                    from src.core.config import InpaintMode
+                    mode_val = str(patch["mode"]).lower()
+                    if mode_val == "lama":
+                        config.inpaintMode.value = InpaintMode.LAMA
+                        active_options["inpaint_mode"] = InpaintMode.LAMA
+
+                SubtitleRemoverRemoteCall.remote_call_append_log(
+                    queue,
+                    [f"[Tự động thử lại] Phát hiện chữ còn sót, đang áp dụng thang nâng cấp chất lượng để xử lý lại (lần thử {attempt + 1}/{max_retries})..."]
+                )
+                if os.path.exists(cur_temp_path):
+                    try:
+                        os.remove(cur_temp_path)
+                    except Exception:
+                        pass
+                continue
+
+            if os.path.exists(cur_temp_path):
+                if os.path.exists(output_path):
+                    try:
+                        os.remove(output_path)
+                    except Exception:
+                        pass
+                os.replace(cur_temp_path, output_path)
+                break
+            else:
+                had_error = True
+                SubtitleRemoverRemoteCall.remote_call_catch_error(
+                    queue, "Tiến trình xóa phụ đề kết thúc nhưng không tạo ra tệp video đầu ra hợp lệ."
+                )
+                return
     except Exception as e:
         import traceback
         traceback.print_exc()

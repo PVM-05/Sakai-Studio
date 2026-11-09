@@ -509,23 +509,28 @@ def is_audio_quality_acceptable_for_voice_lock(
     min_duration_sec: float = 1.4,
 ) -> Tuple[bool, str]:
     """
-    Kiểm tra chất lượng âm thanh câu đầu tiên trước khi khóa làm VoiceClonePrompt cho nhân vật:
-    - Thời lượng >= 1.4 giây
-    - Không bị im lặng (RMS >= 0.012)
-    - Không bị vỡ tiếng / clipping nặng (peak <= 0.995)
-    - Không chứa NaN/Inf
+    Kiểm tra chất lượng âm thanh câu đầu tiên trước khi khóa làm VoiceClonePrompt cho nhân vật
+    thông qua bộ kiểm định toàn diện evaluate_reference_audio_quality theo thang điểm 100.
     """
-    if audio_arr is None or len(audio_arr) < int(min_duration_sec * sr):
-        return False, "Thời lượng câu quá ngắn để khóa làm mẫu giọng chuẩn."
-    if np.isnan(audio_arr).any() or np.isinf(audio_arr).any():
-        return False, "Dữ liệu âm thanh chứa giá trị không hợp lệ."
-    rms = float(np.sqrt(np.mean(audio_arr ** 2)))
-    peak = float(np.max(np.abs(audio_arr)))
-    if rms < 0.012:
-        return False, f"Năng lượng âm thanh quá thấp (RMS={rms:.4f})."
-    if peak > 0.995:
-        return False, f"Âm thanh có dấu hiệu vượt ngưỡng đỉnh (Peak={peak:.3f})."
-    return True, "Đạt chuẩn chất lượng giọng mẫu."
+    try:
+        from src.ai_engines.ref_audio_qc import evaluate_reference_audio_quality
+        report = evaluate_reference_audio_quality(audio_arr, sr=sr)
+        if not report.is_acceptable:
+            msg = report.rejection_reason or f"Chất lượng âm thanh không đạt chuẩn ({report.score}/100 điểm)."
+            return False, msg
+        return True, f"Đạt chuẩn chất lượng giọng mẫu ({report.score}/100 điểm - {report.grade})."
+    except Exception:
+        if audio_arr is None or len(audio_arr) < int(min_duration_sec * sr):
+            return False, "Thời lượng câu quá ngắn để khóa làm mẫu giọng chuẩn."
+        if np.isnan(audio_arr).any() or np.isinf(audio_arr).any():
+            return False, "Dữ liệu âm thanh chứa giá trị không hợp lệ."
+        rms = float(np.sqrt(np.mean(audio_arr ** 2)))
+        peak = float(np.max(np.abs(audio_arr)))
+        if rms < 0.012:
+            return False, f"Năng lượng âm thanh quá thấp (RMS={rms:.4f})."
+        if peak > 0.995:
+            return False, f"Âm thanh có dấu hiệu vượt ngưỡng đỉnh (Peak={peak:.3f})."
+        return True, "Đạt chuẩn chất lượng giọng mẫu."
 
 
 def apply_dynamic_ducking(
@@ -1335,13 +1340,32 @@ class TTSEngine:
         self.load_model()
         self.log(f"Đang mã hóa đặc trưng giọng mẫu từ tệp: {os.path.basename(ref_audio_path)}...")
 
+        # Tự động chuẩn hóa LUFS, khử nhiễu quang phổ và chấm điểm chất lượng âm thanh mẫu
+        effective_audio_path = ref_audio_path
+        try:
+            from src.ai_engines.ref_audio_qc import normalize_reference_audio, evaluate_reference_audio_quality
+            import soundfile as sf
+            raw_audio, in_sr = sf.read(ref_audio_path, dtype="float32")
+            qc_report = evaluate_reference_audio_quality(raw_audio, sr=in_sr)
+            self.log(f"Đánh giá chất lượng âm thanh mẫu: {qc_report.score}/100 điểm ({qc_report.grade}).")
+            if not qc_report.is_acceptable:
+                self.log(f"Cảnh báo: {qc_report.rejection_reason}")
+            norm_audio = normalize_reference_audio(raw_audio, source_sr=in_sr, target_sr=24000, target_lufs=-16.0)
+            if len(norm_audio) > 0:
+                base_stem, _ = os.path.splitext(ref_audio_path)
+                norm_path = f"{base_stem}_norm24k.wav"
+                sf.write(norm_path, norm_audio, 24000)
+                effective_audio_path = norm_path
+        except Exception as exc:
+            self.log(f"Bỏ qua chuẩn hóa âm thanh mẫu tự động: {exc}")
+
         try:
             resolved_ref_text = self.ref_text
             if not resolved_ref_text:
                 resolved_ref_text = self._transcribe_ref_audio_fallback(ref_audio_path, use_global=True)
 
             self.current_prompt = self.model.create_voice_clone_prompt(
-                ref_audio=ref_audio_path,
+                ref_audio=effective_audio_path,
                 ref_text=resolved_ref_text if resolved_ref_text else None,
                 preprocess_prompt=self.preprocess_prompt,
             )

@@ -1,7 +1,7 @@
 import multiprocessing
 import cv2
 import numpy as np
-from typing import List, Tuple
+from typing import List, Tuple, Any, Optional, Dict
 
 from src.core.config import config
 
@@ -223,8 +223,16 @@ def _build_text_stroke_uint8_mask(frame: np.ndarray, size: Tuple[int, int], coor
             else:
                 crop_mask[:, :] = 255
 
-        if dilation > 0:
-            kernel_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (dilation * 2 + 1, dilation * 2 + 1))
+        # Tính độ giãn nở thích ứng theo độ dày nét chữ đo được
+        eff_dilation = dilation
+        try:
+            from src.ai_engines.detection import calculate_adaptive_stroke_dilation
+            eff_dilation = calculate_adaptive_stroke_dilation(crop, base_dilation=dilation)
+        except Exception:
+            eff_dilation = dilation
+
+        if eff_dilation > 0:
+            kernel_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (eff_dilation * 2 + 1, eff_dilation * 2 + 1))
             crop_mask = cv2.dilate(crop_mask, kernel_dilate)
 
         mask[y1:y2, x1:x2] = np.maximum(mask[y1:y2, x1:x2], crop_mask)
@@ -338,6 +346,9 @@ def create_combined_mask(size, coords_list=None, strokes_list=None, dilation=8, 
         if _is_stroke_dict_list(coords_list) and not strokes_list:
             strokes_list = coords_list
             mask = np.zeros((h, w), dtype=np.uint8)
+        elif str(mask_type).lower() == "polygon":
+            poly_float = create_polygon_mask((h, w), coords_list, dilation=dilation, feather_pixels=0)
+            mask = (poly_float * 255).astype(np.uint8)
         elif str(mask_type).lower() == "stroke" and frame is not None:
             mask = _build_text_stroke_uint8_mask(frame, (h, w), coords_list, dilation=dilation)
         else:
@@ -853,3 +864,46 @@ def apply_temporal_mask_padding(masks: List[np.ndarray], pad_frames: int) -> Lis
 
 if __name__ == '__main__':
     multiprocessing.set_start_method("spawn")
+
+
+def create_polygon_mask(
+    size: Tuple[int, int],
+    polygons_list: List[Any],
+    dilation: int = 4,
+    feather_pixels: int = 4,
+) -> np.ndarray:
+    """
+    Tạo mặt nạ từ danh sách các đa giác (polygons) bám sát nét chữ phụ đề.
+    Mỗi đa giác là mảng điểm (N, 2) hoặc danh sách [(x, y), ...].
+    """
+    h, w = int(size[0]), int(size[1])
+    mask = np.zeros((h, w), dtype=np.uint8)
+    if not polygons_list:
+        return _finalize_float_mask(mask, feather_pixels=feather_pixels)
+
+    for item in polygons_list:
+        if item is None:
+            continue
+        poly_pts = None
+        if isinstance(item, dict) and "polygon" in item:
+            poly_pts = item["polygon"]
+        elif isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], (np.ndarray, list)):
+            poly_pts = item[0]
+        elif isinstance(item, (np.ndarray, list)):
+            poly_pts = item
+
+        if poly_pts is None:
+            continue
+
+        try:
+            pts_arr = np.asarray(poly_pts, dtype=np.int32)
+            if pts_arr.ndim == 2 and pts_arr.shape[0] >= 3:
+                cv2.fillPoly(mask, [pts_arr], 255)
+        except Exception:
+            pass
+
+    if dilation > 0 and np.any(mask > 0):
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilation * 2 + 1, dilation * 2 + 1))
+        mask = cv2.dilate(mask, kernel, iterations=1)
+
+    return _finalize_float_mask(mask, feather_pixels=feather_pixels)

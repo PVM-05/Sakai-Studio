@@ -527,3 +527,68 @@ def compute_vmaf(
         except FileNotFoundError:
             return None
         return _read_vmaf_score(log_path)
+
+
+def residual_ocr_verification(
+    frame: np.ndarray,
+    mask: Optional[np.ndarray] = None,
+    threshold_chars: int = 3,
+) -> Dict[str, Any]:
+    """
+    Kiểm tra chữ tồn dư thực tế bằng bộ nhận diện quang học trên vùng mặt nạ đã phục hồi.
+    Trả về trạng thái phát hiện chữ, danh sách chuỗi ký tự nhận được và điểm độ tin cậy.
+    """
+    if frame is None or frame.size == 0:
+        return {"has_residual": False, "text": "", "char_count": 0, "confidence": 0.0}
+
+    # Cắt vùng quan tâm (ROI) dựa trên mặt nạ để tối ưu tốc độ nhận diện
+    target_crop = frame
+    if mask is not None and np.any(mask > 0):
+        bin_m = (mask > 0).astype(np.uint8) if mask.dtype != np.uint8 else mask
+        contours, _ = cv2.findContours(bin_m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            x, y, w, h = cv2.boundingRect(np.vstack(contours))
+            h_f, w_f = frame.shape[:2]
+            x1, y1 = max(0, x - 10), max(0, y - 10)
+            x2, y2 = min(w_f, x + w + 10), min(h_f, y + h + 10)
+            if x2 > x1 and y2 > y1:
+                target_crop = frame[y1:y2, x1:x2]
+
+    try:
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+        except ImportError:
+            from rapidocr import RapidOCR
+        ocr = RapidOCR()
+        output = ocr(target_crop)
+        results = output[0] if isinstance(output, tuple) and output else output
+        detected_texts = []
+        confs = []
+        if results:
+            for entry in (results if isinstance(results, list) else []):
+                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    txt = str(entry[1]).strip()
+                    c_val = float(entry[2]) if len(entry) >= 3 else 0.5
+                    if len(txt) >= 2 and c_val >= 0.40:
+                        detected_texts.append(txt)
+                        confs.append(c_val)
+                elif isinstance(entry, dict):
+                    txt = str(entry.get("text", entry.get("rec_text", ""))).strip()
+                    c_val = float(entry.get("score", entry.get("confidence", 0.5)))
+                    if len(txt) >= 2 and c_val >= 0.40:
+                        detected_texts.append(txt)
+                        confs.append(c_val)
+
+        full_text = " ".join(detected_texts)
+        char_count = len(full_text.replace(" ", ""))
+        avg_conf = float(sum(confs) / len(confs)) if confs else 0.0
+        has_residual = (char_count >= threshold_chars and avg_conf >= 0.45)
+        return {
+            "has_residual": has_residual,
+            "text": full_text,
+            "char_count": char_count,
+            "confidence": round(avg_conf, 3),
+        }
+    except Exception as exc:
+        logger.debug(f"Không thể thực thi nhận diện chữ tồn dư: {exc}")
+        return {"has_residual": False, "text": "", "char_count": 0, "confidence": 0.0}

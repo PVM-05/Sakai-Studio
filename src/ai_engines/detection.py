@@ -423,6 +423,78 @@ class SubtitleDetector:
                 boxes.append(parsed + (conf,))
         return boxes
 
+    def detect_polygons_with_confidence(
+        self, frame: np.ndarray, threshold: float = 0.5
+    ) -> List[Tuple[np.ndarray, float]]:
+        """
+        Nhận diện chữ và trả về danh sách các đa giác (polygon) thực tế kèm độ tin cậy.
+        Mỗi phần tử là tuple (pts_array, conf) với pts_array có dạng (N, 2) tọa độ nguyên.
+        """
+        if self._rapid_model is not None:
+            try:
+                output = self._rapid_model(frame)
+                polys = self._rapid_output_to_polygons_conf(output, threshold)
+                if polys:
+                    return polys
+            except Exception as e:
+                logger.error(f"RapidOCR polygon detection error: {e}")
+
+        # Dự phòng: Chuyển đổi các hộp chữ nhật thành đa giác 4 điểm
+        boxes_conf = self.detect_with_confidence(frame, threshold)
+        out: List[Tuple[np.ndarray, float]] = []
+        for x1, y1, x2, y2, conf in boxes_conf:
+            poly = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.int32)
+            out.append((poly, conf))
+        return out
+
+    @classmethod
+    def _rapid_output_to_polygons_conf(
+        cls, output, threshold: float
+    ) -> List[Tuple[np.ndarray, float]]:
+        if output is None:
+            return []
+        results = output[0] if isinstance(output, tuple) and output else output
+        if not results:
+            return []
+        polys_out: List[Tuple[np.ndarray, float]] = []
+        polys = cls._rapid_field(
+            results, "boxes", "dt_polys", "dt_boxes", "polys", "det_polys")
+        if polys is not None:
+            scores = cls._rapid_field(
+                results, "scores", "rec_scores", "text_scores", "cls_scores")
+            for index, poly in enumerate(polys):
+                conf = cls._rapid_score_at(scores, index)
+                if conf >= threshold:
+                    try:
+                        pts = np.asarray(poly, dtype=np.int32)
+                        if pts.ndim == 2 and pts.shape[0] >= 3:
+                            polys_out.append((pts, conf))
+                    except Exception:
+                        pass
+            if polys_out:
+                return polys_out
+
+        for entry in results:
+            parsed = cls._rapid_entry_to_box(entry, threshold)
+            if parsed is not None:
+                x1, y1, x2, y2 = parsed
+                poly = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.int32)
+                conf = 1.0
+                if isinstance(entry, dict):
+                    c = cls._rapid_field(entry, "score", "confidence", "conf", "rec_score")
+                    if c is not None:
+                        try:
+                            conf = float(c)
+                        except (TypeError, ValueError):
+                            pass
+                elif hasattr(entry, "__len__") and len(entry) >= 3:
+                    try:
+                        conf = float(entry[2])
+                    except (TypeError, ValueError):
+                        pass
+                polys_out.append((poly, conf))
+        return polys_out
+
     def _detect_axis_aligned(self, frame: np.ndarray,
                               threshold: float) -> List[Tuple[int, int, int, int]]:
         vlm = getattr(self, "_vlm_detector", None)
@@ -781,3 +853,53 @@ def probe_language(frame: np.ndarray,
     script = _classify_script(combined)
     lang = _SCRIPT_TO_LANG.get(script, "en")
     return (lang, avg_conf, script)
+
+
+def measure_text_stroke_width(crop: np.ndarray) -> float:
+    """
+    Đo lường độ dày nét chữ (Stroke Width) thực tế bằng biến đổi khoảng cách hình học.
+    Trả về giá trị độ dày nét chữ tính bằng điểm ảnh (pixels).
+    """
+    if crop is None or crop.size == 0 or crop.shape[0] < 4 or crop.shape[1] < 4:
+        return 0.0
+    try:
+        if crop.ndim == 3:
+            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = crop.copy()
+
+        blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+        edges = cv2.Canny(blurred, 30, 120)
+        _, otsu = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        if np.mean(otsu) > 127:
+            otsu = cv2.bitwise_not(otsu)
+        binary = cv2.bitwise_or(edges, otsu)
+
+        if not np.any(binary > 0):
+            return 0.0
+
+        dist = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
+        medial_values = dist[dist > 1.0]
+        if len(medial_values) == 0:
+            return 2.0
+        stroke_half = float(np.percentile(medial_values, 70))
+        stroke_width = float(np.clip(stroke_half * 2.0, 1.0, 32.0))
+        return stroke_width
+    except Exception:
+        return 0.0
+
+
+def calculate_adaptive_stroke_dilation(
+    crop: np.ndarray,
+    base_dilation: int = 8,
+    min_dilate: int = 3,
+    max_dilate: int = 16,
+) -> int:
+    """
+    Tính toán độ giãn nở thích ứng của mặt nạ dựa trên bề dày thực tế của nét chữ.
+    """
+    sw = measure_text_stroke_width(crop)
+    if sw <= 0.0:
+        return max(min_dilate, int(base_dilation))
+    adaptive = int(round(sw * 0.75))
+    return int(np.clip(adaptive, min_dilate, max_dilate))
