@@ -2539,7 +2539,7 @@ class OmniVoiceInterface(ScrollArea):
 
             "Chế độ vi xử lý trung tâm",
 
-            "Phân đoạn người nói chuyên sâu — Chưa kích hoạt",
+            "Phân đoạn người nói chuyên sâu — pyannote",
 
         ])
 
@@ -6953,20 +6953,29 @@ class OmniVoiceInterface(ScrollArea):
     def _run_auto_detect_speakers(self):
 
         if self.combo_hardware_selector.currentIndex() == 2:
+            import torch
+            from src.core.config import app_config
+            from src.ai_engines.speaker_diarization import ExternalDiarizationVerifier
 
-            InfoBar.warning(
+            if not ExternalDiarizationVerifier.is_available():
+                InfoBar.warning(
+                    "Chưa cài đặt thư viện",
+                    "Thư viện pyannote.audio chưa được cài đặt trong môi trường. Hệ thống sẽ tự động dùng CAM++.",
+                    parent=self,
+                    duration=4000,
+                )
+            elif not torch.cuda.is_available():
+                InfoBar.info(
+                    "Vận hành trên vi xử lý trung tâm",
+                    "Phân đoạn người nói chuyên sâu đang chạy trên CPU. Thời gian xử lý có thể kéo dài hơn bình thường.",
+                    parent=self,
+                    duration=4000,
+                )
 
-                "Chế độ chưa sẵn sàng",
-
-                "Phân đoạn người nói chuyên sâu chưa được tích hợp. Hãy chọn CUDA hoặc CPU để tiếp tục.",
-
-                parent=self,
-
-                duration=4000,
-
-            )
-
-            return
+            app_config.mmoTTSDeepDiarization.value = True
+        else:
+            from src.core.config import app_config
+            app_config.mmoTTSDeepDiarization.value = False
 
         has_subs = len(self.subtitle_blocks) > 0
         has_video = is_valid_media_file(self.current_video_path)
