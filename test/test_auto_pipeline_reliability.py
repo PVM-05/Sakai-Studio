@@ -1620,6 +1620,53 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
         self.assertEqual(len(stage_warnings), 1)
         self.assertIn("Còn vệt mờ phụ đề", stage_warnings[0])
 
+    def test_remover_process_worker_reports_partial_when_quality_warning_or_unverified(self):
+        """
+        Xác minh tiến trình con xóa phụ đề gửi mã kết quả partial khi bộ kiểm định trả về WARNING hoặc UNVERIFIED.
+        """
+        from src.core.main import GUISubtitleRemover
+        from src.desktop.ui.auto_pipeline_interface import _remover_process_worker
+        from src.core.tools.subtitle_remover_remote_call import Command
+        from unittest.mock import MagicMock, patch
+
+        dummy_vid = os.path.join(self.temp_dir, "dummy_worker_warn.mp4")
+        _create_dummy_video(dummy_vid, num_frames=5)
+        dummy_out = os.path.join(self.temp_dir, "dummy_worker_warn_out.mp4")
+
+        mock_queue = MagicMock()
+
+        def fake_run(sr_instance):
+            _create_dummy_video(sr_instance.video_out_path, fps=10.0, num_frames=5)
+            sr_instance.frame_count = 5
+            sr_instance.fps = 10.0
+            sr_instance.is_picture = False
+            sr_instance.source_has_audio = False
+
+        # Kiểm tra trạng thái WARNING
+        warn_quality = {"status": "WARNING", "passed": True, "message": "Nghi vấn còn vệt chữ mờ"}
+        with patch.object(GUISubtitleRemover, "run", autospec=True, side_effect=fake_run), \
+             patch("src.desktop.ui.home_interface.verify_media_quality", return_value=warn_quality):
+            _remover_process_worker(mock_queue, dummy_vid, dummy_out, {"sub_areas": []})
+
+        result_calls = [args[0] for name, args, kwargs in mock_queue.put.mock_calls if args and args[0][0] == Command.RESULT]
+        self.assertTrue(len(result_calls) > 0)
+        cmd, (status, out_path, detail) = result_calls[-1]
+        self.assertEqual(status, "partial", "Trạng thái báo cáo kết quả phải là partial khi gặp WARNING")
+        self.assertIn("Nghi vấn", detail)
+
+        # Kiểm tra trạng thái UNVERIFIED
+        mock_queue.reset_mock()
+        unverified_quality = {"status": "UNVERIFIED", "passed": True, "message": "Không thể kiểm chứng do thiếu frame"}
+        with patch.object(GUISubtitleRemover, "run", autospec=True, side_effect=fake_run), \
+             patch("src.desktop.ui.home_interface.verify_media_quality", return_value=unverified_quality):
+            _remover_process_worker(mock_queue, dummy_vid, dummy_out, {"sub_areas": []})
+
+        result_calls = [args[0] for name, args, kwargs in mock_queue.put.mock_calls if args and args[0][0] == Command.RESULT]
+        self.assertTrue(len(result_calls) > 0)
+        cmd, (status, out_path, detail) = result_calls[-1]
+        self.assertEqual(status, "partial", "Trạng thái báo cáo kết quả phải là partial khi gặp UNVERIFIED")
+        self.assertIn("Không thể kiểm chứng", detail)
+
 if __name__ == "__main__":
     unittest.main()
 

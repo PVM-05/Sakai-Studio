@@ -284,8 +284,25 @@ class STTNAutoInpaint:
                 union_mask = np.zeros((frame_info['H_ori'], frame_info['W_ori'], 1), dtype=np.float32)
                 for fno, coords in input_mask.items():
                     for area in coords:
-                        xmin, xmax, ymin, ymax = area
-# Padding an toàn cho union mask
+                        if area is None:
+                            continue
+                        if isinstance(area, np.ndarray) and area.ndim == 2 and area.shape[0] >= 3:
+                            xmin = int(np.min(area[:, 0]))
+                            xmax = int(np.max(area[:, 0]))
+                            ymin = int(np.min(area[:, 1]))
+                            ymax = int(np.max(area[:, 1]))
+                        elif isinstance(area, (tuple, list)) and len(area) >= 4 and all(isinstance(v, (int, float, np.integer, np.floating)) for v in area[:4]):
+                            xmin, xmax, ymin, ymax = [int(v) for v in area[:4]]
+                        elif isinstance(area, (tuple, list)) and len(area) >= 3 and all(isinstance(pt, (tuple, list, np.ndarray)) and len(pt) >= 2 for pt in area):
+                            pts = np.asarray(area, dtype=np.float32)
+                            xmin = int(np.min(pts[:, 0]))
+                            xmax = int(np.max(pts[:, 0]))
+                            ymin = int(np.min(pts[:, 1]))
+                            ymax = int(np.max(pts[:, 1]))
+                        else:
+                            continue
+
+                        # Padding an toàn cho union mask
                         padding = 32
                         if hasattr(config, 'maskDilation'):
                             padding += config.maskDilation.value

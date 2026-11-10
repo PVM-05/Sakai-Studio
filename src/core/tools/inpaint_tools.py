@@ -76,7 +76,21 @@ def _build_box_uint8_mask(size: Tuple[int, int], coords_list, dilation: int = 8,
     for coords in coords_list:
         if coords is None or isinstance(coords, dict):
             continue
-        if len(coords) == 5 and coords[4] is not None:
+        if isinstance(coords, np.ndarray) and coords.ndim == 2 and coords.shape[0] >= 3:
+            xmin = int(np.min(coords[:, 0]))
+            xmax = int(np.max(coords[:, 0]))
+            ymin = int(np.min(coords[:, 1]))
+            ymax = int(np.max(coords[:, 1]))
+            box_height = abs(ymax - ymin)
+            pad = max(int(dilation), calc_adaptive_padding(box_height))
+            x1 = max(0, xmin - pad)
+            y1 = max(0, ymin - pad)
+            x2 = min(w, xmax + pad)
+            y2 = min(h, ymax + pad)
+            if x2 > x1 and y2 > y1:
+                mask[y1:y2, x1:x2] = 255
+            continue
+        if isinstance(coords, (tuple, list)) and len(coords) == 5 and coords[4] is not None:
             xmin, xmax, ymin, ymax, sam2_data = coords
             binary_mask = _unpack_sam2_mask(sam2_data, h, w)
             box_height = abs(ymax - ymin)
@@ -163,7 +177,12 @@ def _build_text_stroke_uint8_mask(frame: np.ndarray, size: Tuple[int, int], coor
     for coords in coords_list:
         if coords is None or isinstance(coords, dict):
             continue
-        if len(coords) == 5 and coords[4] is not None:
+        if isinstance(coords, np.ndarray) and coords.ndim == 2 and coords.shape[0] >= 3:
+            xmin = int(np.min(coords[:, 0]))
+            xmax = int(np.max(coords[:, 0]))
+            ymin = int(np.min(coords[:, 1]))
+            ymax = int(np.max(coords[:, 1]))
+        elif isinstance(coords, (tuple, list)) and len(coords) == 5 and coords[4] is not None:
             xmin, xmax, ymin, ymax, sam2_data = coords
             binary_mask = _unpack_sam2_mask(sam2_data, h_frame, w_frame)
             pad = max(int(dilation), calc_adaptive_padding(abs(ymax - ymin)))
@@ -174,10 +193,10 @@ def _build_text_stroke_uint8_mask(frame: np.ndarray, size: Tuple[int, int], coor
             else:
                 mask[binary_mask > 0] = 255
             continue
-
-        if len(coords) < 4:
+        elif isinstance(coords, (tuple, list)) and len(coords) >= 4 and all(isinstance(v, (int, float, np.integer, np.floating)) for v in coords[:4]):
+            xmin, xmax, ymin, ymax = [int(v) for v in coords[:4]]
+        else:
             continue
-        xmin, xmax, ymin, ymax = [int(v) for v in coords[:4]]
         pad = max(int(dilation), calc_adaptive_padding(abs(ymax - ymin)))
         x1 = max(0, xmin - pad)
         y1 = max(0, ymin - pad)

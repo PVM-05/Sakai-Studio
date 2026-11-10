@@ -482,11 +482,23 @@ class GUISubtitleRemover:
                             for mask_index in range(start_frame_no, end_frame_no + 1):
                                 if mask_index in sub_list.keys():
                                     for area in sub_list[mask_index]:
-                                        xmin, xmax, ymin, ymax = area
-                                        if (ymax - ymin) - (xmax - xmin) > config.subtitleYXAxisDifferencePixel.value:
+                                        if area is None:
                                             continue
-                                        if area not in mask_area_coordinates:
-                                            mask_area_coordinates.append(area)
+                                        if isinstance(area, np.ndarray) and area.ndim == 2 and area.shape[0] >= 3:
+                                            xmin = int(np.min(area[:, 0]))
+                                            xmax = int(np.max(area[:, 0]))
+                                            ymin = int(np.min(area[:, 1]))
+                                            ymax = int(np.max(area[:, 1]))
+                                            if (ymax - ymin) - (xmax - xmin) > config.subtitleYXAxisDifferencePixel.value:
+                                                continue
+                                            if not any(isinstance(existing, np.ndarray) and np.array_equal(existing, area) for existing in mask_area_coordinates):
+                                                mask_area_coordinates.append(area)
+                                        elif isinstance(area, (tuple, list)) and len(area) >= 4 and all(isinstance(v, (int, float, np.integer, np.floating)) for v in area[:4]):
+                                            xmin, xmax, ymin, ymax = [int(v) for v in area[:4]]
+                                            if (ymax - ymin) - (xmax - xmin) > config.subtitleYXAxisDifferencePixel.value:
+                                                continue
+                                            if area not in mask_area_coordinates:
+                                                mask_area_coordinates.append(area)
                             mask = self.get_mask(temp_frames[0], mask_area_coordinates)
                             f_h, f_w = temp_frames[0].shape[:2]
                             max_load = self.get_adaptive_propainter_max_load(frame_w=f_w, frame_h=f_h, mask=mask)
@@ -742,13 +754,23 @@ class GUISubtitleRemover:
                     for mask_index in range(start_frame_index, end_frame_index + 1):
                         if mask_index in sub_list.keys():
                             for area in sub_list[mask_index]:
-                                if area is None or len(area) < 4:
+                                if area is None:
                                     continue
-                                xmin, xmax, ymin, ymax = area[:4]
-                                if (ymax - ymin) - (xmax - xmin) > config.subtitleYXAxisDifferencePixel.value:
-                                    continue
-                                if area not in mask_area_coordinates:
-                                    mask_area_coordinates.append(area)
+                                if isinstance(area, np.ndarray) and area.ndim == 2 and area.shape[0] >= 3:
+                                    xmin = int(np.min(area[:, 0]))
+                                    xmax = int(np.max(area[:, 0]))
+                                    ymin = int(np.min(area[:, 1]))
+                                    ymax = int(np.max(area[:, 1]))
+                                    if (ymax - ymin) - (xmax - xmin) > config.subtitleYXAxisDifferencePixel.value:
+                                        continue
+                                    if not any(isinstance(existing, np.ndarray) and np.array_equal(existing, area) for existing in mask_area_coordinates):
+                                        mask_area_coordinates.append(area)
+                                elif isinstance(area, (tuple, list)) and len(area) >= 4 and all(isinstance(v, (int, float, np.integer, np.floating)) for v in area[:4]):
+                                    xmin, xmax, ymin, ymax = [int(v) for v in area[:4]]
+                                    if (ymax - ymin) - (xmax - xmin) > config.subtitleYXAxisDifferencePixel.value:
+                                        continue
+                                    if area not in mask_area_coordinates:
+                                        mask_area_coordinates.append(area)
                     mask = self.get_mask(frames_need_inpaint[0], mask_area_coordinates)
 
                 batch_offset = 0

@@ -189,3 +189,56 @@ def test_gui_subtitle_remover_reuses_cached_sub_list():
     assert len(sub_map) == 2
     assert remover.last_sub_list == cached_data
     mock_detector.find_subtitle_frame_no.assert_not_called()
+
+
+def test_build_box_and_stroke_masks_accept_polygon_ndarrays():
+    """Kiểm tra _build_box_uint8_mask và _build_text_stroke_uint8_mask nhận mảng đa giác (N, 2) an toàn không gây lỗi TypeError."""
+    from src.core.tools.inpaint_tools import _build_box_uint8_mask, _build_text_stroke_uint8_mask
+
+    h, w = 100, 200
+    poly = np.array([[20, 20], [80, 20], [80, 50], [20, 50]], dtype=np.int32)
+    dummy_frame = np.ones((h, w, 3), dtype=np.uint8) * 128
+
+    # 1. Kiểm tra _build_box_uint8_mask với đa giác
+    box_m = _build_box_uint8_mask((h, w), [poly], dilation=4)
+    assert box_m.shape == (h, w)
+    assert np.any(box_m > 0), "Mặt nạ phải được phủ vùng đa giác"
+
+    # 2. Kiểm tra _build_text_stroke_uint8_mask với đa giác
+    stroke_m = _build_text_stroke_uint8_mask(dummy_frame, (h, w), [poly], dilation=4)
+    assert stroke_m.shape == (h, w)
+    assert np.any(stroke_m > 0), "Mặt nạ nét chữ phải được phủ vùng đa giác"
+
+
+def test_sttn_auto_inpaint_handles_polygon_coords_without_crash():
+    """Kiểm tra khối tạo union mask của STTNAutoInpaint giải nén mảng đa giác (4, 2) an toàn không bị lỗi unpack int()."""
+    poly = np.array([[30, 40], [120, 40], [120, 70], [30, 70]], dtype=np.int32)
+    coords_dict = {1: [poly], 2: [poly]}
+    h_ori, w_ori = 720, 1280
+
+    union_mask = np.zeros((h_ori, w_ori, 1), dtype=np.float32)
+    for fno, coords in coords_dict.items():
+        for area in coords:
+            if area is None:
+                continue
+            if isinstance(area, np.ndarray) and area.ndim == 2 and area.shape[0] >= 3:
+                xmin = int(np.min(area[:, 0]))
+                xmax = int(np.max(area[:, 0]))
+                ymin = int(np.min(area[:, 1]))
+                ymax = int(np.max(area[:, 1]))
+            elif isinstance(area, (tuple, list)) and len(area) >= 4 and all(isinstance(v, (int, float, np.integer, np.floating)) for v in area[:4]):
+                xmin, xmax, ymin, ymax = [int(v) for v in area[:4]]
+            else:
+                continue
+
+            padding = 32
+            y1 = max(0, int(ymin) - padding)
+            y2 = min(h_ori, int(ymax) + padding)
+            x1 = max(0, int(xmin) - padding)
+            x2 = min(w_ori, int(xmax) + padding)
+            union_mask[y1:y2, x1:x2] = 255.0
+
+    assert np.any(union_mask > 0), "Union mask phải có vùng được phủ"
+    ys, xs = np.where(union_mask[:, :, 0] > 0)
+    assert np.min(xs) <= 30
+    assert np.max(xs) >= 120

@@ -1873,8 +1873,7 @@ class HomeInterface(QWidget):
                         detail = sr.tracking_report.get("warning_message", "")
 
                     if q_status in ("FAIL", "WARNING", "UNVERIFIED") or not quality_res.get("passed", True):
-                        if q_status == "FAIL" or not quality_res.get("passed", True):
-                            run_status = "partial"
+                        run_status = "partial"
                         msg = quality_res.get("message", "")
                         detail = f"{detail}. {msg}".strip(". ") if detail else msg
 

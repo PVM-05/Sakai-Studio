@@ -189,8 +189,7 @@ def _remover_process_worker(queue, video_path, output_path, options):
                     run_status = getattr(sr, 'run_status', 'success')
                     detail = ""
                     if q_status in ("FAIL", "WARNING", "UNVERIFIED") or not quality_res.get("passed", True):
-                        if q_status == "FAIL" or not quality_res.get("passed", True):
-                            run_status = "partial"
+                        run_status = "partial"
                         msg = quality_res.get("message", "")
                         detail = f"{detail}. {msg}".strip(". ") if detail else msg
                     SubtitleRemoverRemoteCall.remote_call_report_result(queue, run_status, output_path, detail)
