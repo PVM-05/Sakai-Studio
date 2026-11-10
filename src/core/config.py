@@ -842,6 +842,14 @@ class Config(QConfig):
         OptionsValidator(["single", "auto_video_cluster", "per_line_video_clone", "auto_srt_text", "custom_table"]),
     )
     mmoTTSMaxSpeakers = RangeConfigItem("MMO", "TTSMaxSpeakers", 4, RangeValidator(1, 16))
+    mmoTTSDeepDiarization = ConfigItem("MMO", "TTSDeepDiarization", False, BoolValidator())
+    mmoTTSDeepDiarizationEngine = OptionsConfigItem(
+        "MMO",
+        "TTSDeepDiarizationEngine",
+        "pyannote",
+        OptionsValidator(["pyannote", "nemotron"]),
+    )
+    mmoTTSDeepDiarizationModelDir = ConfigItem("MMO", "TTSDeepDiarizationModelDir", "")
     mmoTTSAIVocalSeparation = ConfigItem("MMO", "TTSAIVocalSeparation", True, BoolValidator())
     mmoTTSEnableAiVocalSeparation = mmoTTSAIVocalSeparation
     mmoTTSResumeCacheDir = ConfigItem("MMO", "TTSResumeCacheDir", "")
@@ -874,6 +882,7 @@ if not os.path.exists(CONFIG_FILE):
                 pass
 config = Config()
 cfg = config
+app_config = config
 qconfig.load(CONFIG_FILE, config)
 
 # Backward compatibility migration
