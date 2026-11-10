@@ -55,9 +55,10 @@ def test_set_reference_voice_does_not_pass_dot_when_empty():
 
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
         tmp_wav = f.name
+    sf.write(tmp_wav, np.ones(24000, dtype=np.float32) * 0.1, 24000)
 
     try:
-        engine.set_reference_voice(tmp_wav, ref_text=None)
+        engine.set_reference_voice(tmp_wav, ref_text=None, force=True)
         assert mock_model.create_voice_clone_prompt.called
         call_kwargs = mock_model.create_voice_clone_prompt.call_args[1]
         assert call_kwargs["ref_text"] is None or call_kwargs["ref_text"] != "."
