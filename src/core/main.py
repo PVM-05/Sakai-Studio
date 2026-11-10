@@ -210,7 +210,7 @@ def verify_media_output(
 
 
 class GUISubtitleRemover:
-    def __init__(self, vd_path, gui_mode=False, callback=None):
+    def __init__(self, vd_path, gui_mode=False, callback=None, cached_sub_list=None):
         self.callback = callback
         self._static_noise_map = None
         # 线程锁
@@ -273,6 +273,18 @@ class GUISubtitleRemover:
         self.progress_listeners = []
         # inpaint的frame_no区域列表, 默认为inpaint所有帧
         self.ab_sections = None
+        self.cached_sub_list = cached_sub_list
+        self.last_sub_list = None
+
+    def _get_subtitle_map(self, sub_detector):
+        cached = getattr(self, 'cached_sub_list', None)
+        if cached is not None and len(cached) > 0:
+            self.append_output("Sử dụng bản đồ phụ đề đã dò từ lần xử lý trước...")
+            self.last_sub_list = cached
+            return dict(cached) if isinstance(cached, dict) else cached
+        res = sub_detector.find_subtitle_frame_no(sub_remover=self)
+        self.last_sub_list = res
+        return res
 
     def _is_moving_tracking_enabled(self) -> bool:
         if getattr(self, 'tracked_sub_list', None):
@@ -373,7 +385,7 @@ class GUISubtitleRemover:
             return
 
         sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
-        sub_list = sub_detector.find_subtitle_frame_no(sub_remover=self)
+        sub_list = self._get_subtitle_map(sub_detector)
         if len(sub_list) == 0:
             if self._has_positive_strokes():
                 sub_list = {f: [] for f in range(1, max(1, self.frame_count) + 1)}
@@ -579,7 +591,7 @@ class GUISubtitleRemover:
         
         # 1. Phát hiện phụ đề để lấy mask chính xác, tránh việc xóa mờ toàn bộ vùng khoanh
         sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
-        sub_list = sub_detector.find_subtitle_frame_no(sub_remover=self)
+        sub_list = self._get_subtitle_map(sub_detector)
         
         if len(sub_list) == 0:
             self.run_status = "no_target_found"
@@ -620,10 +632,10 @@ class GUISubtitleRemover:
             sub_list = tracker.find_subtitle_frame_no(sub_remover=self)
             self.tracking_report = getattr(tracker, 'last_tracking_report', None)
             if not sub_list:
-                sub_list = sub_detector.find_subtitle_frame_no(sub_remover=self)
+                sub_list = self._get_subtitle_map(sub_detector)
         else:
             sub_detector = SubtitleDetect(self.video_path, self.sub_areas)
-            sub_list = sub_detector.find_subtitle_frame_no(sub_remover=self)
+            sub_list = self._get_subtitle_map(sub_detector)
 
         if is_moving_tracking and len(sub_list) > 0:
             from src.core.tools.object_tracker import ObjectTracker

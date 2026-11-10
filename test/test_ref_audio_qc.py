@@ -107,6 +107,38 @@ class TestRefAudioQC(unittest.TestCase):
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
+    def test_set_reference_voice_rejects_corrupted_audio_file(self):
+        """Xác minh set_reference_voice từ chối tệp âm thanh hỏng khi force=False."""
+        import tempfile
+        from src.ai_engines.tts_engine import TTSEngine
+
+        engine = TTSEngine()
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp.write(b"not a valid audio content header or body")
+            tmp_path = tmp.name
+        try:
+            res = engine.set_reference_voice(tmp_path, force=False)
+            self.assertFalse(res, "Phải từ chối tệp âm thanh lỗi định dạng khi force=False")
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    def test_set_reference_voice_rejects_empty_or_missing_pt_file(self):
+        """Xác minh set_reference_voice và load_voice_prompt từ chối tệp mẫu .pt bị rỗng hoặc không tồn tại."""
+        import tempfile
+        from src.ai_engines.tts_engine import TTSEngine
+
+        engine = TTSEngine()
+        with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            self.assertFalse(engine.set_reference_voice(tmp_path))
+            self.assertFalse(engine.load_voice_prompt(tmp_path))
+            self.assertFalse(engine.set_reference_voice("nonexistent_model_prompt.pt"))
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
 
 if __name__ == "__main__":
     unittest.main()

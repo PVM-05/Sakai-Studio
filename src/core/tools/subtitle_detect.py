@@ -4,6 +4,7 @@ logging.getLogger("RapidOCR").setLevel(logging.ERROR)
 from functools import cached_property
 
 import cv2
+import numpy as np
 try:
     from tqdm import tqdm
 except ImportError:
@@ -468,7 +469,11 @@ class SubtitleDetect:
                 continue
             # 仅对采样帧执行 OCR 推理
             if (current_frame_no - 1) % self.SAMPLE_STEP == 0 or self.SAMPLE_STEP <= 1:
-                temp_list = self.detect_subtitle(frame)
+                is_poly = getattr(config.maskType, 'value', '') == 'polygon'
+                if is_poly:
+                    temp_list = self.detect_polygons(frame)
+                else:
+                    temp_list = self.detect_subtitle(frame)
                 if len(temp_list) > 0:
                     sampled_results[current_frame_no] = temp_list
             tbar.update(1)
@@ -489,24 +494,25 @@ class SubtitleDetect:
                 gap = next_f - f
                 for fill_f in range(f + 1, next_f):
                     t = (fill_f - f) / gap  # Tỷ lệ nội suy 0.0 -> 1.0
-                    # Nội suy tuyến tính toạ độ giữa 2 frame mẫu
                     if len(boxes_start) == len(boxes_end):
                         interpolated = []
                         for bs, be in zip(boxes_start, boxes_end):
-                            interp_box = tuple(
-                                int(round(bs[i] * (1 - t) + be[i] * t))
-                                for i in range(4)
-                            )
-                            interpolated.append(interp_box)
+                            # Nội suy đa giác (N, 2)
+                            if isinstance(bs, np.ndarray) and isinstance(be, np.ndarray) and bs.shape == be.shape:
+                                interp_poly = (bs.astype(np.float32) * (1.0 - t) + be.astype(np.float32) * t).round().astype(np.int32)
+                                interpolated.append(interp_poly)
+                            elif isinstance(bs, (tuple, list)) and isinstance(be, (tuple, list)) and len(bs) >= 4 and len(be) >= 4:
+                                interp_box = tuple(
+                                    int(round(bs[i] * (1 - t) + be[i] * t))
+                                    for i in range(4)
+                                )
+                                interpolated.append(interp_box)
+                            else:
+                                interpolated.append(bs if t < 0.5 else be)
                         subtitle_frame_no_box_dict[fill_f] = interpolated
                     else:
-                        # Số lượng box khác nhau: dùng union (hộp bao lớn nhất) của cả 2 frame
-                        union_boxes = []
-                        all_boxes = list(boxes_start) + list(boxes_end)
-                        for box in all_boxes:
-                            if box not in union_boxes:
-                                union_boxes.append(box)
-                        subtitle_frame_no_box_dict[fill_f] = union_boxes
+                        # Số lượng khác nhau: giữ nguyên theo nửa khoảng thời gian
+                        subtitle_frame_no_box_dict[fill_f] = list(boxes_start) if t < 0.5 else list(boxes_end)
         # 添加最后一个检测帧
         if detected_nos:
             subtitle_frame_no_box_dict[detected_nos[-1]] = sampled_results[detected_nos[-1]]
@@ -558,13 +564,26 @@ class SubtitleDetect:
         return scene_div_frame_no_list
 
     @staticmethod
-    def are_similar(region1, region2):
-        """判断两个区域是否相似。"""
-        xmin1, xmax1, ymin1, ymax1 = region1
-        xmin2, xmax2, ymin2, ymax2 = region2
+    def _box_of(region):
+        if isinstance(region, np.ndarray) and region.ndim == 2:
+            return (int(np.min(region[:, 0])), int(np.max(region[:, 0])), int(np.min(region[:, 1])), int(np.max(region[:, 1])))
+        if isinstance(region, (tuple, list)) and len(region) >= 4:
+            return (int(region[0]), int(region[1]), int(region[2]), int(region[3]))
+        return (0, 0, 0, 0)
 
-        return abs(xmin1 - xmin2) <= config.subtitleAreaPixelToleranceXPixel.value and abs(xmax1 - xmax2) <= config.subtitleAreaPixelToleranceXPixel.value and \
-            abs(ymin1 - ymin2) <= config.subtitleAreaPixelToleranceYPixel.value and abs(ymax1 - ymax2) <= config.subtitleAreaPixelToleranceYPixel.value
+    @classmethod
+    def are_similar(cls, region1, region2):
+        """Phán đoán hai vùng phụ đề (hộp hoặc đa giác) có tương đồng vị trí hay không."""
+        b1 = cls._box_of(region1)
+        b2 = cls._box_of(region2)
+        tol_x = config.subtitleAreaPixelToleranceXPixel.value
+        tol_y = config.subtitleAreaPixelToleranceYPixel.value
+        return (
+            abs(b1[0] - b2[0]) <= tol_x
+            and abs(b1[1] - b2[1]) <= tol_x
+            and abs(b1[2] - b2[2]) <= tol_y
+            and abs(b1[3] - b2[3]) <= tol_y
+        )
 
     def unify_regions(self, raw_regions):
         """将连续相似的区域统一，保持列表结构。"""

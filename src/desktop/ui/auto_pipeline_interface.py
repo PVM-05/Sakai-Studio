@@ -163,19 +163,10 @@ def _remover_process_worker(queue, video_path, output_path, options):
                             config.inpaintMode.value = InpaintMode.LAMA
                             active_options["inpaint_mode"] = InpaintMode.LAMA
 
-                    bad_frames = quality_res.get("diagnostics", {}).get("text_detected_frames", [])
-                    tot_f = expected_frames or getattr(sr, 'frame_count', 0)
-                    if bad_frames and tot_f > 10:
-                        raw_ranges = [(max(0, f - 15), min(tot_f - 1, f + 15)) for f in bad_frames]
-                        raw_ranges.sort(key=lambda r: r[0])
-                        merged_sec = []
-                        for r_start, r_end in raw_ranges:
-                            if not merged_sec or r_start > merged_sec[-1][1]:
-                                merged_sec.append([r_start, r_end])
-                            else:
-                                merged_sec[-1][1] = max(merged_sec[-1][1], r_end)
-                        if sum(e - s for s, e in merged_sec) < tot_f * 0.70:
-                            active_options["ab_sections"] = [range(s, e + 1) for s, e in merged_sec]
+                    cached_sub = getattr(sr, 'last_sub_list', None)
+                    if cached_sub:
+                        active_options["cached_sub_list"] = cached_sub
+                    active_options.pop("ab_sections", None)
 
                     SubtitleRemoverRemoteCall.remote_call_append_log(
                         queue,
@@ -195,6 +186,14 @@ def _remover_process_worker(queue, video_path, output_path, options):
                         except Exception:
                             pass
                     os.replace(cur_temp_path, output_path)
+                    run_status = getattr(sr, 'run_status', 'success')
+                    detail = ""
+                    if q_status in ("FAIL", "WARNING", "UNVERIFIED") or not quality_res.get("passed", True):
+                        if q_status == "FAIL" or not quality_res.get("passed", True):
+                            run_status = "partial"
+                        msg = quality_res.get("message", "")
+                        detail = f"{detail}. {msg}".strip(". ") if detail else msg
+                    SubtitleRemoverRemoteCall.remote_call_report_result(queue, run_status, output_path, detail)
                     break
                 else:
                     had_error = True
@@ -644,7 +643,10 @@ class AutoPipelineWorker(QThread):
             def task_subtitle_removal():
                 try:
                     self.log_signal.emit(f"  └─► [Nhánh Xóa Phụ Đề] Đang khởi chạy mô hình phục hồi nền ({self.inpaint_mode})...")
-                    self._run_subtitle_remover(cleaned_video_path)
+                    try:
+                        self._run_subtitle_remover(cleaned_video_path, stage_warnings=stage_warnings)
+                    except TypeError:
+                        self._run_subtitle_remover(cleaned_video_path)
                     self.log_signal.emit("  └─► [Nhánh Xóa Phụ Đề] Hoàn tất xóa phụ đề gốc khỏi video!")
                 except Exception as ex:
                     remover_error[0] = ex
@@ -914,13 +916,14 @@ class AutoPipelineWorker(QThread):
             ))
         return blocks
 
-    def _run_subtitle_remover(self, output_path: str):
+    def _run_subtitle_remover(self, output_path: str, stage_warnings: Optional[List[str]] = None):
         options = {
             "sub_areas": self.sub_areas if self.sub_areas else [],
             "inpaint_mode": self.inpaint_mode,
         }
 
         captured_errors: List[str] = []
+        captured_result = {}
         remote_call = SubtitleRemoverRemoteCall()
         remote_call.register_update_progress_callback(
             lambda p, is_fin, f_no: self._emit_scaled_progress(
@@ -928,6 +931,10 @@ class AutoPipelineWorker(QThread):
             )
         )
         remote_call.register_error_callback(lambda err: captured_errors.append(str(err)))
+        if hasattr(remote_call, 'register_result_callback'):
+            remote_call.register_result_callback(
+                lambda status, path, detail: captured_result.update({"status": status, "path": path, "detail": detail})
+            )
 
         p = multiprocessing.Process(
             target=_remover_process_worker,
@@ -955,6 +962,14 @@ class AutoPipelineWorker(QThread):
             raise RuntimeError(f"Tiến trình xóa phụ đề kết thúc bất thường với mã thoát {p.exitcode}")
         if not os.path.exists(output_path) or os.path.getsize(output_path) <= 0:
             raise RuntimeError("Tiến trình xóa phụ đề không tạo được tệp video đầu ra hợp lệ.")
+
+        status = captured_result.get("status")
+        detail = captured_result.get("detail", "")
+        if status == "partial":
+            warn_msg = f"Xóa phụ đề còn sót vết hoặc chưa đạt chuẩn kiểm định chất lượng: {detail}" if detail else "Xóa phụ đề còn sót vết hoặc chưa đạt chuẩn kiểm định chất lượng."
+            if stage_warnings is not None:
+                stage_warnings.append(warn_msg)
+            self.log_signal.emit(f"  └─► [Nhánh Xóa Phụ Đề] Cảnh báo chất lượng: {warn_msg}")
 
     def _overlay_subtitle_ffmpeg(self, video_in: str, ass_in: str, video_out: str):
         from src.core.tools.ffmpeg_cli import FFmpegCLI

@@ -151,3 +151,41 @@ def test_retry_config_patch_for_gate_steps():
     }
     patch2 = retry_config_patch_for_gate(gate_inpaint, fake_cfg)
     assert patch2.get("mode") == "lama"
+
+
+def test_are_similar_supports_polygons():
+    """Kiểm tra hàm are_similar so khớp độ trùng khớp cho cả mảng đa giác (N, 2) và hộp 4 phần tử."""
+    from src.core.tools.subtitle_detect import SubtitleDetect
+
+    # 2 đa giác gần trùng khớp
+    poly1 = np.array([[10, 10], [50, 10], [50, 30], [10, 30]], dtype=np.int32)
+    poly2 = np.array([[12, 10], [52, 10], [52, 30], [12, 30]], dtype=np.int32)
+    assert SubtitleDetect.are_similar(poly1, poly2) is True
+
+    # 2 đa giác cách xa nhau
+    poly3 = np.array([[100, 100], [150, 100], [150, 130], [100, 130]], dtype=np.int32)
+    assert SubtitleDetect.are_similar(poly1, poly3) is False
+
+    # So khớp chéo giữa mảng đa giác và hộp (xmin, xmax, ymin, ymax)
+    box1 = (10, 50, 10, 30)
+    assert SubtitleDetect.are_similar(poly1, box1) is True
+
+
+def test_gui_subtitle_remover_reuses_cached_sub_list():
+    """Kiểm tra GUISubtitleRemover tái sử dụng bản đồ phụ đề cached_sub_list khi retry mà không chạy lại OCR."""
+    from src.core.main import GUISubtitleRemover
+    from unittest.mock import MagicMock
+
+    cached_data = [
+        {"frame_no": 1, "box_list": [np.array([[10, 10], [50, 10], [50, 30], [10, 30]])]},
+        {"frame_no": 2, "box_list": [np.array([[10, 10], [50, 10], [50, 30], [10, 30]])]},
+    ]
+    remover = GUISubtitleRemover("dummy.mp4", cached_sub_list=cached_data)
+    mock_detector = MagicMock()
+    mock_detector.find_subtitle_frame_no.side_effect = RuntimeError("Không được phép gọi dò phụ đề khi đã có cache")
+
+    # Gọi _get_subtitle_map phải dùng cache và không đụng vào find_subtitle_frame_no
+    sub_map = remover._get_subtitle_map(mock_detector)
+    assert len(sub_map) == 2
+    assert remover.last_sub_list == cached_data
+    mock_detector.find_subtitle_frame_no.assert_not_called()

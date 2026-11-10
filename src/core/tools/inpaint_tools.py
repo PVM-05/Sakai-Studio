@@ -334,7 +334,7 @@ def create_stroke_mask(frame, size, coords_or_strokes, dilation=8, feather_pixel
 def create_combined_mask(size, coords_list=None, strokes_list=None, dilation=8, feather_pixels=8, frame=None, mask_type=None):
     """
     Tạo mặt nạ tổng hợp thống nhất cho cả Xem Trước và Xuất Video:
-    1. Tạo lớp nền từ coords_list theo mask_type ('stroke' hoặc 'box', hỗ trợ cả 4-tuple và 5-tuple SAM2)
+    1. Tạo lớp nền từ coords_list theo mask_type ('stroke', 'box' hoặc 'polygon', hỗ trợ cả đa giác điểm, 4-tuple và 5-tuple SAM2)
     2. Áp dụng tuần tự strokes_list (nét cọ cộng vào mặt nạ, cục tẩy xóa khỏi mặt nạ)
     3. Làm mềm biên Gaussian và trả về float32 [0.0, 1.0]
     """

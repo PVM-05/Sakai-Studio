@@ -1529,6 +1529,97 @@ Dialogue: 0,0:00:05.00,0:00:07.80,Default,Người nói 2,0,0,0,,Câu thoại AS
         self.assertTrue(os.path.exists(dummy_out), "Tệp đầu ra đích phải được tạo thành công sau khi hoàn tất")
         self.assertGreater(os.path.getsize(dummy_out), 0, "Tệp đầu ra đích phải là video hợp lệ có dung lượng lớn hơn 0")
 
+    def test_remover_process_worker_reports_partial_when_quality_fails(self):
+        """
+        Xác minh tiến trình con xóa phụ đề gửi mã kết quả partial qua remote_call_report_result
+        khi bộ kiểm định chất lượng sau xóa đánh giá không đạt.
+        """
+        from src.core.main import GUISubtitleRemover
+        from src.desktop.ui.auto_pipeline_interface import _remover_process_worker
+        from src.core.tools.subtitle_remover_remote_call import Command
+        from unittest.mock import MagicMock, patch
+
+        dummy_vid = os.path.join(self.temp_dir, "dummy_worker_in_fail.mp4")
+        _create_dummy_video(dummy_vid, num_frames=5)
+        dummy_out = os.path.join(self.temp_dir, "dummy_worker_out_fail.mp4")
+
+        mock_queue = MagicMock()
+
+        def fake_run(sr_instance):
+            _create_dummy_video(sr_instance.video_out_path, fps=10.0, num_frames=5)
+            sr_instance.frame_count = 5
+            sr_instance.fps = 10.0
+            sr_instance.is_picture = False
+            sr_instance.source_has_audio = False
+
+        fail_quality = {"status": "FAIL", "passed": False, "message": "Chữ còn sót"}
+        with patch.object(GUISubtitleRemover, "run", autospec=True, side_effect=fake_run), \
+             patch("src.desktop.ui.home_interface.verify_media_quality", return_value=fail_quality):
+            _remover_process_worker(mock_queue, dummy_vid, dummy_out, {"sub_areas": []})
+
+        result_calls = [args[0] for name, args, kwargs in mock_queue.put.mock_calls if args and args[0][0] == Command.RESULT]
+        self.assertTrue(len(result_calls) > 0, "Tiến trình con phải gửi Command.RESULT qua hàng đợi")
+        cmd, (status, out_path, detail) = result_calls[-1]
+        self.assertEqual(status, "partial", "Trạng thái báo cáo kết quả phải là partial khi kiểm định chất lượng thất bại")
+        self.assertIn("Chữ còn sót", detail)
+
+    def test_run_subtitle_remover_propagates_partial_to_stage_warnings(self):
+        """
+        Xác minh _run_subtitle_remover ghi nhận cảnh báo vào stage_warnings khi worker con báo partial.
+        """
+        from src.desktop.ui.auto_pipeline_interface import AutoPipelineWorker
+        from unittest.mock import MagicMock, patch
+
+        fake_out = os.path.join(self.temp_dir, "fake_remover_out.mp4")
+        _create_dummy_video(fake_out, num_frames=5)
+
+        worker = AutoPipelineWorker(
+            video_path=fake_out,
+            output_path=fake_out,
+            ocr_lang="en",
+            target_lang="vi",
+            engine_type="google",
+            api_config={},
+            inpaint_mode="sttn_auto",
+            sub_areas=[],
+            style_type="tiktok_yellow",
+        )
+        stage_warnings = []
+
+        class DummyRemoteCall:
+            def __init__(self):
+                self.queue = MagicMock()
+                self._cb = None
+            def register_update_progress_callback(self, cb): pass
+            def register_error_callback(self, cb): pass
+            def register_result_callback(self, cb):
+                self._cb = cb
+            def stop(self): pass
+
+        class DummyProcess:
+            def __init__(self, target, args):
+                self.target = target
+                self.args = args
+                self.exitcode = 0
+            def start(self): pass
+            def is_alive(self): return False
+            def join(self): pass
+
+        with patch("src.desktop.ui.auto_pipeline_interface.SubtitleRemoverRemoteCall") as mock_rc_cls, \
+             patch("src.desktop.ui.auto_pipeline_interface.multiprocessing.Process", side_effect=DummyProcess):
+            fake_rc = DummyRemoteCall()
+            mock_rc_cls.return_value = fake_rc
+
+            def fake_stop():
+                if fake_rc._cb:
+                    fake_rc._cb("partial", fake_out, "Còn vệt mờ phụ đề")
+
+            fake_rc.stop = fake_stop
+            worker._run_subtitle_remover(fake_out, stage_warnings=stage_warnings)
+
+        self.assertEqual(len(stage_warnings), 1)
+        self.assertIn("Còn vệt mờ phụ đề", stage_warnings[0])
+
 if __name__ == "__main__":
     unittest.main()
 

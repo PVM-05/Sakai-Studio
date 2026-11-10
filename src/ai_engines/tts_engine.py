@@ -1325,8 +1325,8 @@ class TTSEngine:
         Đặt giọng mẫu từ tệp âm thanh (.wav, .mp3, .m4a) hoặc tệp mẫu đã lưu (.pt).
         Tạo VoiceClonePrompt và lưu vào bộ nhớ đệm để tái sử dụng cho toàn bộ video.
         """
-        if not ref_audio_path or not os.path.exists(ref_audio_path):
-            self.log(f"Cảnh báo: Không tìm thấy tệp giọng mẫu tại: {ref_audio_path}")
+        if not ref_audio_path or not os.path.exists(ref_audio_path) or os.path.getsize(ref_audio_path) <= 0:
+            self.log(f"Cảnh báo: Tệp giọng mẫu không tồn tại hoặc bị rỗng: {ref_audio_path}")
             return False
 
         # Nếu tệp đầu vào là mẫu .pt đã lưu từ trước
@@ -1358,7 +1358,11 @@ class TTSEngine:
                 sf.write(norm_path, norm_audio, 24000)
                 effective_audio_path = norm_path
         except Exception as exc:
-            self.log(f"Bỏ qua chuẩn hóa âm thanh mẫu tự động: {exc}")
+            self.log(f"Lỗi khi phân tích và kiểm định chất lượng âm thanh mẫu: {exc}")
+            if not force:
+                self.log("Từ chối nạp tệp âm thanh mẫu do không thể kiểm định chất lượng hoặc định dạng không hợp lệ.")
+                return False
+            self.log("Tiếp tục nạp tệp âm thanh mẫu theo cờ cưỡng bức.")
 
         self.load_model()
         self.log(f"Đang mã hóa đặc trưng giọng mẫu từ tệp: {os.path.basename(ref_audio_path)}...")
@@ -1488,8 +1492,8 @@ class TTSEngine:
 
     def load_voice_prompt(self, path: str) -> bool:
         """Tải lại mẫu giọng nói đã mã hóa từ tệp .pt."""
-        if not os.path.exists(path):
-            self.log(f"Không tìm thấy tệp mẫu giọng nói: {path}")
+        if not path or not os.path.exists(path) or os.path.getsize(path) <= 0:
+            self.log(f"Tệp mẫu giọng nói không tồn tại hoặc bị rỗng: {path}")
             return False
 
         try:

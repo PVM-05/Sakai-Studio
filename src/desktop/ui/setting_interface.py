@@ -382,8 +382,15 @@ class SettingInterface(QtWidgets.QVBoxLayout):
         self.mask_type_combo.blockSignals(True)
         current_mask_idx = self.mask_type_combo.currentIndex()
         self.mask_type_combo.clear()
-        self.mask_type_combo.addItems([tr['Setting'].get('MaskTypeStroke', 'Nét chữ'), tr['Setting'].get('MaskTypeBox', 'Hộp chữ nhật')])
-        self.mask_type_combo.setCurrentIndex(current_mask_idx)
+        self.mask_type_combo.addItems([
+            tr['Setting'].get('MaskTypeStroke', 'Nét chữ'),
+            tr['Setting'].get('MaskTypeBox', 'Hộp chữ nhật'),
+            tr['Setting'].get('MaskTypePolygon', 'Đa giác'),
+        ])
+        if 0 <= current_mask_idx < self.mask_type_combo.count():
+            self.mask_type_combo.setCurrentIndex(current_mask_idx)
+        else:
+            self.mask_type_combo.setCurrentIndex(get_idx(config.maskType.value, config.maskType.validator.options))
         self.mask_type_combo.blockSignals(False)
         self.mask_type_combo.setToolTip(tr["Setting"].get("MaskTypeTooltip", "Mask type tooltip"))
         

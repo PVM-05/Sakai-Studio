@@ -1848,20 +1848,11 @@ class HomeInterface(QWidget):
                                 config.inpaintMode.value = InpaintMode.LAMA
                                 active_options["inpaint_mode"] = InpaintMode.LAMA
 
-                        # Tối ưu hóa thử lại theo đoạn: chỉ inpaint các phân đoạn phát hiện chữ còn sót
-                        bad_frames = quality_res.get("diagnostics", {}).get("text_detected_frames", [])
-                        tot_f = expected_frames or getattr(sr, 'frame_count', 0)
-                        if bad_frames and tot_f > 10:
-                            raw_ranges = [(max(0, f - 15), min(tot_f - 1, f + 15)) for f in bad_frames]
-                            raw_ranges.sort(key=lambda r: r[0])
-                            merged_sec = []
-                            for r_start, r_end in raw_ranges:
-                                if not merged_sec or r_start > merged_sec[-1][1]:
-                                    merged_sec.append([r_start, r_end])
-                                else:
-                                    merged_sec[-1][1] = max(merged_sec[-1][1], r_end)
-                            if sum(e - s for s, e in merged_sec) < tot_f * 0.70:
-                                active_options["ab_sections"] = [range(s, e + 1) for s, e in merged_sec]
+                        # Tối ưu hóa thử lại: tái sử dụng bản đồ phụ đề đã dò từ lần trước để inpaint toàn diện, nhanh gấp 3 lần
+                        cached_sub = getattr(sr, 'last_sub_list', None)
+                        if cached_sub:
+                            active_options["cached_sub_list"] = cached_sub
+                        active_options.pop("ab_sections", None)
 
                         SubtitleRemoverRemoteCall.remote_call_append_log(
                             queue,
