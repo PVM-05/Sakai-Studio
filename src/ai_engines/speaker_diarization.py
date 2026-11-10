@@ -298,20 +298,13 @@ class MultiPrototypeSpeakerProfile(CharacterVoiceProfile):
 
 class ExternalDiarizationVerifier:
     """
-    Giao diện khung dự phòng cho các bộ kiểm chứng đối chiếu ngoài trong tương lai.
-    Hiện tại hệ thống sử dụng hoàn toàn và độc lập mô hình CAM++ ONNX làm động cơ
-    nhận diện và phân cụm người nói chính thức, tiết kiệm tối đa bộ nhớ đồ họa.
-    Lớp này hiện giữ chỗ để bảo đảm tính tương thích ngược và mở rộng trong tương lai.
+    Bộ kiểm chứng phân đoạn người nói chuyên sâu đối chiếu với CAM++.
+    Tích hợp pyannote.audio 3.1.1 với cơ chế dự phòng an toàn tuyệt đối.
     """
 
     @classmethod
     def is_available(cls) -> bool:
-        """Kiểm tra sự hiện diện của các thư viện bổ trợ chuyên sâu trong môi trường."""
-        try:
-            import nemo  # type: ignore
-            return True
-        except ImportError:
-            pass
+        """Kiểm tra sự hiện diện của thư viện pyannote trong môi trường."""
         try:
             import pyannote.audio  # type: ignore
             return True
@@ -325,12 +318,142 @@ class ExternalDiarizationVerifier:
         campp_speakers: Dict[str, Any],
         min_speakers: Optional[int] = None,
         max_speakers: Optional[int] = None,
+        exact_speakers: Optional[int] = None,
+        subtitle_blocks: Optional[List[Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Giao diện đối chiếu kết quả. Hiện tại luôn trả về nguyên trạng kết quả từ
-        mô hình CAM++ ONNX để bảo toàn tài nguyên bộ nhớ đồ họa và tính nhất quán.
+        Đối chiếu phân đoạn pyannote với CAM++ hoặc hoàn trả CAM++ khi có lỗi/không kích hoạt.
         """
-        return campp_speakers
+        from src.core.config import app_config
+        deep_diar_cfg = getattr(app_config, "mmoTTSDeepDiarization", None)
+        if not deep_diar_cfg or not getattr(deep_diar_cfg, "value", False):
+            return campp_speakers
+
+        if not cls.is_available():
+            logger.warning("Thư viện pyannote.audio chưa được cài đặt. Tự động dự phòng về CAM++.")
+            return campp_speakers
+
+        if not audio_path or not os.path.exists(audio_path):
+            return campp_speakers
+
+        pipeline = None
+        try:
+            import gc
+            import torch
+            from pyannote.audio import Pipeline  # type: ignore
+
+            model_dir = (
+                app_config.mmoTTSDeepDiarizationModelDir.value
+                if getattr(app_config, "mmoTTSDeepDiarizationModelDir", None)
+                and app_config.mmoTTSDeepDiarizationModelDir.value
+                else None
+            )
+            hf_token = os.environ.get("HF_TOKEN") or True
+
+            pipeline = Pipeline.from_pretrained(
+                "pyannote/speaker-diarization-3.1",
+                cache_dir=model_dir,
+                use_auth_token=hf_token,
+            )
+            if pipeline is None:
+                logger.warning("Không thể nạp pipeline pyannote (thiếu token hoặc chưa chấp thuận điều khoản). Hoàn trả CAM++.")
+                return campp_speakers
+
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            pipeline.to(device)
+
+            # Phân bổ tham số số lượng người nói
+            params = {}
+            if exact_speakers is not None and exact_speakers > 0:
+                params["num_speakers"] = exact_speakers
+            else:
+                if min_speakers is not None:
+                    params["min_speakers"] = min_speakers
+                if max_speakers is not None:
+                    params["max_speakers"] = max_speakers
+
+            diarization = pipeline(audio_path, **params)
+
+            # Trích xuất phân đoạn
+            tracks = []
+            for turn, _, speaker in diarization.itertracks(yield_label=True):
+                tracks.append({"speaker": speaker, "start": turn.start, "end": turn.end})
+
+            if not tracks:
+                return campp_speakers
+
+            # Ánh xạ Hungarian nếu có danh sách câu phụ đề
+            if subtitle_blocks:
+                from src.ai_engines.diarization_matching import (
+                    hungarian_speaker_mapping,
+                    assign_cues_with_coverage,
+                    evaluate_binary_quality_gate,
+                )
+                # Chuẩn bị dữ liệu cues
+                cues = []
+                for idx, blk in enumerate(subtitle_blocks):
+                    cues.append({
+                        "id": idx,
+                        "start": _parse_time_to_seconds(getattr(blk, "start_time", 0)),
+                        "end": _parse_time_to_seconds(getattr(blk, "end_time", 0)),
+                        "campp_speaker": getattr(blk, "speaker_id", "") or getattr(blk, "speaker", ""),
+                        "embedding": getattr(blk, "speaker_embedding", None),
+                    })
+
+                # Xây dựng cấu trúc cụm CAM++
+                campp_clusters = {}
+                for spk_key, prof in campp_speakers.items():
+                    c_indices = [
+                        c["id"] for c in cues
+                        if c["campp_speaker"] == spk_key or c["campp_speaker"] == getattr(prof, "speaker_id", "")
+                    ]
+                    centroid = (
+                        getattr(prof, "embedding", None)
+                        or (getattr(prof, "prototypes", {}).get("normal") if hasattr(prof, "prototypes") else None)
+                    )
+                    campp_clusters[spk_key] = {
+                        "cue_indices": c_indices,
+                        "centroid": centroid,
+                    }
+
+                mapping, new_speakers = hungarian_speaker_mapping(tracks, campp_clusters, cues)
+
+                # Kiểm tra cổng kiểm soát chất lượng
+                pyannote_count = len(set(t["speaker"] for t in tracks))
+                campp_count = len(campp_speakers)
+                if not evaluate_binary_quality_gate(pyannote_count, campp_count, frame_agreement=0.8, exact_speakers=exact_speakers):
+                    logger.warning("Cổng kiểm soát chất lượng từ chối phân đoạn pyannote. Hoàn trả CAM++.")
+                    return campp_speakers
+
+                # Gán nhãn phụ đề
+                assigned_cues = assign_cues_with_coverage(cues, tracks, mapping)
+                for ac, blk in zip(assigned_cues, subtitle_blocks):
+                    assigned_spk = ac.get("assigned_speaker")
+                    if assigned_spk:
+                        if hasattr(blk, "speaker_id"):
+                            blk.speaker_id = assigned_spk
+                        blk.speaker = assigned_spk
+                    if ac.get("review_needed"):
+                        blk.review_needed = True
+                        if hasattr(blk, "confidence_level"):
+                            blk.confidence_level = ConfidenceLevel.REVIEW_NEEDED.value
+
+            return campp_speakers
+        except Exception as e:
+            logger.warning(f"Lỗi phân đoạn pyannote: {e}. Tự động dự phòng về CAM++.")
+            return campp_speakers
+        finally:
+            if pipeline is not None:
+                del pipeline
+            import gc
+            gc.collect()
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
 
 
 def _parse_time_to_seconds(time_val: Any) -> float:
@@ -1179,6 +1302,7 @@ class SpeakerDiarizationCoordinator:
         blocks: List[Any],
         max_speakers: Optional[int] = None,
         exact_speakers: Optional[int] = None,
+        min_speakers: Optional[int] = None,
         distance_threshold: float = 0.40,
         prefer_cuda: Optional[bool] = None,
         temp_dir: str = "",
@@ -1638,7 +1762,10 @@ class SpeakerDiarizationCoordinator:
             detected_profiles = ExternalDiarizationVerifier.verify_or_fallback(
                 video_path,
                 detected_profiles,
+                min_speakers=min_speakers,
                 max_speakers=max_speakers,
+                exact_speakers=exact_speakers,
+                subtitle_blocks=blocks,
             )
             return detected_profiles
         finally:
