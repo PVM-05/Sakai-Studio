@@ -1,0 +1,47 @@
+1
+00:00:00,000 --> 00:00:02,100
+Bác tài, xe này đến trạm xe buýt chưa?
+
+2
+00:00:02,150 --> 00:00:04,500
+Đến rồi, chuẩn bị xuống xe đi.
+
+3
+00:00:04,600 --> 00:00:06,800
+Không có ai bị sao cả nhưng Lão Ngũ này
+
+4
+00:00:07,000 --> 00:00:09,500
+Mọi người cẩn thận bậc thang dưới chân nhé.
+
+5
+00:00:09,600 --> 00:00:12,000
+Lão Ngũ mau qua đây phụ một tay nào.
+
+6
+00:00:12,100 --> 00:00:14,300
+Dạ sếp, em đến ngay đây ạ.
+
+7
+00:00:14,400 --> 00:00:17,000
+Mang hết đồ đạc kiểm tra lại xem có quên gì không.
+
+8
+00:00:17,100 --> 00:00:19,200
+Đầy đủ hết rồi sếp ơi, không thiếu thứ gì đâu.
+
+9
+00:00:19,300 --> 00:00:21,800
+Lão Ngũ kiểm tra lại cốp sau một lần nữa xem.
+
+10
+00:00:21,900 --> 00:00:24,200
+Cốp sau sạch sẽ rồi sếp, sẵn sàng đi rồi.
+
+11
+00:00:24,300 --> 00:00:27,000
+Được rồi, thế thì chúng ta xuất phát thôi.
+
+12
+00:00:27,100 --> 00:00:30,000
+Đi thôi nào mọi người ơi!

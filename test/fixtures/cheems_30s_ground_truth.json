@@ -1,0 +1,20 @@
+{
+  "window_start_sec": 378.2,
+  "window_end_sec": 408.2,
+  "speaker_count": 4,
+  "speakers": ["Sep", "Lao Ngu", "Bac tai", "Cheems"],
+  "cue_assignments": {
+    "1": "Bac tai",
+    "2": "Sep",
+    "3": "Bac tai",
+    "4": "Sep",
+    "5": "Cheems",
+    "6": "Lao Ngu",
+    "7": "Sep",
+    "8": "Lao Ngu",
+    "9": "Sep",
+    "10": "Lao Ngu",
+    "11": "Sep",
+    "12": "Cheems"
+  }
+}
